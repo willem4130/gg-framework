@@ -16,6 +16,7 @@ export interface RenderAppConfig {
   baseUrl?: string;
   accountId?: string;
   cwd: string;
+  version: string;
   theme?: "dark" | "light";
   showThinking?: boolean;
   showTokenUsage?: boolean;
@@ -42,6 +43,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
         baseUrl: config.baseUrl,
         accountId: config.accountId,
         cwd: config.cwd,
+        version: config.version,
         showThinking: config.showThinking,
         showTokenUsage: config.showTokenUsage,
         onSlashCommand: config.onSlashCommand,

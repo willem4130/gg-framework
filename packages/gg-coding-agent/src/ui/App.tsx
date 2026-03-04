@@ -9,6 +9,7 @@ import { ToolExecution } from "./components/ToolExecution.js";
 import { StreamingArea } from "./components/StreamingArea.js";
 import { InputArea } from "./components/InputArea.js";
 import { Footer } from "./components/Footer.js";
+import { Banner } from "./components/Banner.js";
 import { ModelSelector } from "./components/ModelSelector.js";
 import { useTheme } from "./theme/theme.js";
 import { getGitBranch } from "../utils/git.js";
@@ -66,6 +67,11 @@ interface DurationItem {
   id: string;
 }
 
+interface BannerItem {
+  kind: "banner";
+  id: string;
+}
+
 type CompletedItem =
   | UserItem
   | AssistantItem
@@ -73,7 +79,8 @@ type CompletedItem =
   | ToolDoneItem
   | ErrorItem
   | InfoItem
-  | DurationItem;
+  | DurationItem
+  | BannerItem;
 
 // ── Duration summary ─────────────────────────────────────
 
@@ -129,6 +136,7 @@ export interface AppProps {
   baseUrl?: string;
   accountId?: string;
   cwd: string;
+  version: string;
   showThinking?: boolean;
   showTokenUsage?: boolean;
   onSlashCommand?: (input: string) => Promise<string | null>;
@@ -143,7 +151,7 @@ export function App(props: AppProps) {
   // Items scrolled into Static (history)
   const [history, setHistory] = useState<CompletedItem[]>([]);
   // Items from the current/last turn — rendered in the live area so they stay visible
-  const [liveItems, setLiveItems] = useState<CompletedItem[]>([]);
+  const [liveItems, setLiveItems] = useState<CompletedItem[]>([{ kind: "banner", id: "banner" }]);
   const [overlay, setOverlay] = useState<"model" | null>(null);
   const [lastUserMessage, setLastUserMessage] = useState("");
   const [gitBranch, setGitBranch] = useState<string | null>(null);
@@ -326,6 +334,16 @@ export function App(props: AppProps) {
 
   const renderItem = (item: CompletedItem) => {
     switch (item.kind) {
+      case "banner":
+        return (
+          <Banner
+            key={item.id}
+            version={props.version}
+            model={props.model}
+            provider={props.provider}
+            cwd={props.cwd}
+          />
+        );
       case "user":
         return <UserMessage key={item.id} text={item.text} />;
       case "assistant":

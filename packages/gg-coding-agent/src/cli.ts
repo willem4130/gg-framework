@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import fs from "node:fs";
 import readline from "node:readline/promises";
 import { exec } from "node:child_process";
+import { createRequire } from "node:module";
 import { runPrintMode } from "./modes/print-mode.js";
 import { renderApp } from "./ui/render.js";
 import { formatUserError } from "./utils/error-handler.js";
@@ -16,6 +17,9 @@ import { loginAnthropic } from "./core/oauth/anthropic.js";
 import { loginOpenAI } from "./core/oauth/openai.js";
 import type { OAuthLoginCallbacks } from "./core/oauth/types.js";
 import chalk from "chalk";
+
+const _require = createRequire(import.meta.url);
+const CLI_VERSION = (_require("../package.json") as { version: string }).version;
 
 const USAGE = `
 Usage: ggcoder [command] [options] [message...]
@@ -180,6 +184,7 @@ async function runInkTUI(opts: {
     model,
     tools,
     messages,
+    version: CLI_VERSION,
     maxTokens: 16384,
     thinking: opts.thinkingLevel,
     apiKey: creds.accessToken,
