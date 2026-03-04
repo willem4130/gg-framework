@@ -44,6 +44,7 @@ Options:
   -s, --session <path>      Resume a specific session file
       --print               Print mode: one-shot, output to stdout, then exit
       --json                JSON mode: one-shot, output NDJSON events to stdout
+  -v, --version             Show version number
   -h, --help                Show this help message
 
 Print mode:
@@ -91,11 +92,17 @@ function main(): void {
       session: { type: "string", short: "s" },
       print: { type: "boolean" },
       json: { type: "boolean" },
+      version: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
     strict: true,
   });
+
+  if (values.version) {
+    console.log(CLI_VERSION);
+    process.exit(0);
+  }
 
   if (values.help) {
     console.log(USAGE);
