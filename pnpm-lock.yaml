@@ -70,6 +70,9 @@ importers:
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
+      cli-highlight:
+        specifier: ^2.1.11
+        version: 2.1.11
       diff:
         specifier: ^8.0.3
         version: 8.0.3

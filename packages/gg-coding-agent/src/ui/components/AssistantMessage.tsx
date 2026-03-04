@@ -25,7 +25,7 @@ export function AssistantMessage({ text, thinking, showThinking = true }: Assist
         <Box>
           <Text color={theme.primary}>{"⏺ "}</Text>
           <Box flexDirection="column" flexShrink={1}>
-            <Markdown>{text}</Markdown>
+            <Markdown>{text.trimStart()}</Markdown>
           </Box>
         </Box>
       )}

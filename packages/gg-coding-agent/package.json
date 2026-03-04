@@ -18,15 +18,19 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@kenkaiiii/gg-agent": "workspace:*",
     "@kenkaiiii/gg-ai": "workspace:*",
     "chalk": "^5.6.2",
+    "cli-highlight": "^2.1.11",
     "diff": "^8.0.3",
     "fast-glob": "^3.3.3",
     "ignore": "^7.0.5",

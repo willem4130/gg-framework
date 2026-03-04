@@ -2,6 +2,7 @@ import React from "react";
 import { Text, Box, useStdout } from "ink";
 import { marked, type Token, type Tokens } from "marked";
 import { useTheme, type Theme } from "../theme/theme.js";
+import { highlightCode } from "../utils/highlight.js";
 
 /**
  * Render a markdown string as Ink components.
@@ -83,6 +84,8 @@ function renderToken(token: Token, theme: Theme, key: number, columns: number): 
 
     case "code": {
       const lang = (token as Tokens.Code).lang ?? "";
+      const raw = (token as Tokens.Code).text;
+      const highlighted = highlightCode(raw, lang);
       return (
         <Box key={key} marginTop={gap} paddingLeft={1}>
           <Text color={theme.border}>{"▎ "}</Text>
@@ -92,10 +95,8 @@ function renderToken(token: Token, theme: Theme, key: number, columns: number): 
                 {lang}
               </Text>
             )}
-            {(token as Tokens.Code).text.split("\n").map((line: string, idx: number) => (
-              <Text key={idx} color="#e2b553">
-                {line}
-              </Text>
+            {highlighted.split("\n").map((line: string, idx: number) => (
+              <Text key={idx}>{line}</Text>
             ))}
           </Box>
         </Box>
@@ -249,10 +250,11 @@ function renderToken(token: Token, theme: Theme, key: number, columns: number): 
 function plainTextLength(tokens: Token[]): number {
   let len = 0;
   for (const t of tokens) {
-    if ("tokens" in t && Array.isArray((t as any).tokens)) {
-      len += plainTextLength((t as any).tokens);
-    } else if ("text" in t && typeof (t as any).text === "string") {
-      len += (t as any).text.length;
+    const tok = t as Token & { tokens?: Token[]; text?: string };
+    if (tok.tokens && Array.isArray(tok.tokens)) {
+      len += plainTextLength(tok.tokens);
+    } else if (typeof tok.text === "string") {
+      len += tok.text.length;
     } else if ("raw" in t && typeof t.raw === "string") {
       len += t.raw.length;
     }
@@ -263,10 +265,11 @@ function plainTextLength(tokens: Token[]): number {
 function truncatePlainText(tokens: Token[], maxLen: number): string {
   let text = "";
   for (const t of tokens) {
-    if ("tokens" in t && Array.isArray((t as any).tokens)) {
-      text += truncatePlainText((t as any).tokens, maxLen - text.length);
-    } else if ("text" in t && typeof (t as any).text === "string") {
-      text += (t as any).text;
+    const tok = t as Token & { tokens?: Token[]; text?: string };
+    if (tok.tokens && Array.isArray(tok.tokens)) {
+      text += truncatePlainText(tok.tokens, maxLen - text.length);
+    } else if (typeof tok.text === "string") {
+      text += tok.text;
     } else if ("raw" in t && typeof t.raw === "string") {
       text += t.raw;
     }

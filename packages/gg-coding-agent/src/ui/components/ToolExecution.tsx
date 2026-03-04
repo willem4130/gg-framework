@@ -2,6 +2,7 @@ import React from "react";
 import { Text, Box } from "ink";
 import { useTheme } from "../theme/theme.js";
 import { Spinner } from "./Spinner.js";
+import { highlightCode, langFromPath } from "../utils/highlight.js";
 
 const MAX_OUTPUT_LINES = 8;
 
@@ -37,7 +38,7 @@ export function ToolExecution(props: ToolExecutionProps) {
   const isDiff = name === "edit" && !isError && result.includes("---");
 
   const { label, detail } = getToolHeaderParts(name, args);
-  const body = isDiff ? buildDiffBody(result) : buildResultBody(name, result, isError);
+  const body = isDiff ? buildDiffBody(result, args) : buildResultBody(name, result, isError, args);
 
   const headerColor = isError ? theme.toolError : theme.toolName;
 
@@ -45,7 +46,7 @@ export function ToolExecution(props: ToolExecutionProps) {
   if (!body) {
     const inline = getInlineSummary(name, result, isError);
     return (
-      <Box marginTop={1}>
+      <Box marginTop={1} flexShrink={1}>
         <Text>
           <Text color={theme.primary}>{"⏺ "}</Text>
           <Text bold color={headerColor}>
@@ -144,6 +145,11 @@ function getToolHeaderParts(
     }
     case "ls":
       return { label: displayName, detail: shortenPath(String(args.path ?? ".")) };
+    case "subagent": {
+      const task = String(args.task ?? "");
+      const trunc = task.length > 50 ? task.slice(0, 47) + "…" : task;
+      return { label: displayName, detail: trunc };
+    }
     default:
       return { label: displayName, detail: "" };
   }
@@ -165,6 +171,8 @@ function toolDisplayName(name: string): string {
       return "Find";
     case "ls":
       return "List";
+    case "subagent":
+      return "Agent";
     default:
       return name.charAt(0).toUpperCase() + name.slice(1);
   }
@@ -183,13 +191,15 @@ function getInlineSummary(name: string, result: string, isError: boolean): strin
       return `${lines.length} line${lines.length !== 1 ? "s" : ""}`;
     }
     case "write": {
-      const m = result.match(/Wrote (\d+) bytes/);
-      return m ? `${m[1]} bytes` : "done";
+      const firstLine = result.split("\n")[0];
+      return firstLine;
     }
     case "bash": {
       const match = result.match(/^Exit code: (.+)/);
       return match ? `exit ${match[1]}` : "done";
     }
+    case "subagent":
+      return "completed";
     default:
       return "";
   }
@@ -238,7 +248,7 @@ function parseDiffWithLineNumbers(result: string): NumberedDiffLine[] {
   return numbered;
 }
 
-function buildDiffBody(result: string): BodyContent {
+function buildDiffBody(result: string, args?: Record<string, unknown>): BodyContent {
   const added = (result.match(/^\+[^+]/gm) ?? []).length;
   const removed = (result.match(/^-[^-]/gm) ?? []).length;
 
@@ -252,10 +262,17 @@ function buildDiffBody(result: string): BodyContent {
   const endIdx = Math.min(numbered.length, lastChangeIdx + 3);
   const focused = numbered.slice(startIdx, endIdx);
 
-  const maxLineNo = focused.reduce((m, l) => Math.max(m, l.lineNo), 0);
+  // Highlight context lines using file extension
+  const filePath = String(args?.file_path ?? "");
+  const lang = langFromPath(filePath);
+  const highlighted = focused.map((line) =>
+    line.type === "context" ? { ...line, content: highlightCode(line.content, lang) } : line,
+  );
+
+  const maxLineNo = highlighted.reduce((m, l) => Math.max(m, l.lineNo), 0);
   const padWidth = String(maxLineNo).length;
 
-  const displayLines = focused.slice(0, MAX_OUTPUT_LINES);
+  const displayLines = highlighted.slice(0, MAX_OUTPUT_LINES);
   const rendered = displayLines.map((line, i) => (
     <DiffLine key={i} line={line} padWidth={padWidth} />
   ));
@@ -271,7 +288,12 @@ function buildDiffBody(result: string): BodyContent {
   };
 }
 
-function buildResultBody(name: string, result: string, isError: boolean): BodyContent | null {
+function buildResultBody(
+  name: string,
+  result: string,
+  isError: boolean,
+  args?: Record<string, unknown>,
+): BodyContent | null {
   if (isError) {
     const lines = result.split("\n");
     const display = lines.slice(0, MAX_OUTPUT_LINES);
@@ -305,8 +327,35 @@ function buildResultBody(name: string, result: string, isError: boolean): BodyCo
     }
     case "read":
       return null;
-    case "write":
-      return null;
+    case "write": {
+      const allLines = result.split("\n");
+      const summary = allLines[0]; // "Wrote 12 lines to random-info.md"
+      let contentLines = allLines.slice(1);
+      // Trim trailing empty line from content that ends with \n
+      if (contentLines.length > 0 && contentLines[contentLines.length - 1] === "") {
+        contentLines = contentLines.slice(0, -1);
+      }
+      if (contentLines.length === 0) return null;
+      // Highlight the full content, then split back into lines
+      const filePath = String(args?.file_path ?? "");
+      const lang = langFromPath(filePath);
+      const rawContent = contentLines.join("\n");
+      const highlighted = highlightCode(rawContent, lang);
+      const hlLines = highlighted.split("\n");
+      const displayLines = hlLines.slice(0, MAX_OUTPUT_LINES);
+      const padWidth = String(contentLines.length).length;
+      return {
+        lines: [
+          <Text key="summary" color="#9ca3af">
+            {summary}
+          </Text>,
+          ...displayLines.map((line, i) => (
+            <WrittenLine key={i + 1} lineNo={i + 1} content={line} padWidth={padWidth} />
+          )),
+        ],
+        totalLines: 1 + contentLines.length, // summary + all content lines
+      };
+    }
     case "grep": {
       const lines = result.split("\n").filter((l) => l.length > 0);
       if (lines.length === 0 || result === "No matches found.") return null;
@@ -331,6 +380,19 @@ function buildResultBody(name: string, result: string, isError: boolean): BodyCo
       const display = lines.slice(0, MAX_OUTPUT_LINES);
       return {
         lines: display.map((l, i) => <LsLine key={i} line={l} />),
+        totalLines: lines.length,
+      };
+    }
+    case "subagent": {
+      const lines = result.split("\n").filter((l) => l.length > 0);
+      if (lines.length === 0) return null;
+      const display = lines.slice(0, MAX_OUTPUT_LINES);
+      return {
+        lines: display.map((l, i) => (
+          <Text key={i} color="#9ca3af">
+            {l}
+          </Text>
+        )),
         totalLines: lines.length,
       };
     }
@@ -363,10 +425,32 @@ function DiffLine({ line, padWidth }: { line: NumberedDiffLine; padWidth: number
     );
   }
   return (
-    <Text color="#4b5563">
-      {lineNo}
-      {"  "}
+    <Text>
+      <Text color="#6b7280">
+        {lineNo}
+        {"  "}
+      </Text>
       {line.content}
+    </Text>
+  );
+}
+
+// ── Written line component ─────────────────────────────────
+
+function WrittenLine({
+  lineNo,
+  content,
+  padWidth,
+}: {
+  lineNo: number;
+  content: string;
+  padWidth: number;
+}) {
+  const num = String(lineNo).padStart(padWidth, " ");
+  return (
+    <Text>
+      <Text color="#6b7280">{num} </Text>
+      {content}
     </Text>
   );
 }
