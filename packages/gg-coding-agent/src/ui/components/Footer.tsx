@@ -7,7 +7,6 @@ interface FooterProps {
   tokensIn: number;
   cwd: string;
   gitBranch?: string | null;
-  turnTokenHistory?: number[];
 }
 
 // Model ID → short display name
@@ -59,25 +58,6 @@ function getContextColor(pct: number, theme: ReturnType<typeof useTheme>): strin
   return theme.success;
 }
 
-// ── Sparkline ─────────────────────────────────────────────
-
-const SPARK_BLOCKS = [
-  "\u2581",
-  "\u2582",
-  "\u2583",
-  "\u2584",
-  "\u2585",
-  "\u2586",
-  "\u2587",
-  "\u2588",
-];
-
-function sparkline(data: number[]): string {
-  const max = Math.max(...data);
-  if (max === 0) return "";
-  return data.map((v) => SPARK_BLOCKS[Math.round((v / max) * 7)]).join("");
-}
-
 // ── Partial block gauge ───────────────────────────────────
 
 const PARTIAL_BLOCKS = [
@@ -92,7 +72,7 @@ const PARTIAL_BLOCKS = [
   "\u2588",
 ];
 
-export function Footer({ model, tokensIn, cwd, gitBranch, turnTokenHistory = [] }: FooterProps) {
+export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
   const theme = useTheme();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 80;
@@ -136,12 +116,7 @@ export function Footer({ model, tokensIn, cwd, gitBranch, turnTokenHistory = [] 
     }
   }
 
-  // Sparkline from recent turn token history (last 10 turns)
-  const recentHistory = turnTokenHistory.slice(-10);
-  const sparkStr = recentHistory.length > 0 ? sparkline(recentHistory) : "";
-
   // Truncate path if footer would overflow
-  const sparkWidth = sparkStr.length > 0 ? sparkStr.length + 1 : 0;
   const rightLen =
     modelName.length +
     3 +
@@ -151,7 +126,6 @@ export function Footer({ model, tokensIn, cwd, gitBranch, turnTokenHistory = [] 
     1 +
     (gitBranch ? gitBranch.length + 5 : 0) +
     formatTokens(tokensIn).length +
-    sparkWidth +
     3 +
     10;
   const maxPath = columns - rightLen - 4;
@@ -175,12 +149,6 @@ export function Footer({ model, tokensIn, cwd, gitBranch, turnTokenHistory = [] 
         )}
       </Box>
       <Box>
-        {sparkStr && (
-          <>
-            <Text color={theme.accent}>{sparkStr}</Text>
-            <Text color={theme.textDim}> </Text>
-          </>
-        )}
         <Text color={theme.textDim}>{formatTokens(tokensIn)}</Text>
         {sep}
         <Text>{barChars}</Text>

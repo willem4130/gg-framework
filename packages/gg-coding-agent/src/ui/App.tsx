@@ -24,6 +24,7 @@ import { getGitBranch } from "../utils/git.js";
 import { getModel } from "../core/model-registry.js";
 import { SessionManager, type MessageEntry } from "../core/session-manager.js";
 import { log } from "../core/logger.js";
+import { SettingsManager } from "../core/settings-manager.js";
 
 // ── Completed Item Types ───────────────────────────────────
 
@@ -185,6 +186,7 @@ export interface AppProps {
   sessionsDir?: string;
   sessionPath?: string;
   processManager?: ProcessManager;
+  settingsFile?: string;
 }
 
 // ── App Component ──────────────────────────────────────────
@@ -609,22 +611,34 @@ export function App(props: AppProps) {
     }
   }, [agentLoop]);
 
-  const handleModelSelect = useCallback((value: string) => {
-    setOverlay(null);
-    const colonIdx = value.indexOf(":");
-    if (colonIdx === -1) return;
-    const newProvider = value.slice(0, colonIdx) as Provider;
-    const newModelId = value.slice(colonIdx + 1);
-    log("INFO", "model", `Model changed`, { provider: newProvider, model: newModelId });
-    setCurrentProvider(newProvider);
-    setCurrentModel(newModelId);
-    const modelInfo = getModel(newModelId);
-    const displayName = modelInfo?.name ?? newModelId;
-    setLiveItems((prev) => [
-      ...prev,
-      { kind: "info", text: `Switched to ${displayName}`, id: getId() },
-    ]);
-  }, []);
+  const handleModelSelect = useCallback(
+    (value: string) => {
+      setOverlay(null);
+      const colonIdx = value.indexOf(":");
+      if (colonIdx === -1) return;
+      const newProvider = value.slice(0, colonIdx) as Provider;
+      const newModelId = value.slice(colonIdx + 1);
+      log("INFO", "model", `Model changed`, { provider: newProvider, model: newModelId });
+      setCurrentProvider(newProvider);
+      setCurrentModel(newModelId);
+      const modelInfo = getModel(newModelId);
+      const displayName = modelInfo?.name ?? newModelId;
+      setLiveItems((prev) => [
+        ...prev,
+        { kind: "info", text: `Switched to ${displayName}`, id: getId() },
+      ]);
+
+      // Persist model selection for next CLI launch
+      if (props.settingsFile) {
+        const sm = new SettingsManager(props.settingsFile);
+        sm.load().then(() => {
+          void sm.set("defaultProvider", newProvider);
+          void sm.set("defaultModel", newModelId);
+        });
+      }
+    },
+    [props.settingsFile],
+  );
 
   const { stdout } = useStdout();
   const terminalHeight = stdout?.rows ?? 24;
@@ -778,7 +792,6 @@ export function App(props: AppProps) {
           tokensIn={agentLoop.contextUsed}
           cwd={props.cwd}
           gitBranch={gitBranch}
-          turnTokenHistory={agentLoop.turnTokenHistory}
         />
       )}
       {bgTasks.length > 0 && (

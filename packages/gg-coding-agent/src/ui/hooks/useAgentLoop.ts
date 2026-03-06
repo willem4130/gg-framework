@@ -37,8 +37,6 @@ export interface UseAgentLoopReturn {
   totalTokens: { input: number; output: number };
   /** Latest turn's input tokens — reflects current context window usage */
   contextUsed: number;
-  /** Input token count per turn — for sparkline display */
-  turnTokenHistory: number[];
   activityPhase: ActivityPhase;
   elapsedMs: number;
   thinkingMs: number;
@@ -90,7 +88,6 @@ export function useAgentLoop(
   const [currentTurn, setCurrentTurn] = useState(0);
   const [totalTokens, setTotalTokens] = useState({ input: 0, output: 0 });
   const [contextUsed, setContextUsed] = useState(0);
-  const [turnTokenHistory, setTurnTokenHistory] = useState<number[]>([]);
   const [activityPhase, setActivityPhase] = useState<ActivityPhase>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [thinkingMs, setThinkingMs] = useState(0);
@@ -159,7 +156,6 @@ export function useAgentLoop(
     setCurrentTurn(0);
     setTotalTokens({ input: 0, output: 0 });
     setContextUsed(0);
-    setTurnTokenHistory([]);
     setStreamingText("");
     setStreamingThinking("");
     setActiveToolCalls([]);
@@ -333,7 +329,6 @@ export function useAgentLoop(
               }));
               // Latest turn's input tokens = current context window fill
               setContextUsed(event.usage.inputTokens);
-              setTurnTokenHistory((prev) => [...prev, event.usage.inputTokens]);
               // Replace char-based estimate with real output tokens
               realTokensAccumRef.current += event.usage.outputTokens;
               charCountRef.current = 0;
@@ -432,7 +427,6 @@ export function useAgentLoop(
     currentTurn,
     totalTokens,
     contextUsed,
-    turnTokenHistory,
     activityPhase,
     elapsedMs,
     thinkingMs,

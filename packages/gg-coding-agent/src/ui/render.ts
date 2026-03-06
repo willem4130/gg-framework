@@ -29,6 +29,7 @@ export interface RenderAppConfig {
   sessionsDir?: string;
   sessionPath?: string;
   processManager?: ProcessManager;
+  settingsFile?: string;
 }
 
 export async function renderApp(config: RenderAppConfig): Promise<void> {
@@ -60,6 +61,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
         sessionsDir: config.sessionsDir,
         sessionPath: config.sessionPath,
         processManager: config.processManager,
+        settingsFile: config.settingsFile,
       }),
     ),
   );
