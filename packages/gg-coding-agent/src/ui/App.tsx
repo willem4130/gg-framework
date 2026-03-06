@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { Box, Text, Static, useStdout } from "ink";
+import { Box, Text, Static } from "ink";
 import crypto from "node:crypto";
 import type { Message, Provider, ServerToolDefinition, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
@@ -224,6 +224,7 @@ export function App(props: AppProps) {
   const [currentProvider, setCurrentProvider] = useState(props.provider);
   const messagesRef = useRef<Message[]>(props.messages);
   const nextIdRef = useRef(0);
+  const wasRunningRef = useRef(false);
   const sessionManagerRef = useRef(
     props.sessionsDir ? new SessionManager(props.sessionsDir) : null,
   );
@@ -536,6 +537,21 @@ export function App(props: AppProps) {
     },
   );
 
+  // When agent finishes, move live items into Static history so the live area
+  // is minimal. This prevents scroll jumping caused by Ink re-rendering the
+  // entire live area on every timer tick (cursor blink, border pulse, etc.).
+  useEffect(() => {
+    if (wasRunningRef.current && !agentLoop.isRunning) {
+      setLiveItems((prev) => {
+        if (prev.length > 0) {
+          setHistory((h) => [...h, ...prev]);
+        }
+        return [];
+      });
+    }
+    wasRunningRef.current = agentLoop.isRunning;
+  }, [agentLoop.isRunning]);
+
   // Sync terminal title with agent loop state
   useEffect(() => {
     setTitlePhase(agentLoop.activityPhase);
@@ -598,7 +614,7 @@ export function App(props: AppProps) {
         }
       }
 
-      // Move current live items into history (Static) before starting new turn
+      // Move any remaining live items into history (Static) before starting new turn
       setLiveItems((prev) => {
         if (prev.length > 0) {
           setHistory((h) => [...h, ...prev]);
@@ -666,9 +682,6 @@ export function App(props: AppProps) {
     },
     [props.settingsFile],
   );
-
-  const { stdout } = useStdout();
-  const terminalHeight = stdout?.rows ?? 24;
 
   const renderItem = (item: CompletedItem) => {
     switch (item.kind) {
@@ -749,7 +762,7 @@ export function App(props: AppProps) {
   };
 
   return (
-    <Box flexDirection="column" minHeight={terminalHeight}>
+    <Box flexDirection="column">
       {/* History — scrolled up, managed by Ink Static.
           width="100%" is required because Static uses position:absolute internally,
           which causes auto-width resolution to shrink-wrap content. Without it,
