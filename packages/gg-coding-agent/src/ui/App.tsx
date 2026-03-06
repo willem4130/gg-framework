@@ -163,6 +163,10 @@ function pickDurationVerb(toolsUsed: string[]): string {
   return phrases[Math.floor(Math.random() * phrases.length)];
 }
 
+// ── Animated thinking border ────────────────────────────────
+
+const THINKING_BORDER_COLORS = ["#60a5fa", "#818cf8", "#a78bfa", "#818cf8", "#60a5fa"];
+
 // ── App Props ──────────────────────────────────────────────
 
 export interface AppProps {
@@ -538,6 +542,26 @@ export function App(props: AppProps) {
     setTitleRunning(agentLoop.isRunning);
   }, [agentLoop.activityPhase, agentLoop.isRunning]);
 
+  // Animated thinking border
+  const [thinkingBorderFrame, setThinkingBorderFrame] = useState(0);
+  useEffect(() => {
+    if (agentLoop.activityPhase !== "thinking") return;
+    const timer = setInterval(() => {
+      setThinkingBorderFrame((f) => (f + 1) % THINKING_BORDER_COLORS.length);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [agentLoop.activityPhase]);
+
+  // Success flash on turn completion
+  const [doneFlash, setDoneFlash] = useState(false);
+  useEffect(() => {
+    if (doneStatus) {
+      setDoneFlash(true);
+      const timer = setTimeout(() => setDoneFlash(false), 600);
+      return () => clearTimeout(timer);
+    }
+  }, [doneStatus]);
+
   const handleSubmit = useCallback(
     async (input: string) => {
       const trimmed = input.trim();
@@ -752,7 +776,17 @@ export function App(props: AppProps) {
 
       {/* Pinned status line — activity indicator while running, duration summary when done */}
       {agentLoop.isRunning && agentLoop.activityPhase !== "idle" ? (
-        <Box marginTop={1}>
+        <Box
+          marginTop={1}
+          borderStyle={agentLoop.activityPhase === "thinking" ? "round" : undefined}
+          borderColor={
+            agentLoop.activityPhase === "thinking"
+              ? THINKING_BORDER_COLORS[thinkingBorderFrame]
+              : undefined
+          }
+          paddingLeft={agentLoop.activityPhase === "thinking" ? 1 : 0}
+          paddingRight={agentLoop.activityPhase === "thinking" ? 1 : 0}
+        >
           <ActivityIndicator
             phase={agentLoop.activityPhase}
             elapsedMs={agentLoop.elapsedMs}
@@ -765,7 +799,7 @@ export function App(props: AppProps) {
       ) : (
         doneStatus && (
           <Box marginTop={1}>
-            <Text color={theme.textDim}>
+            <Text color={doneFlash ? theme.success : theme.textDim}>
               {"✻ "}
               {doneStatus.verb} {formatDuration(doneStatus.durationMs)}
             </Text>

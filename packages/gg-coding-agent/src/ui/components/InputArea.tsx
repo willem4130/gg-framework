@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { Text, Box, useInput, useStdout } from "ink";
 import { useTheme } from "../theme/theme.js";
 
@@ -73,6 +73,33 @@ export function InputArea({
   const lastEscRef = useRef(0);
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 80;
+
+  // Border color pulse (when idle/waiting for input)
+  const borderPulseColors = useMemo(
+    () => [theme.primary, theme.accent, theme.secondary, theme.accent],
+    [theme.primary, theme.accent, theme.secondary],
+  );
+  const [borderFrame, setBorderFrame] = useState(0);
+  useEffect(() => {
+    if (disabled) return;
+    const timer = setInterval(() => {
+      setBorderFrame((f) => (f + 1) % borderPulseColors.length);
+    }, 800);
+    return () => clearInterval(timer);
+  }, [disabled, borderPulseColors]);
+
+  // Cursor blink
+  const [cursorVisible, setCursorVisible] = useState(true);
+  useEffect(() => {
+    if (disabled) {
+      setCursorVisible(true);
+      return;
+    }
+    const timer = setInterval(() => {
+      setCursorVisible((v) => !v);
+    }, 530);
+    return () => clearInterval(timer);
+  }, [disabled]);
 
   useInput(
     (input, key) => {
@@ -176,7 +203,7 @@ export function InputArea({
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={disabled ? theme.textDim : theme.primary}
+      borderColor={disabled ? theme.textDim : borderPulseColors[borderFrame]}
       paddingLeft={1}
       paddingRight={1}
     >
@@ -188,8 +215,8 @@ export function InputArea({
           </Text>
           <Text color={theme.text}>
             {line}
-            {/* Cursor at end of last line */}
-            {i === displayLines.length - 1 && !disabled ? "█" : ""}
+            {/* Blinking cursor at end of last line */}
+            {i === displayLines.length - 1 && !disabled ? (cursorVisible ? "\u2588" : " ") : ""}
           </Text>
         </Box>
       ))}
