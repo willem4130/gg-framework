@@ -95,7 +95,3 @@ export function getContextWindow(modelId: string): number {
   const model = getModel(modelId);
   return model?.contextWindow ?? 200_000;
 }
-
-export function getApiKeyEnvVar(provider: Provider): string {
-  return provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
-}

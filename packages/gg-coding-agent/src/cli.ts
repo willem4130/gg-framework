@@ -3,7 +3,7 @@
 import { parseArgs } from "node:util";
 import fs from "node:fs";
 import readline from "node:readline/promises";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { runPrintMode } from "./modes/print-mode.js";
 import { runJsonMode } from "./modes/json-mode.js";
@@ -400,7 +400,7 @@ function openBrowser(url: string): void {
   const cmd =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
 
-  exec(`${cmd} "${url}"`, () => {
+  execFile(cmd, [url], () => {
     // Ignore errors — user can copy URL manually
   });
 }

@@ -5,7 +5,6 @@ export {
   getModelsForProvider,
   getDefaultModel,
   getContextWindow,
-  getApiKeyEnvVar,
   type ModelInfo,
 } from "./model-registry.js";
 export { AuthStorage, NotLoggedInError } from "./auth-storage.js";

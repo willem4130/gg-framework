@@ -239,9 +239,13 @@ export async function* agentLoop(
   }
 
   // Exceeded max turns — return last assistant message
-  const lastAssistant = [...messages]
-    .reverse()
-    .find((m) => m.role === "assistant") as AssistantMessage;
+  let lastAssistant: AssistantMessage | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "assistant") {
+      lastAssistant = messages[i] as AssistantMessage;
+      break;
+    }
+  }
 
   yield {
     type: "agent_done" as const,
@@ -250,7 +254,7 @@ export async function* agentLoop(
   };
 
   return {
-    message: lastAssistant,
+    message: lastAssistant ?? { role: "assistant" as const, content: [] },
     totalTurns: turn,
     totalUsage: { ...totalUsage },
   };

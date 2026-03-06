@@ -158,6 +158,7 @@ export function createSubAgentTool(
         });
 
         child.on("close", (code) => {
+          rl.close();
           context.signal.removeEventListener("abort", abortHandler);
           const durationMs = Date.now() - startTime;
           const details: SubAgentDetails = {
@@ -186,6 +187,7 @@ export function createSubAgentTool(
         });
 
         child.on("error", (err) => {
+          rl.close();
           context.signal.removeEventListener("abort", abortHandler);
           resolve({
             content: `Failed to spawn sub-agent: ${err.message}`,

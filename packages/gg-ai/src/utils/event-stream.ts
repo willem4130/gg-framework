@@ -31,10 +31,14 @@ export class EventStream<T = StreamEvent> implements AsyncIterable<T> {
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
+    let index = 0;
     while (true) {
-      while (this.queue.length > 0) {
-        yield this.queue.shift()!;
+      while (index < this.queue.length) {
+        yield this.queue[index++]!;
       }
+      // Reset to avoid holding references to already-yielded events
+      this.queue.splice(0, index);
+      index = 0;
       if (this.error) throw this.error;
       if (this.done) return;
       await new Promise<void>((r) => {
@@ -88,7 +92,7 @@ export class StreamResult implements AsyncIterable<StreamEvent> {
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
     // Drain events so the stream completes
-    this.drainEvents();
+    this.drainEvents().catch(() => {});
     return this.response.then(onfulfilled, onrejected);
   }
 

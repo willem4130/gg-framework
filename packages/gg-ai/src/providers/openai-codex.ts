@@ -239,33 +239,37 @@ async function* parseSSE(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let idx = buffer.indexOf("\n\n");
-    while (idx !== -1) {
-      const chunk = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
+      let idx = buffer.indexOf("\n\n");
+      while (idx !== -1) {
+        const chunk = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
 
-      const dataLines = chunk
-        .split("\n")
-        .filter((l) => l.startsWith("data:"))
-        .map((l) => l.slice(5).trim());
+        const dataLines = chunk
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trim());
 
-      if (dataLines.length > 0) {
-        const data = dataLines.join("\n").trim();
-        if (data && data !== "[DONE]") {
-          try {
-            yield JSON.parse(data) as Record<string, unknown>;
-          } catch {
-            // skip malformed JSON
+        if (dataLines.length > 0) {
+          const data = dataLines.join("\n").trim();
+          if (data && data !== "[DONE]") {
+            try {
+              yield JSON.parse(data) as Record<string, unknown>;
+            } catch {
+              // skip malformed JSON
+            }
           }
         }
+        idx = buffer.indexOf("\n\n");
       }
-      idx = buffer.indexOf("\n\n");
     }
+  } finally {
+    reader.releaseLock();
   }
 }
 

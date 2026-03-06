@@ -60,7 +60,7 @@ export class AgentStream implements AsyncIterable<AgentEvent> {
     onfulfilled?: ((value: AgentResult) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
-    this.drainEvents();
+    this.drainEvents().catch(() => {});
     return this.resultPromise.then(onfulfilled, onrejected);
   }
 
