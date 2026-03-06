@@ -5,6 +5,7 @@ import type {
   ContentPart,
   Message,
   TextContent,
+  ThinkingContent,
   ThinkingLevel,
   Tool,
   ToolChoice,
@@ -265,12 +266,25 @@ export function toOpenAIMessages(messages: Message[]): OpenAI.ChatCompletionMess
               .map((p) => p.text)
               .join("")
           : undefined;
+      // Roundtrip thinking content as reasoning_content (GLM, Moonshot)
+      const thinkingParts =
+        typeof msg.content !== "string"
+          ? msg.content
+              .filter((p): p is ThinkingContent => p.type === "thinking")
+              .map((p) => p.text)
+              .join("")
+          : undefined;
 
-      out.push({
+      const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
         role: "assistant",
         content: parts ?? textParts ?? null,
         ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
-      });
+      };
+      // Attach reasoning_content for multi-turn coherence (non-standard field)
+      if (thinkingParts) {
+        (assistantMsg as unknown as Record<string, unknown>).reasoning_content = thinkingParts;
+      }
+      out.push(assistantMsg);
       continue;
     }
     if (msg.role === "tool") {

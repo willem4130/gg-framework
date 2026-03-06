@@ -31,18 +31,14 @@ export function stream(options: StreamOptions): StreamResult {
       }
       return streamOpenAI(options);
     case "glm":
-      return streamAnthropic({
+      return streamOpenAI({
         ...options,
-        baseUrl: options.baseUrl ?? "https://api.z.ai/api/anthropic/",
-        thinking: undefined,
-        serverTools: undefined,
+        baseUrl: options.baseUrl ?? "https://api.z.ai/api/paas/v4",
       });
     case "moonshot":
-      return streamAnthropic({
+      return streamOpenAI({
         ...options,
-        baseUrl: options.baseUrl ?? "https://api.moonshot.ai/anthropic/",
-        thinking: undefined,
-        serverTools: undefined,
+        baseUrl: options.baseUrl ?? "https://api.moonshot.ai/v1",
       });
     default:
       throw new GGAIError(

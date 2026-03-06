@@ -24,6 +24,9 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
 
   const messages = toOpenAIMessages(options.messages);
 
+  // GLM and Moonshot use a custom `thinking` body param instead of `reasoning_effort`
+  const usesThinkingParam = options.provider === "glm" || options.provider === "moonshot";
+
   const params: OpenAI.ChatCompletionCreateParams = {
     model: options.model,
     messages,
@@ -34,13 +37,22 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
       : {}),
     ...(options.topP != null ? { top_p: options.topP } : {}),
     ...(options.stop ? { stop: options.stop } : {}),
-    ...(options.thinking ? { reasoning_effort: toOpenAIReasoningEffort(options.thinking) } : {}),
+    ...(options.thinking && !usesThinkingParam
+      ? { reasoning_effort: toOpenAIReasoningEffort(options.thinking) }
+      : {}),
     ...(options.tools?.length ? { tools: toOpenAITools(options.tools) } : {}),
     ...(options.toolChoice && options.tools?.length
       ? { tool_choice: toOpenAIToolChoice(options.toolChoice) }
       : {}),
     stream_options: { include_usage: true },
   };
+
+  // Inject custom thinking param for GLM/Moonshot (not part of OpenAI spec)
+  if (usesThinkingParam) {
+    (params as unknown as Record<string, unknown>).thinking = options.thinking
+      ? { type: "enabled" }
+      : { type: "disabled" };
+  }
 
   const stream = await client.chat.completions.create(params, {
     signal: options.signal ?? undefined,
@@ -49,6 +61,7 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
   const contentParts: ContentPart[] = [];
   const toolCallAccum = new Map<number, { id: string; name: string; argsJson: string }>();
   let textAccum = "";
+  let thinkingAccum = "";
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
@@ -73,6 +86,13 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
     }
 
     const delta = choice.delta;
+
+    // Reasoning/thinking delta (GLM, Moonshot)
+    const reasoningContent = (delta as Record<string, unknown>).reasoning_content;
+    if (typeof reasoningContent === "string" && reasoningContent) {
+      thinkingAccum += reasoningContent;
+      result.push({ type: "thinking_delta", text: reasoningContent });
+    }
 
     // Text delta
     if (delta.content) {
@@ -105,6 +125,11 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
         }
       }
     }
+  }
+
+  // Finalize thinking content (GLM, Moonshot reasoning_content)
+  if (thinkingAccum) {
+    contentParts.push({ type: "thinking", text: thinkingAccum });
   }
 
   // Finalize text content

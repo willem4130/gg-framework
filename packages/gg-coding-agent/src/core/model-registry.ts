@@ -65,7 +65,7 @@ export const MODELS: ModelInfo[] = [
     provider: "glm",
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
-    supportsThinking: false,
+    supportsThinking: true,
     costTier: "medium",
   },
   {
@@ -74,7 +74,7 @@ export const MODELS: ModelInfo[] = [
     provider: "glm",
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
-    supportsThinking: false,
+    supportsThinking: true,
     costTier: "low",
   },
   // ── Moonshot (Kimi) ──────────────────────────────────────
@@ -84,7 +84,7 @@ export const MODELS: ModelInfo[] = [
     provider: "moonshot",
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
-    supportsThinking: false,
+    supportsThinking: true,
     costTier: "medium",
   },
 ];
