@@ -12,10 +12,8 @@ import { useStdout } from "ink";
  * Use it as a React `key` on the root content wrapper to force a full
  * remount — this is the only reliable way to make Ink re-render <Static>
  * content that was already printed to scrollback and got corrupted by
- * terminal text reflow.
- *
- * This pattern is borrowed from Gemini CLI and Cline CLI, which both
- * debounce 300ms then clear + remount.
+ * terminal text reflow.  Debounces 300ms then clears screen+scrollback
+ * and remounts.
  */
 export function useTerminalSize() {
   const { stdout } = useStdout();
@@ -35,13 +33,12 @@ export function useTerminalSize() {
     // Debounce the resizeKey bump — only fires after the user stops dragging
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      // Clear the entire terminal including scrollback to remove reflowed
-      // ghost artifacts, then re-set the scroll region for the shimmer line
+      // Clear the visible screen and re-set the scroll region for the shimmer
+      // line. Scrollback is preserved so mouse scroll continues to work.
       const newRows = stdout.rows ?? 24;
       stdout.write(
         "\x1b[r" + // reset scroll region
           "\x1b[2J" + // clear visible screen
-          "\x1b[3J" + // clear scrollback buffer
           "\x1b[H" + // cursor home
           `\x1b[2;${newRows}r` + // restore scroll region (row 2 to bottom)
           "\x1b[2;1H", // cursor to row 2 for Ink

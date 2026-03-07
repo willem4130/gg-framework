@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { Text, Box, useInput } from "ink";
+import { Text, Box, useInput, useStdout } from "ink";
 import { useTheme } from "../theme/theme.js";
-import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import type { ImageAttachment } from "../../utils/image.js";
 import { extractImagePaths, readImageFile, getClipboardImage } from "../../utils/image.js";
 import { SlashCommandMenu, filterCommands, type SlashCommandInfo } from "./SlashCommandMenu.js";
@@ -83,7 +82,8 @@ export function InputArea({
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
   const lastEscRef = useRef(0);
-  const { columns } = useTerminalSize();
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? 80;
   const [menuIndex, setMenuIndex] = useState(0);
 
   // Detect if we're in slash command mode

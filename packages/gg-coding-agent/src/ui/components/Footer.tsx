@@ -1,7 +1,6 @@
 import React from "react";
-import { Text, Box } from "ink";
+import { Text, Box, useStdout } from "ink";
 import { useTheme } from "../theme/theme.js";
-import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
 interface FooterProps {
   model: string;
@@ -76,7 +75,8 @@ const PARTIAL_BLOCKS = [
 
 export function Footer({ model, tokensIn, cwd, gitBranch, thinkingEnabled }: FooterProps) {
   const theme = useTheme();
-  const { columns } = useTerminalSize();
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? 80;
 
   // Show only last 2 path segments (project folder + immediate parent)
   const parts = cwd.split("/").filter(Boolean);

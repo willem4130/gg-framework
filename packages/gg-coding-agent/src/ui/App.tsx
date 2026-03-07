@@ -241,13 +241,21 @@ export function App(props: AppProps) {
   const [titleRunning, setTitleRunning] = useState(false);
   useTerminalTitle(titlePhase, titleRunning);
 
-  // Items scrolled into Static (history) — banner and restored history go here
-  // immediately so they are rendered once and don't cause live-area redraws
-  // (which produce visual duplicates on terminal resize).
-  const initialHistory: CompletedItem[] = props.initialHistory
-    ? [{ kind: "banner", id: "banner" }, ...props.initialHistory]
-    : [{ kind: "banner", id: "banner" }];
-  const [history, setHistory] = useState<CompletedItem[]>(initialHistory);
+  // Items scrolled into Static (history).  For restored sessions, skip the
+  // banner and add restored items via useEffect so Ink's <Static> treats them
+  // as incremental additions (large initial arrays can race with Static's
+  // internal useLayoutEffect and get dropped before being flushed).
+  const isRestoredSession = props.initialHistory && props.initialHistory.length > 0;
+  const [history, setHistory] = useState<CompletedItem[]>(
+    isRestoredSession ? [] : [{ kind: "banner", id: "banner" }],
+  );
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (isRestoredSession && !restoredRef.current) {
+      restoredRef.current = true;
+      setHistory((prev) => [...prev, ...props.initialHistory!]);
+    }
+  }, [isRestoredSession, props.initialHistory]);
   // Items from the current/last turn — rendered in the live area so they stay visible
   const [liveItems, setLiveItems] = useState<CompletedItem[]>([]);
   const [overlay, setOverlay] = useState<"model" | null>(null);
@@ -1065,8 +1073,8 @@ export function App(props: AppProps) {
           resizeKey forces a full remount after terminal resize settles (300ms
           debounce). This is the only way to make Ink re-print <Static> items —
           Ink tracks rendered items by key and won't re-render them otherwise,
-          so reflowed/corrupted scrollback content persists. The useTerminalSize
-          hook clears the screen+scrollback before bumping resizeKey, giving
+          so reflowed/corrupted scrollback content persists.  The useTerminalSize
+          hook clears screen+scrollback before bumping resizeKey, giving
           Ink a clean slate to re-render into. */}
       <Static key={resizeKey} items={history} style={{ width: "100%" }}>
         {(item) => renderItem(item)}

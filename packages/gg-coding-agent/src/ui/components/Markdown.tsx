@@ -1,16 +1,16 @@
 import React from "react";
-import { Text, Box } from "ink";
+import { Text, Box, useStdout } from "ink";
 import { marked, type Token, type Tokens } from "marked";
 import { useTheme, type Theme } from "../theme/theme.js";
 import { highlightCode } from "../utils/highlight.js";
-import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
 /**
  * Render a markdown string as Ink components.
  */
 export function Markdown({ children }: { children: string }) {
   const theme = useTheme();
-  const { columns } = useTerminalSize();
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? 80;
   const tokens = marked.lexer(children);
   return (
     <Box flexDirection="column" flexShrink={1}>

@@ -36,11 +36,10 @@ export interface RenderAppConfig {
 export async function renderApp(config: RenderAppConfig): Promise<void> {
   const theme = loadTheme(config.theme ?? "dark");
 
+  const isRestoredSession = config.initialHistory && config.initialHistory.length > 0;
   const rows = process.stdout.rows ?? 24;
 
-  // Clear screen and reserve row 1 for the shimmer line.
-  // Set a scroll margin (DECSTBM) so Ink's output stays in rows 2+
-  // while row 1 remains pinned — same technique tmux uses for its status bar.
+  // Clear screen and set scroll region (DECSTBM) to pin row 1 for the shimmer line
   process.stdout.write(
     "\x1b[2J" + // clear screen
       "\x1b[H" + // cursor to row 1, col 1
@@ -48,30 +47,32 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
       "\x1b[2;1H", // move cursor to row 2 for Ink
   );
 
-  // Show animated splash screen before the main app
-  await new Promise<void>((resolve) => {
-    const { unmount } = render(
-      React.createElement(
-        ThemeContext.Provider,
-        { value: theme },
-        React.createElement(SplashScreen, {
-          version: config.version,
-          onDone: () => {
-            unmount();
-            resolve();
-          },
-        }),
-      ),
+  // Show animated splash screen for new sessions only (skip for restored sessions)
+  if (!isRestoredSession) {
+    await new Promise<void>((resolve) => {
+      const { unmount } = render(
+        React.createElement(
+          ThemeContext.Provider,
+          { value: theme },
+          React.createElement(SplashScreen, {
+            version: config.version,
+            onDone: () => {
+              unmount();
+              resolve();
+            },
+          }),
+        ),
+      );
+    });
+
+    // Clear screen for the main app
+    process.stdout.write(
+      "\x1b[2J" + // clear screen
+        "\x1b[H" + // cursor to row 1, col 1
+        `\x1b[2;${rows}r` + // scroll region: row 2 to bottom
+        "\x1b[2;1H", // move cursor to row 2 for Ink
     );
-  });
-
-  // Clear screen again for the main app
-  process.stdout.write(
-    "\x1b[2J" + // clear screen
-      "\x1b[H" + // cursor to row 1, col 1
-      `\x1b[2;${rows}r` + // scroll region: row 2 to bottom
-      "\x1b[2;1H", // move cursor to row 2 for Ink
-  );
+  }
 
   const { waitUntilExit, clear } = render(
     React.createElement(
@@ -118,11 +119,11 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
     },
   );
 
-  // Resize handling (terminal clear + scroll region reset + Static remount)
-  // is done inside the React tree via the useTerminalSize hook, which
-  // debounces 300ms then clears screen+scrollback and bumps a resizeKey
-  // to force Ink to re-render <Static> content.  The render.ts layer only
-  // needs to call clear() so Ink forgets its stale line-count tracking.
+  // Resize handling (terminal clear + Static remount) is done inside the
+  // React tree via the useTerminalSize hook, which debounces 300ms then
+  // clears screen+scrollback and bumps a resizeKey to force Ink to
+  // re-render <Static> content.  The render.ts layer only needs to call
+  // clear() so Ink forgets its stale line-count tracking.
   const onResize = () => {
     clear();
   };

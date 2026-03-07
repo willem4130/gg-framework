@@ -498,16 +498,68 @@ function extractText(content: string | Array<{ type: string; text?: string }>): 
 function messagesToHistoryItems(msgs: Message[]): CompletedItem[] {
   const items: CompletedItem[] = [];
   let id = 0;
+
+  // Index tool results by toolCallId for pairing with tool calls
+  const toolResults = new Map<string, { content: string; isError: boolean }>();
   for (const msg of msgs) {
+    if (msg.role === "tool") {
+      for (const tr of msg.content) {
+        toolResults.set(tr.toolCallId, {
+          content: tr.content,
+          isError: tr.isError ?? false,
+        });
+      }
+    }
+  }
+
+  const roleCounts: Record<string, number> = {};
+  const blockTypeCounts: Record<string, number> = {};
+
+  for (const msg of msgs) {
+    roleCounts[msg.role] = (roleCounts[msg.role] ?? 0) + 1;
+
     if (msg.role === "user") {
       const text = extractText(msg.content);
       if (text) items.push({ kind: "user", text, id: `restore-${id++}` });
     } else if (msg.role === "assistant") {
-      const text = extractText(msg.content);
+      const content = msg.content;
+      if (typeof content === "string") {
+        if (content) items.push({ kind: "assistant", text: content, id: `restore-${id++}` });
+        continue;
+      }
+      // Count block types for debugging
+      for (const block of content) {
+        blockTypeCounts[block.type] = (blockTypeCounts[block.type] ?? 0) + 1;
+      }
+      // Process content blocks in order — text and tool calls
+      const text = extractText(content);
       if (text) items.push({ kind: "assistant", text, id: `restore-${id++}` });
+      for (const block of content) {
+        if (block.type === "tool_call") {
+          const result = toolResults.get(block.id);
+          items.push({
+            kind: "tool_done",
+            name: block.name,
+            args: block.args,
+            result: result?.content ?? "",
+            isError: result?.isError ?? false,
+            durationMs: 0,
+            id: `restore-${id++}`,
+          });
+        }
+      }
     }
-    // Skip tool result messages — they don't need visual display
   }
+
+  log("INFO", "session", "messagesToHistoryItems", {
+    totalMessages: String(msgs.length),
+    roleCounts: JSON.stringify(roleCounts),
+    blockTypeCounts: JSON.stringify(blockTypeCounts),
+    toolResultsIndexed: String(toolResults.size),
+    historyItemsProduced: String(items.length),
+    itemKinds: JSON.stringify(items.map((i) => i.kind)),
+  });
+
   return items;
 }
 

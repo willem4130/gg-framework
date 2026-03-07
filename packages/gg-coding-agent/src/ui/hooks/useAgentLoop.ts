@@ -9,6 +9,24 @@ import type {
   ImageContent,
 } from "@kenkaiiii/gg-ai";
 
+/** Rough token estimate from message content (~4 chars per token). */
+function estimateTokens(msgs: Message[]): number {
+  let chars = 0;
+  for (const msg of msgs) {
+    if (typeof msg.content === "string") {
+      chars += msg.content.length;
+    } else {
+      for (const block of msg.content) {
+        if ("text" in block && typeof block.text === "string") chars += block.text.length;
+        if ("content" in block && typeof block.content === "string") chars += block.content.length;
+        if ("args" in block && block.args) chars += JSON.stringify(block.args).length;
+        if ("input" in block && block.input) chars += JSON.stringify(block.input).length;
+      }
+    }
+  }
+  return Math.round(chars / 4);
+}
+
 export interface ActiveToolCall {
   toolCallId: string;
   name: string;
@@ -101,7 +119,7 @@ export function useAgentLoop(
   const [activeToolCalls, setActiveToolCalls] = useState<ActiveToolCall[]>([]);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [totalTokens, setTotalTokens] = useState({ input: 0, output: 0 });
-  const [contextUsed, setContextUsed] = useState(0);
+  const [contextUsed, setContextUsed] = useState(() => estimateTokens(messages.current));
   const [activityPhase, setActivityPhase] = useState<ActivityPhase>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [thinkingMs, setThinkingMs] = useState(0);
