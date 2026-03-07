@@ -39,6 +39,18 @@ GG Coder sends only what the model needs: how to work, what tools it has, and yo
 
 ---
 
+## The MCP problem
+
+Same philosophy applies to tools. People collect MCPs like Pokemon. Slack MCP, GitHub MCP, Notion MCP, five different file system MCPs. Every single one injects its tool descriptions into the context. The model now has to figure out which of 40+ tools to use for any given task.
+
+This doesn't help. It confuses the agent. More tool descriptions = more noise = worse tool selection. The model spends tokens reasoning about tools it will never call.
+
+GG Coder ships with one MCP: [Grep](https://grep.app). That's it. It lets the agent search across 1M+ public GitHub repos to verify implementations against real-world code. Correct API usage, library idioms, production patterns. One tool that actually makes the output better.
+
+You can still add your own MCPs if you need them. But start with less. You'll get better results.
+
+---
+
 ## Four providers, one agent
 
 Switch mid-conversation with `/model`. Not locked to anyone.
