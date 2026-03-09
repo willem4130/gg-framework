@@ -278,7 +278,7 @@ export function TaskOverlay({
     }
 
     // Run all pending tasks sequentially
-    if (input === "R") {
+    if (input === "r") {
       if (agentRunning) {
         showStatus("Agent is busy — wait for it to finish");
         return;
@@ -383,7 +383,7 @@ export function TaskOverlay({
         {")oggle · "}
         <Text color={theme.primary}>Enter</Text>
         {" start · ("}
-        <Text color={theme.primary}>R</Text>
+        <Text color={theme.primary}>r</Text>
         {")un all · "}
         <Text color={theme.primary}>ESC</Text>
         {" close"}
