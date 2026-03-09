@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 
-export const APP_NAME = "gg-coding-agent";
+export const APP_NAME = "ggcoder";
 export const VERSION = "0.0.1";
 
 export interface AppPaths {

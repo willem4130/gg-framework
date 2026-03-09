@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kenkaiiii/gg-coder.git",
+    "url": "git+https://github.com/kenkaiiii/gg-framework.git",
     "directory": "packages/gg-ai"
   },
   "exports": {

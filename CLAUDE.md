@@ -1,6 +1,6 @@
-# gg-coder
+# gg-framework
 
-A TypeScript monorepo providing a unified LLM streaming API, an agentic loop system, and a CLI coding agent with OAuth authentication for Anthropic and OpenAI providers.
+A modular TypeScript framework for building LLM-powered apps — from raw streaming to full coding agent.
 
 ## npm Packages
 
@@ -8,7 +8,7 @@ A TypeScript monorepo providing a unified LLM streaming API, an agentic loop sys
 |---|---|---|
 | `packages/gg-ai` | `@kenkaiiii/gg-ai` | Unified LLM streaming API |
 | `packages/gg-agent` | `@kenkaiiii/gg-agent` | Agent loop with tool execution |
-| `packages/gg-coding-agent` | `@kenkaiiii/ggcoder` | CLI coding agent |
+| `packages/ggcoder` | `@kenkaiiii/ggcoder` | CLI coding agent |
 
 **Install**: `npm i -g @kenkaiiii/ggcoder`
 
@@ -30,7 +30,7 @@ packages/
   │       ├── agent.ts       # Agent class + AgentStream
   │       └── agent-loop.ts  # Pure async generator loop
   │
-  └── gg-coding-agent/       # @kenkaiiii/ggcoder — CLI (ggcoder)
+  └── ggcoder/               # @kenkaiiii/ggcoder — CLI (ggcoder)
       └── src/
           ├── cli.ts         # CLI entry point
           ├── config.ts      # Configuration constants

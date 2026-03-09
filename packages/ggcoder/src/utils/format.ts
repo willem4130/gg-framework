@@ -46,7 +46,7 @@ export function formatError(error: Error): string {
  */
 export function formatWelcome(model: string, provider: string, cwd: string): string {
   const lines = [
-    chalk.bold("gg-coding-agent"),
+    chalk.bold("ggcoder"),
     chalk.dim(`  model:    ${model}`),
     chalk.dim(`  provider: ${provider}`),
     chalk.dim(`  cwd:      ${cwd}`),

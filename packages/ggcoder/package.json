@@ -6,8 +6,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kenkaiiii/gg-coder.git",
-    "directory": "packages/gg-coding-agent"
+    "url": "git+https://github.com/kenkaiiii/gg-framework.git",
+    "directory": "packages/ggcoder"
   },
   "bin": {
     "ggcoder": "./dist/cli.js"
