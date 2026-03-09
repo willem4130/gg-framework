@@ -28,7 +28,6 @@ import { ActivityIndicator } from "./components/ActivityIndicator.js";
 import { InputArea } from "./components/InputArea.js";
 import { Footer } from "./components/Footer.js";
 import { Banner } from "./components/Banner.js";
-import { ShimmerLine } from "./components/ShimmerLine.js";
 import { ModelSelector } from "./components/ModelSelector.js";
 import { TaskOverlay } from "./components/TaskOverlay.js";
 import { BackgroundTasksBar } from "./components/BackgroundTasksBar.js";
@@ -45,6 +44,7 @@ import { shouldCompact, compact } from "../core/compaction/compactor.js";
 import { estimateConversationTokens } from "../core/compaction/token-estimator.js";
 import { PROMPT_COMMANDS, getPromptCommand } from "../core/prompt-commands.js";
 import { loadCustomCommands, type CustomCommand } from "../core/custom-commands.js";
+import { pruneHistory, flushOnTurnText, flushOnTurnEnd } from "./live-item-flush.js";
 
 // ── Completed Item Types ───────────────────────────────────
 
@@ -159,17 +159,8 @@ export type CompletedItem =
   | BannerItem
   | SubAgentGroupItem;
 
-/**
- * Max history items kept in React state. Ink's <Static> renders items once
- * to stdout, so pruned items remain visible in terminal scrollback — we just
- * release the JS object references to avoid unbounded memory growth.
- */
-const MAX_HISTORY_ITEMS = 500;
-
-function pruneHistory(items: CompletedItem[]): CompletedItem[] {
-  if (items.length <= MAX_HISTORY_ITEMS) return items;
-  return items.slice(items.length - MAX_HISTORY_ITEMS);
-}
+// pruneHistory, flushOnTurnText, flushOnTurnEnd, MAX_HISTORY_ITEMS
+// are imported from ./live-item-flush.ts
 
 // ── Duration summary ─────────────────────────────────────
 
@@ -527,10 +518,16 @@ export function App(props: AppProps) {
         persistNewMessages();
       }, [persistNewMessages]),
       onTurnText: useCallback((text: string, thinking: string, thinkingMs: number) => {
-        setLiveItems((prev) => [
-          ...prev,
-          { kind: "assistant", text, thinking, thinkingMs, id: getId() },
-        ]);
+        // Flush all completed items from the previous turn to Static history.
+        // This keeps liveItems bounded per-turn, preventing Ink's live area from
+        // growing unbounded, which makes Ink's live-area re-renders expensive.
+        setLiveItems((prev) => {
+          const flushed = flushOnTurnText(prev);
+          if (flushed.length > 0) {
+            setHistory((h) => pruneHistory([...h, ...flushed]));
+          }
+          return [{ kind: "assistant", text, thinking, thinkingMs, id: getId() }];
+        });
       }, []),
       onToolStart: useCallback(
         (toolCallId: string, name: string, args: Record<string, unknown>) => {
@@ -708,6 +705,15 @@ export function App(props: AppProps) {
             outputTokens: String(usage.outputTokens),
             ...(usage.cacheRead != null && { cacheRead: String(usage.cacheRead) }),
             ...(usage.cacheWrite != null && { cacheWrite: String(usage.cacheWrite) }),
+          });
+          // For tool-only turns (no text), flush completed items to Static so
+          // liveItems doesn't grow unbounded across consecutive tool-only turns.
+          setLiveItems((prev) => {
+            const { flushed, remaining } = flushOnTurnEnd(prev, stopReason);
+            if (flushed.length > 0) {
+              setHistory((h) => pruneHistory([...h, ...flushed]));
+            }
+            return remaining;
           });
         },
         [],
@@ -1110,9 +1116,6 @@ export function App(props: AppProps) {
       >
         {(item) => renderItem(item)}
       </Static>
-
-      {/* Shimmer line — renders via raw ANSI to terminal row 1, bypassing Ink layout */}
-      <ShimmerLine active={agentLoop.isRunning} />
 
       {isTaskView ? (
         <TaskOverlay

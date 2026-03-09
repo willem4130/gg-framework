@@ -33,15 +33,11 @@ export function useTerminalSize() {
     // Debounce the resizeKey bump — only fires after the user stops dragging
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      // Clear the visible screen and re-set the scroll region for the shimmer
-      // line. Scrollback is preserved so mouse scroll continues to work.
-      const newRows = stdout.rows ?? 24;
+      // Clear the visible screen. Scrollback is preserved so mouse scroll
+      // continues to work.
       stdout.write(
-        "\x1b[r" + // reset scroll region
-          "\x1b[2J" + // clear visible screen
-          "\x1b[H" + // cursor home
-          `\x1b[2;${newRows}r` + // restore scroll region (row 2 to bottom)
-          "\x1b[2;1H", // cursor to row 2 for Ink
+        "\x1b[2J" + // clear visible screen
+          "\x1b[H", // cursor home
       );
       setResizeKey((k) => k + 1);
     }, 300);

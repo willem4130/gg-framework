@@ -37,15 +37,9 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
   const theme = loadTheme(config.theme ?? "dark");
 
   const isRestoredSession = config.initialHistory && config.initialHistory.length > 0;
-  const rows = process.stdout.rows ?? 24;
 
-  // Clear screen and set scroll region (DECSTBM) to pin row 1 for the shimmer line
-  process.stdout.write(
-    "\x1b[2J" + // clear screen
-      "\x1b[H" + // cursor to row 1, col 1
-      `\x1b[2;${rows}r` + // scroll region: row 2 to bottom
-      "\x1b[2;1H", // move cursor to row 2 for Ink
-  );
+  // Clear screen
+  process.stdout.write("\x1b[2J\x1b[H");
 
   // Show animated splash screen for new sessions only (skip for restored sessions)
   if (!isRestoredSession) {
@@ -66,12 +60,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
     });
 
     // Clear screen for the main app
-    process.stdout.write(
-      "\x1b[2J" + // clear screen
-        "\x1b[H" + // cursor to row 1, col 1
-        `\x1b[2;${rows}r` + // scroll region: row 2 to bottom
-        "\x1b[2;1H", // move cursor to row 2 for Ink
-    );
+    process.stdout.write("\x1b[2J\x1b[H");
   }
 
   const { waitUntilExit, clear } = render(
@@ -132,7 +121,4 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
   await waitUntilExit();
 
   process.stdout.off("resize", onResize);
-
-  // Reset scroll region and clear the shimmer line on exit
-  process.stdout.write("\x1b[r\x1b[1;1H\x1b[2K");
 }
