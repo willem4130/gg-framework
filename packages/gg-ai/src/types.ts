@@ -226,6 +226,12 @@ export interface StreamOptions {
   cacheRetention?: CacheRetention;
   /** OpenAI ChatGPT account ID (from OAuth JWT) for codex endpoint */
   accountId?: string;
+  /** Enable provider-native web search. Each provider uses its own format:
+   *  - Anthropic: server tool `web_search_20250305`
+   *  - Moonshot: `builtin_function` `$web_search`
+   *  - GLM: web search via MCP servers (not inline — this flag is a no-op)
+   *  - OpenAI/Codex: not supported (Chat Completions / Codex APIs lack web search) */
+  webSearch?: boolean;
   /** Enable server-side compaction (Anthropic only, beta). Automatically
    *  summarizes earlier context when approaching the context window limit. */
   compaction?: boolean;

@@ -91,6 +91,7 @@ export async function* agentLoop(
         messages,
         tools: options.tools,
         serverTools: options.serverTools,
+        webSearch: options.webSearch,
         maxTokens: options.maxTokens,
         temperature: options.temperature,
         thinking: options.thinking,
@@ -205,9 +206,24 @@ export async function* agentLoop(
       };
     }
 
-    // Extract and execute tool calls in parallel
-    const toolCalls = extractToolCalls(response.message.content);
+    // Extract tool calls — separate client-executed from provider built-in (e.g. Moonshot $web_search)
+    const allToolCalls = extractToolCalls(response.message.content);
+    const toolCalls: ToolCall[] = [];
     const toolResults: ToolResult[] = [];
+
+    for (const tc of allToolCalls) {
+      if (tc.name.startsWith("$")) {
+        // Provider built-in tool (e.g. Moonshot $web_search) — not locally executed.
+        // Still needs a tool_result for the message history round-trip.
+        toolResults.push({
+          type: "tool_result",
+          toolCallId: tc.id,
+          content: JSON.stringify(tc.args),
+        });
+      } else {
+        toolCalls.push(tc);
+      }
+    }
     const eventStream = new EventStream<AgentEvent>();
 
     // Launch all tool calls in parallel

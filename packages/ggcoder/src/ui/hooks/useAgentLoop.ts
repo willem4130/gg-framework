@@ -1,13 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
-import type {
-  Message,
-  Provider,
-  ServerToolDefinition,
-  ThinkingLevel,
-  TextContent,
-  ImageContent,
-} from "@kenkaiiii/gg-ai";
+import type { Message, Provider, ThinkingLevel, TextContent, ImageContent } from "@kenkaiiii/gg-ai";
 
 /** Rough token estimate from message content (~4 chars per token). */
 function estimateTokens(msgs: Message[]): number {
@@ -39,7 +32,7 @@ export interface AgentLoopOptions {
   provider: Provider;
   model: string;
   tools: AgentTool[];
-  serverTools?: ServerToolDefinition[];
+  webSearch?: boolean;
   maxTokens: number;
   thinking?: ThinkingLevel;
   apiKey?: string;
@@ -279,7 +272,7 @@ export function useAgentLoop(
           provider: options.provider,
           model: options.model,
           tools: options.tools,
-          serverTools: options.serverTools,
+          webSearch: options.webSearch,
           maxTokens: options.maxTokens,
           thinking: options.thinking,
           apiKey: options.apiKey,

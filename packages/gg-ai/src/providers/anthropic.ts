@@ -62,11 +62,12 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
     ...(options.temperature != null && !thinking ? { temperature: options.temperature } : {}),
     ...(options.topP != null ? { top_p: options.topP } : {}),
     ...(options.stop ? { stop_sequences: options.stop } : {}),
-    ...(options.tools?.length || options.serverTools?.length
+    ...(options.tools?.length || options.serverTools?.length || options.webSearch
       ? {
           tools: [
             ...(options.tools?.length ? toAnthropicTools(options.tools) : []),
             ...(options.serverTools ?? []),
+            ...(options.webSearch ? [{ type: "web_search_20250305", name: "web_search" }] : []),
           ] as Anthropic.MessageCreateParams["tools"],
         }
       : {}),

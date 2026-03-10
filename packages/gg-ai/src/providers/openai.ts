@@ -47,6 +47,18 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
     stream_options: { include_usage: true },
   };
 
+  // Inject provider-native web search tools (non-standard, bypass SDK types)
+  if (options.webSearch) {
+    if (options.provider === "moonshot") {
+      const raw = params as unknown as Record<string, unknown>;
+      const tools = ((raw.tools as unknown[]) ?? []).slice();
+      tools.push({ type: "builtin_function", function: { name: "$web_search" } });
+      raw.tools = tools;
+    }
+    // GLM (Z.AI): web search is provided via MCP servers, not inline tools
+    // OpenAI: Chat Completions API does not support web search
+  }
+
   // Inject custom thinking param for GLM/Moonshot (not part of OpenAI spec)
   if (usesThinkingParam) {
     (params as unknown as Record<string, unknown>).thinking = options.thinking

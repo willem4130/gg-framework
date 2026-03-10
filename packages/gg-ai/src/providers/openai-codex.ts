@@ -71,7 +71,17 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new ProviderError("openai", `Codex API error (${response.status}): ${text}`, {
+    let message = `Codex API error (${response.status}): ${text}`;
+
+    // Add helpful context for common errors
+    if (response.status === 400 && text.includes("not supported")) {
+      message +=
+        `\n\nHint: Codex models require a ChatGPT Plus ($20/mo) or Pro ($200/mo) subscription. ` +
+        `The "codex-spark" variants require ChatGPT Pro. ` +
+        `Ensure your account has an active subscription at https://chatgpt.com/settings`;
+    }
+
+    throw new ProviderError("openai", message, {
       statusCode: response.status,
     });
   }
@@ -361,7 +371,7 @@ function toCodexTools(tools: Tool[]): unknown[] {
     type: "function",
     name: tool.name,
     description: tool.description,
-    parameters: zodToJsonSchema(tool.parameters),
+    parameters: tool.rawInputSchema ?? zodToJsonSchema(tool.parameters),
     strict: null,
   }));
 }

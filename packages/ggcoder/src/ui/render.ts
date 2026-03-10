@@ -1,6 +1,6 @@
 import React from "react";
 import { render } from "ink";
-import type { Message, Provider, ServerToolDefinition, ThinkingLevel } from "@kenkaiiii/gg-ai";
+import type { Message, Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import type { ProcessManager } from "../core/process-manager.js";
 import { App, type CompletedItem } from "./App.js";
@@ -10,7 +10,7 @@ export interface RenderAppConfig {
   provider: Provider;
   model: string;
   tools: AgentTool[];
-  serverTools?: ServerToolDefinition[];
+  webSearch?: boolean;
   messages: Message[];
   maxTokens: number;
   thinking?: ThinkingLevel;
@@ -46,7 +46,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
         provider: config.provider,
         model: config.model,
         tools: config.tools,
-        serverTools: config.serverTools,
+        webSearch: config.webSearch,
         messages: config.messages,
         maxTokens: config.maxTokens,
         thinking: config.thinking,

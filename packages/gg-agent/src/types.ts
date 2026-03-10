@@ -131,6 +131,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   accountId?: string;
   cacheRetention?: StreamOptions["cacheRetention"];
+  /** Enable provider-native web search. */
+  webSearch?: boolean;
   /** Enable server-side compaction (Anthropic only, beta). */
   compaction?: boolean;
   /** Max consecutive pause_turn continuations before stopping (default: 5).

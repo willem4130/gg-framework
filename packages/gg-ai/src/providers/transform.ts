@@ -299,9 +299,12 @@ export function toOpenAIMessages(messages: Message[]): OpenAI.ChatCompletionMess
         content: parts ?? textParts ?? null,
         ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
       };
-      // Attach reasoning_content for multi-turn coherence (non-standard field)
-      if (thinkingParts) {
-        (assistantMsg as unknown as Record<string, unknown>).reasoning_content = thinkingParts;
+      // Attach reasoning_content for multi-turn coherence (non-standard field).
+      // Moonshot requires reasoning_content on ALL assistant messages with tool_calls
+      // when thinking is enabled — even if empty.
+      if (thinkingParts || toolCalls?.length) {
+        (assistantMsg as unknown as Record<string, unknown>).reasoning_content =
+          thinkingParts || " ";
       }
       out.push(assistantMsg);
       continue;

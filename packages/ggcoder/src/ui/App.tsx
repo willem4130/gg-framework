@@ -6,14 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { playNotificationSound } from "../utils/sound.js";
-import type {
-  Message,
-  Provider,
-  ServerToolDefinition,
-  ThinkingLevel,
-  TextContent,
-  ImageContent,
-} from "@kenkaiiii/gg-ai";
+import type { Message, Provider, ThinkingLevel, TextContent, ImageContent } from "@kenkaiiii/gg-ai";
 import { extractImagePaths, type ImageAttachment } from "../utils/image.js";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { useAgentLoop, type ActivityPhase } from "./hooks/useAgentLoop.js";
@@ -298,7 +291,7 @@ export interface AppProps {
   provider: Provider;
   model: string;
   tools: AgentTool[];
-  serverTools?: ServerToolDefinition[];
+  webSearch?: boolean;
   messages: Message[];
   maxTokens: number;
   thinking?: ThinkingLevel;
@@ -585,7 +578,7 @@ export function App(props: AppProps) {
       provider: currentProvider,
       model: currentModel,
       tools: props.tools,
-      serverTools: props.serverTools,
+      webSearch: props.webSearch,
       maxTokens: props.maxTokens,
       thinking: thinkingEnabled ? (props.thinking ?? "medium") : undefined,
       apiKey: activeApiKey,
@@ -1409,7 +1402,7 @@ export function App(props: AppProps) {
             onSubmit={handleSubmit}
             onAbort={handleAbort}
             disabled={agentLoop.isRunning}
-            isActive={!taskBarFocused}
+            isActive={!taskBarFocused && !overlay}
             onDownAtEnd={handleFocusTaskBar}
             onShiftTab={handleToggleThinking}
             onToggleTasks={() => {

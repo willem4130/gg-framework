@@ -1,5 +1,5 @@
 import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
-import type { Message, Provider, ServerToolDefinition, ThinkingLevel } from "@kenkaiiii/gg-ai";
+import type { Message, Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { EventBus } from "./event-bus.js";
 import {
   SlashCommandRegistry,
@@ -218,18 +218,12 @@ export class AgentSession {
     // Resolve OAuth credentials
     const creds = await this.authStorage.resolveCredentials(this.provider);
 
-    // Server-side tools (Anthropic only)
-    const serverTools: ServerToolDefinition[] | undefined =
-      this.provider === "anthropic"
-        ? [{ type: "web_search_20250305", name: "web_search" }]
-        : undefined;
-
     // Run agent loop
     const generator = agentLoop(this.messages, {
       provider: this.provider,
       model: this.model,
       tools: this.tools,
-      serverTools,
+      webSearch: true,
       maxTokens: this.maxTokens,
       thinking: this.thinkingLevel,
       apiKey: creds.accessToken,

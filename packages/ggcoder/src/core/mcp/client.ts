@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { z } from "zod";
@@ -9,7 +10,7 @@ import type { MCPServerConfig } from "./types.js";
 interface ConnectedServer {
   name: string;
   client: Client;
-  transport: StreamableHTTPClientTransport | StdioClientTransport;
+  transport: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport;
 }
 
 export class MCPClientManager {
@@ -38,21 +39,46 @@ export class MCPClientManager {
   }
 
   private async connectServer(config: MCPServerConfig): Promise<AgentTool[]> {
-    const transport = config.command
-      ? new StdioClientTransport({
-          command: config.command,
-          args: config.args,
-          env: { ...process.env, ...config.env } as Record<string, string>,
-          stderr: "pipe",
-        })
-      : new StreamableHTTPClientTransport(new URL(config.url!), {
-          requestInit: config.headers ? { headers: config.headers } : undefined,
-        });
-
-    const client = new Client({ name: "ggcoder", version: "1.0.0" });
     const timeout = config.timeout ?? 30_000;
+    let client: Client;
+    let transport: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport;
 
-    await client.connect(transport, { timeout });
+    if (config.command) {
+      // Stdio transport for local processes
+      transport = new StdioClientTransport({
+        command: config.command,
+        args: config.args,
+        env: { ...process.env, ...config.env } as Record<string, string>,
+        stderr: "pipe",
+      });
+      client = new Client({ name: "ggcoder", version: "1.0.0" });
+      await client.connect(transport, { timeout });
+    } else {
+      // HTTP transport — try StreamableHTTP first, fall back to SSE
+      const url = new URL(config.url!);
+      const reqInit = config.headers ? { headers: config.headers } : undefined;
+
+      try {
+        transport = new StreamableHTTPClientTransport(url, {
+          requestInit: reqInit,
+        });
+        client = new Client({ name: "ggcoder", version: "1.0.0" });
+        await client.connect(transport, { timeout });
+      } catch (streamableErr) {
+        log("INFO", "mcp", `StreamableHTTP failed for "${config.name}", trying SSE fallback`, {
+          error: String(streamableErr),
+        });
+        transport = new SSEClientTransport(url, {
+          eventSourceInit: config.headers
+            ? { fetch: createHeaderFetch(config.headers) }
+            : undefined,
+          requestInit: reqInit,
+        });
+        client = new Client({ name: "ggcoder", version: "1.0.0" });
+        await client.connect(transport, { timeout });
+      }
+    }
+
     this.servers.push({ name: config.name, client, transport });
 
     const { tools } = await client.listTools(undefined, { timeout });
@@ -69,7 +95,7 @@ export class MCPClientManager {
             const result = await client.callTool(
               { name: tool.name, arguments: args as Record<string, unknown> },
               undefined,
-              { timeout },
+              { timeout: config.timeout ?? 60_000 },
             );
             if (!("content" in result) || !Array.isArray(result.content)) {
               return "(empty response)";
@@ -104,4 +130,17 @@ export class MCPClientManager {
     }
     this.servers = [];
   }
+}
+
+/**
+ * Create a custom fetch wrapper that injects extra headers into every request.
+ * Used for SSEClientTransport's eventSourceInit to pass auth headers
+ * on the initial SSE GET connection (which doesn't use requestInit).
+ */
+function createHeaderFetch(extraHeaders: Record<string, string>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (url: string | URL, init: any): Promise<Response> => {
+    const existing = (init?.headers ?? {}) as Record<string, string>;
+    return fetch(url, { ...init, headers: { ...existing, ...extraHeaders } });
+  };
 }

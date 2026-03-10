@@ -74,6 +74,7 @@ export function renderLoginSelector(): Promise<Provider | null> {
     const cleanup = () => {
       process.stdin.removeListener("data", onData);
       process.stdin.setRawMode(false);
+      process.stdin.pause();
       // Clear the selector display
       process.stdout.write("\x1b[u\x1b[J");
     };
