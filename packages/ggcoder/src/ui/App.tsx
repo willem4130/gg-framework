@@ -1137,6 +1137,45 @@ export function App(props: AppProps) {
         return;
       }
 
+      // Handle /help — show all available commands across all categories
+      if (trimmed === "/help" || trimmed === "/h" || trimmed === "/?") {
+        const sections: string[] = [];
+
+        sections.push("Session commands:");
+        sections.push("  /model (/m)       — Switch model or list available models");
+        sections.push("  /compact (/c)     — Compact conversation to reduce context usage");
+        sections.push("  /clear            — Clear session and terminal");
+        sections.push("  /session (/s)     — List sessions or create new");
+        sections.push("  /new (/n)         — Start a new session");
+        sections.push("  /settings (/config) — Show or modify settings");
+        sections.push("  /quit (/q, /exit) — Exit the agent");
+
+        sections.push("");
+        sections.push("Agent commands:");
+        for (const cmd of PROMPT_COMMANDS) {
+          const pad = " ".repeat(Math.max(1, 16 - cmd.name.length));
+          sections.push(`  /${cmd.name}${pad}— ${cmd.description}`);
+          sections.push(`  ${" ".repeat(cmd.name.length + 1)}${pad}  ${cmd.usage}`);
+        }
+
+        if (customCommands.length > 0) {
+          sections.push("");
+          sections.push("Custom commands (.gg/commands/):");
+          for (const cmd of customCommands) {
+            const pad = " ".repeat(Math.max(1, 16 - cmd.name.length));
+            sections.push(`  /${cmd.name}${pad}— ${cmd.description}`);
+          }
+        }
+
+        sections.push("");
+        sections.push(
+          "Tip: /setup-* commands are one-time generators that create reusable custom commands.",
+        );
+
+        setLiveItems([{ kind: "info", text: sections.join("\n"), id: getId() }]);
+        return;
+      }
+
       // Handle prompt-template commands (built-in + custom from .gg/commands/)
       if (trimmed.startsWith("/")) {
         const parts = trimmed.slice(1).split(" ");

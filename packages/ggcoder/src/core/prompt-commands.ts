@@ -7,6 +7,7 @@ export interface PromptCommand {
   name: string;
   aliases: string[];
   description: string;
+  usage: string;
   prompt: string;
 }
 
@@ -15,6 +16,7 @@ export const PROMPT_COMMANDS: PromptCommand[] = [
     name: "scan",
     aliases: [],
     description: "Find dead code, bugs, and security issues",
+    usage: "Run periodically to catch dead code, lurking bugs, and security holes",
     prompt: `Find quick wins in this codebase. Spawn 5 sub-agents in parallel using the subagent tool (call the subagent tool 5 times in a single response, each with a different task), each focusing on one area. Adapt each area to what's relevant for THIS project's stack and architecture.
 
 **Agent 1 - Performance**: Inefficient algorithms, unnecessary work, missing early returns, blocking operations, things that scale poorly
@@ -60,6 +62,7 @@ Finding nothing is a valid outcome. Most codebases don't have easy wins - that's
     name: "verify",
     aliases: [],
     description: "Verify code against docs and best practices",
+    usage: "Run after major changes to check for deprecated APIs or outdated patterns",
     prompt: `Verify this codebase against current best practices and official documentation. Spawn 8 sub-agents in parallel using the subagent tool (call the subagent tool 8 times in a single response, each with a different task), each focusing on one category. Each agent must VERIFY findings using real code samples or official docs - no assumptions allowed.
 
 **Agent 1 - Core Framework**: Detect the main framework, verify usage patterns against official documentation
@@ -115,6 +118,7 @@ No findings is a valid outcome. If implementations match current practices, that
     name: "research",
     aliases: [],
     description: "Research best tools, deps, and patterns",
+    usage: "Run when starting a new project or evaluating your current stack",
     prompt: `Research the best tools, dependencies, and architecture for this project.
 
 First, if it's not clear what the project is building, ask me to describe the features, target platform, and any constraints. If you can infer this from the codebase, proceed directly.
@@ -182,6 +186,7 @@ Write the file, then summarize what was researched.`,
     name: "init",
     aliases: [],
     description: "Generate or update CLAUDE.md for this project",
+    usage: "Run once when setting up a new project, or after major structural changes",
     prompt: `Generate or update a minimal CLAUDE.md with project structure, guidelines, and quality checks.
 
 ## Step 1: Check if CLAUDE.md Exists
@@ -228,6 +233,7 @@ Keep total file under 100 lines. If updating, preserve any custom sections the u
     name: "setup-lint",
     aliases: [],
     description: "Generate a /fix command for linting and typechecking",
+    usage: "Run once to create a reusable /fix command for your project",
     prompt: `Detect the project type and generate a /fix command for linting and typechecking.
 
 ## Step 1: Detect Project Type
@@ -296,6 +302,7 @@ Report what was detected, what was installed, and that /fix is now available.`,
     name: "setup-commit",
     aliases: [],
     description: "Generate a /commit command with quality checks",
+    usage: "Run once to create a reusable /commit command with lint checks",
     prompt: `Detect the project type and generate a /commit command that enforces quality checks before committing.
 
 ## Step 1: Detect Project and Extract Commands
@@ -345,6 +352,7 @@ Report that /commit is now available with quality checks and AI-generated commit
     name: "setup-tests",
     aliases: [],
     description: "Set up testing and generate a /test command",
+    usage: "Run once to set up testing infrastructure and create a /test command",
     prompt: `Set up comprehensive testing for this project and generate a /test command.
 
 ## Step 1: Analyze Project
@@ -411,6 +419,7 @@ Summarize what was set up, how many tests were created, and that /test is now av
     name: "setup-update",
     aliases: [],
     description: "Generate an /update command for dependency updates",
+    usage: "Run once to create a reusable /update command for dependencies",
     prompt: `Detect the project type and generate an /update command for dependency updates and deprecation fixes.
 
 ## Step 1: Detect Project Type & Package Manager
@@ -479,6 +488,7 @@ Report that /update is now available with dependency updates, security audits, a
     name: "compare",
     aliases: [],
     description: "Compare code against real-world implementations via Grep MCP",
+    usage: "Run after writing or modifying code to check against real-world patterns",
     prompt: `Compare the code you just created or modified in this conversation against real-world implementations using the \`mcp__grep__searchGitHub\` tool.
 
 You already know what you just built. For each file you created or modified, use \`mcp__grep__searchGitHub\` to search for how real projects implement the same patterns. Look at the specific APIs, hooks, functions, and architecture you used.
