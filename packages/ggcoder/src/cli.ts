@@ -9,8 +9,6 @@ import fs from "node:fs";
 import readline from "node:readline/promises";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { runPrintMode } from "./modes/print-mode.js";
-import { runJsonMode } from "./modes/json-mode.js";
 import { renderApp } from "./ui/render.js";
 import { renderLoginSelector } from "./ui/login.js";
 import type { CompletedItem } from "./ui/App.js";
@@ -32,36 +30,6 @@ import { checkAndAutoUpdate } from "./core/auto-update.js";
 
 const _require = createRequire(import.meta.url);
 const CLI_VERSION = (_require("../package.json") as { version: string }).version;
-
-const USAGE = `
-Usage: ggcoder [command] [options] [message...]
-
-Commands:
-  login                     Log in to a provider via OAuth
-  logout                    Log out (clear stored credentials)
-  continue                  Resume the most recent session for this directory
-
-Options:
-  -p, --provider <name>     LLM provider (anthropic, openai, glm, moonshot) [default: anthropic]
-  -m, --model <name>        Model name [default: claude-opus-4-6]
-      --base-url <url>      Custom API base URL
-      --system-prompt <text> Override system prompt
-      --thinking <level>    Thinking level (low, medium, high, max)
-      --max-turns <n>       Maximum agent loop turns [default: 40]
-  -s, --session <path>      Resume a specific session file
-      --print               Print mode: one-shot, output to stdout, then exit
-      --json                JSON mode: one-shot, output NDJSON events to stdout
-  -v, --version             Show version number
-  -h, --help                Show this help message
-
-Print mode:
-  echo "hello" | ggcoder --print
-  ggcoder --print "explain this code"
-
-Authentication:
-  ggcoder login             Log in (select provider interactively)
-  ggcoder logout            Log out from all providers
-`.trim();
 
 function main(): void {
   // Silent auto-update check (throttled, non-blocking on failure)
@@ -98,31 +66,16 @@ function main(): void {
     process.argv.splice(2, 1);
   }
 
-  const { values, positionals } = parseArgs({
+  const { values } = parseArgs({
     options: {
-      provider: { type: "string", short: "p" },
-      model: { type: "string", short: "m" },
-      "base-url": { type: "string" },
-      "system-prompt": { type: "string" },
-      thinking: { type: "string" },
-      "max-turns": { type: "string" },
-      session: { type: "string", short: "s" },
-      print: { type: "boolean" },
-      json: { type: "boolean" },
       version: { type: "boolean", short: "v" },
-      help: { type: "boolean", short: "h" },
     },
-    allowPositionals: true,
+    allowPositionals: false,
     strict: true,
   });
 
   if (values.version) {
     console.log(CLI_VERSION);
-    process.exit(0);
-  }
-
-  if (values.help) {
-    console.log(USAGE);
     process.exit(0);
   }
 
@@ -142,15 +95,7 @@ function main(): void {
     // No settings file or invalid JSON — use defaults
   }
 
-  // Priority: CLI flag > saved setting > hardcoded default
-  const providerFromFlag = values.provider as
-    | "anthropic"
-    | "openai"
-    | "glm"
-    | "moonshot"
-    | undefined;
-  const provider: "anthropic" | "openai" | "glm" | "moonshot" =
-    providerFromFlag ?? savedProvider ?? "anthropic";
+  const provider: "anthropic" | "openai" | "glm" | "moonshot" = savedProvider ?? "anthropic";
 
   function getHardcodedDefault(p: string): string {
     if (p === "openai") return "gpt-5.3-codex";
@@ -159,65 +104,8 @@ function main(): void {
     return "claude-opus-4-6";
   }
 
-  // Use saved model only if provider matches (or no provider flag was given)
-  const model: string =
-    values.model ?? (!providerFromFlag && savedModel ? savedModel : getHardcodedDefault(provider));
-
-  // CLI --thinking flag overrides saved setting; saved thinkingEnabled provides default
-  const thinkingLevel: ThinkingLevel | undefined =
-    (values.thinking as ThinkingLevel | undefined) ?? (savedThinkingEnabled ? "medium" : undefined);
-  const maxTurns = values["max-turns"] ? parseInt(values["max-turns"], 10) : undefined;
-
-  // Print mode
-  if (values.print) {
-    const message = positionals.join(" ").trim() || readStdinSync();
-    if (!message) {
-      console.error("Error: --print requires a message (positional args or stdin)");
-      process.exit(1);
-    }
-
-    runPrintMode({
-      message,
-      provider,
-      model,
-      baseUrl: values["base-url"],
-      systemPrompt: values["system-prompt"],
-      cwd: process.cwd(),
-      thinkingLevel,
-    }).catch((err) => {
-      log("ERROR", "fatal", err instanceof Error ? err.message : String(err));
-      closeLogger();
-      process.stderr.write(formatUserError(err) + "\n");
-      process.exit(1);
-    });
-    return;
-  }
-
-  // JSON mode
-  if (values.json) {
-    const message = positionals.join(" ").trim() || readStdinSync();
-    if (!message) {
-      console.error("Error: --json requires a message (positional args or stdin)");
-      process.exit(1);
-    }
-
-    runJsonMode({
-      message,
-      provider,
-      model,
-      baseUrl: values["base-url"],
-      systemPrompt: values["system-prompt"],
-      cwd: process.cwd(),
-      thinkingLevel,
-      maxTurns,
-    }).catch((err) => {
-      log("ERROR", "fatal", err instanceof Error ? err.message : String(err));
-      closeLogger();
-      process.stderr.write(formatUserError(err) + "\n");
-      process.exit(1);
-    });
-    return;
-  }
+  const model: string = savedModel ?? getHardcodedDefault(provider);
+  const thinkingLevel: ThinkingLevel | undefined = savedThinkingEnabled ? "medium" : undefined;
 
   // Interactive mode (Ink TUI)
   const cwd = process.cwd();
@@ -226,12 +114,9 @@ function main(): void {
   runInkTUI({
     provider,
     model,
-    baseUrl: values["base-url"],
     cwd,
     thinkingLevel,
-    systemPrompt: values["system-prompt"],
     continueRecent,
-    sessionPath: values.session,
     theme: savedTheme,
   }).catch((err) => {
     log("ERROR", "fatal", err instanceof Error ? err.message : String(err));
@@ -246,12 +131,9 @@ function main(): void {
 async function runInkTUI(opts: {
   provider: Provider;
   model: string;
-  baseUrl?: string;
   cwd: string;
   thinkingLevel?: ThinkingLevel;
-  systemPrompt?: string;
   continueRecent?: boolean;
-  sessionPath?: string;
   theme?: "auto" | "dark" | "light";
 }): Promise<void> {
   const { provider, model, cwd } = opts;
@@ -297,7 +179,7 @@ async function runInkTUI(opts: {
   });
 
   // Build system prompt & tools (with sub-agent support)
-  const systemPrompt = opts.systemPrompt ?? (await buildSystemPrompt(cwd));
+  const systemPrompt = await buildSystemPrompt(cwd);
   const { tools, processManager } = createTools(cwd, { agents, provider, model });
 
   // Connect MCP servers
@@ -329,8 +211,8 @@ async function runInkTUI(opts: {
   let sessionPath: string | undefined;
   let initialHistory: CompletedItem[] | undefined;
 
-  if (opts.continueRecent || opts.sessionPath) {
-    const existingPath = opts.sessionPath ?? (await sessionManager.getMostRecent(cwd));
+  if (opts.continueRecent) {
+    const existingPath = await sessionManager.getMostRecent(cwd);
 
     if (existingPath) {
       try {
@@ -374,7 +256,6 @@ async function runInkTUI(opts: {
     maxTokens: 16384,
     thinking: opts.thinkingLevel,
     apiKey: creds.accessToken,
-    baseUrl: opts.baseUrl,
     accountId: creds.accountId,
     cwd,
     theme: opts.theme,
@@ -480,15 +361,6 @@ async function runLogout(): Promise<void> {
 }
 
 // ── Helpers ────────────────────────────────────────────────
-
-function readStdinSync(): string {
-  if (process.stdin.isTTY) return "";
-  try {
-    return fs.readFileSync(0, "utf-8").trim();
-  } catch {
-    return "";
-  }
-}
 
 function displayName(provider: Provider): string {
   if (provider === "anthropic") return "Anthropic";
