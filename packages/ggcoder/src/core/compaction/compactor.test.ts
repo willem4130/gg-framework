@@ -9,6 +9,7 @@ import {
   compact,
 } from "./compactor.js";
 import { estimateConversationTokens } from "./token-estimator.js";
+import { getContextWindow } from "../model-registry.js";
 import type { Message, ContentPart, ToolResult } from "@kenkaiiii/gg-ai";
 
 // ── Helpers ────────────────────────────────────────────────
@@ -76,6 +77,33 @@ describe("shouldCompact", () => {
     const estimated = estimateConversationTokens(messages);
     expect(shouldCompact(messages, estimated * 3, 0.5)).toBe(false);
     expect(shouldCompact(messages, estimated, 0.5)).toBe(true);
+  });
+
+  it("triggers compaction when switching from large to small context model", () => {
+    // Simulate a conversation that's at ~400k tokens (40% of Opus 1M, but >100% of Kimi 128k)
+    // Each message: ~10000 chars = ~2500 tokens + 4 overhead ≈ 2504 tokens
+    // 160 pairs ≈ 160 × 2 × 2504 ≈ 801k tokens — well over Kimi's 128k threshold
+    const messages: Message[] = [makeMessage("system", "sys")];
+    for (let i = 0; i < 160; i++) {
+      messages.push(makeMessage("user", `msg ${i} ${"x".repeat(10_000)}`));
+      messages.push(makeMessage("assistant", `response ${i}`));
+    }
+    const estimated = estimateConversationTokens(messages);
+
+    const opusContext = getContextWindow("claude-opus-4-6");
+    const kimiContext = getContextWindow("kimi-k2.5");
+
+    // Sanity: Opus has 1M, Kimi has 128k
+    expect(opusContext).toBe(1_000_000);
+    expect(kimiContext).toBe(128_000);
+
+    // Under Opus (1M): conversation is well under 80% threshold — no compaction
+    expect(shouldCompact(messages, opusContext, 0.8)).toBe(false);
+    expect(estimated).toBeLessThan(opusContext * 0.8);
+
+    // Under Kimi (128k): same conversation exceeds 80% threshold — must compact
+    expect(shouldCompact(messages, kimiContext, 0.8)).toBe(true);
+    expect(estimated).toBeGreaterThan(kimiContext * 0.8);
   });
 });
 

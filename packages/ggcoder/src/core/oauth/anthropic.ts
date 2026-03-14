@@ -4,9 +4,10 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "./types.js";
 
 const CLIENT_ID = atob("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
-const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
-const SCOPES = "org:create_api_key user:profile user:inference";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
+const SCOPES =
+  "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
 export async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { verifier, challenge } = await generatePKCE();
@@ -80,6 +81,7 @@ export async function refreshAnthropicToken(refreshToken: string): Promise<OAuth
       grant_type: "refresh_token",
       client_id: CLIENT_ID,
       refresh_token: refreshToken,
+      scope: SCOPES,
     }),
   });
 

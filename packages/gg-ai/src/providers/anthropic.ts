@@ -32,10 +32,26 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
       ? { apiKey: null as unknown as string, authToken: options.apiKey }
       : { apiKey: options.apiKey }),
     ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
+    ...(isOAuth
+      ? {
+          defaultHeaders: {
+            "user-agent": "claude-cli/2.1.75",
+            "x-app": "cli",
+          },
+        }
+      : {}),
   });
 
   const cacheControl = toAnthropicCacheControl(options.cacheRetention, options.baseUrl);
-  const { system, messages } = toAnthropicMessages(options.messages, cacheControl);
+  const { system: rawSystem, messages } = toAnthropicMessages(options.messages, cacheControl);
+
+  // OAuth tokens require Claude Code identity in the system prompt
+  const system = isOAuth
+    ? [
+        { type: "text" as const, text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        ...(rawSystem ?? []),
+      ]
+    : rawSystem;
 
   let maxTokens = options.maxTokens ?? 4096;
   let thinking: Anthropic.ThinkingConfigParam | undefined;
@@ -81,7 +97,7 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
   } as Anthropic.MessageCreateParams;
 
   const betaHeaders = [
-    ...(isOAuth ? ["oauth-2025-04-20"] : []),
+    ...(isOAuth ? ["claude-code-20250219", "oauth-2025-04-20"] : []),
     ...(options.compaction ? ["compact-2026-01-12"] : []),
   ];
 

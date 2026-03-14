@@ -1,6 +1,7 @@
 import React from "react";
 import { Text, Box, useStdout } from "ink";
 import { useTheme } from "../theme/theme.js";
+import { getContextWindow } from "../../core/model-registry.js";
 
 interface FooterProps {
   model: string;
@@ -23,25 +24,13 @@ const MODEL_SHORT_NAMES: Record<string, string> = {
   "o4-mini": "o4-mini",
 };
 
-// Model ID → context window size in tokens
-const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  "claude-opus-4-6": 200_000,
-  "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5": 200_000,
-  "claude-haiku-4-5-20251001": 200_000,
-  "gpt-4.1": 1_000_000,
-  "gpt-4.1-mini": 1_000_000,
-  "gpt-4.1-nano": 1_000_000,
-  o3: 200_000,
-  "o4-mini": 200_000,
-};
 
 function getShortModelName(model: string): string {
   return MODEL_SHORT_NAMES[model] ?? model;
 }
 
 function getContextPercent(model: string, tokensIn: number): number {
-  const limit = MODEL_CONTEXT_LIMITS[model];
+  const limit = getContextWindow(model);
   if (!limit || tokensIn === 0) return 0;
   return Math.round((tokensIn / limit) * 100);
 }
