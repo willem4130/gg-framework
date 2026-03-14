@@ -722,14 +722,6 @@ export function App(props: AppProps) {
           return [{ kind: "assistant", text, thinking, thinkingMs, id: getId() }];
         });
       }, []),
-      onStreamingFlush: useCallback((completedText: string) => {
-        // Progressive flush: move completed paragraphs from the live
-        // streaming area into liveItems so Ink's live area stays bounded.
-        setLiveItems((prev) => [
-          ...prev,
-          { kind: "assistant", text: completedText, thinking: "", thinkingMs: 0, id: getId() },
-        ]);
-      }, []),
       onToolStart: useCallback(
         (toolCallId: string, name: string, args: Record<string, unknown>) => {
           log("INFO", "tool", `Tool call started: ${name}`, { id: toolCallId });

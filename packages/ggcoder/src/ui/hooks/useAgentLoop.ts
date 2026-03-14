@@ -2,41 +2,6 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
 import type { Message, Provider, ThinkingLevel, TextContent, ImageContent } from "@kenkaiiii/gg-ai";
 
-// ── Progressive flush: find a safe markdown split point ──────────
-// Returns the index AFTER the last `\n\n` that is NOT inside a fenced code
-// block (``` ... ```).  Returns -1 if no safe split exists or the visible
-// text is too short to bother splitting.
-const MIN_FLUSH_CHARS = 600; // don't split tiny buffers
-
-function findSafeSplitPoint(text: string): number {
-  if (text.length < MIN_FLUSH_CHARS) return -1;
-
-  // Keep at least 200 chars as the trailing fragment so we don't flush
-  // right up to the cursor and cause a visual "jump" to empty.
-  const minTrailing = 200;
-  const searchFrom = Math.max(0, text.length - minTrailing);
-
-  // Find the last \n\n before searchFrom
-  const lastDoubleNewline = text.lastIndexOf("\n\n", searchFrom);
-  if (lastDoubleNewline === -1) return -1;
-
-  const splitAt = lastDoubleNewline + 2; // include the \n\n
-
-  // Make sure splitAt is not inside a fenced code block.
-  // Count ``` occurrences before splitAt — odd count means we're inside a block.
-  let fenceCount = 0;
-  let idx = 0;
-  while (idx < splitAt) {
-    const fenceIdx = text.indexOf("```", idx);
-    if (fenceIdx === -1 || fenceIdx >= splitAt) break;
-    fenceCount++;
-    idx = fenceIdx + 3;
-  }
-  if (fenceCount % 2 !== 0) return -1; // inside a code block
-
-  return splitAt;
-}
-
 /** Rough token estimate from message content (~4 chars per token). */
 function estimateTokens(msgs: Message[]): number {
   let chars = 0;
@@ -134,13 +99,10 @@ export function useAgentLoop(
     ) => void;
     onDone?: (durationMs: number, toolsUsed: string[]) => void;
     onAborted?: () => void;
-    /** Called mid-stream to flush completed paragraphs out of the live area. */
-    onStreamingFlush?: (completedText: string) => void;
   },
 ): UseAgentLoopReturn {
   const onComplete = callbacks?.onComplete;
   const onTurnText = callbacks?.onTurnText;
-  const onStreamingFlush = callbacks?.onStreamingFlush;
   const onToolStart = callbacks?.onToolStart;
   const onToolUpdate = callbacks?.onToolUpdate;
   const onToolEnd = callbacks?.onToolEnd;
@@ -227,20 +189,9 @@ export function useAgentLoop(
       const reveal = pending.slice(0, endIndex);
       textPendingRef.current = pending.slice(endIndex);
       textVisibleRef.current += reveal;
-
-      // ── Progressive flush: move completed paragraphs to history ──
-      // This keeps the live area height bounded, preventing Ink's cursor
-      // math from drifting as the streaming text grows.
-      const splitAt = findSafeSplitPoint(textVisibleRef.current);
-      if (splitAt > 0 && onStreamingFlush) {
-        const completed = textVisibleRef.current.slice(0, splitAt);
-        textVisibleRef.current = textVisibleRef.current.slice(splitAt);
-        onStreamingFlush(completed);
-      }
-
       setStreamingText(textVisibleRef.current);
     }, 33);
-  }, [stopReveal, onStreamingFlush]);
+  }, [stopReveal]);
 
   // ── Thinking reveal (throttled like text reveal) ──────────
   // Without this, every thinking_delta event triggers setStreamingThinking
@@ -621,7 +572,6 @@ export function useAgentLoop(
       onTurnEnd,
       onDone,
       onAborted,
-      onStreamingFlush,
       startReveal,
       stopReveal,
       startThinkingReveal,

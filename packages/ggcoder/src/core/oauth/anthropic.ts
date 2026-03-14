@@ -81,7 +81,6 @@ export async function refreshAnthropicToken(refreshToken: string): Promise<OAuth
       grant_type: "refresh_token",
       client_id: CLIENT_ID,
       refresh_token: refreshToken,
-      scope: SCOPES,
     }),
   });
 
