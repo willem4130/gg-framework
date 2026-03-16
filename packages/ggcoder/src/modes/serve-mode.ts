@@ -9,6 +9,8 @@ import { log, closeLogger } from "../core/logger.js";
 import { getAppPaths } from "../config.js";
 import { MODELS, getContextWindow } from "../core/model-registry.js";
 import { estimateConversationTokens } from "../core/compaction/token-estimator.js";
+import { PROMPT_COMMANDS } from "../core/prompt-commands.js";
+import { loadCustomCommands } from "../core/custom-commands.js";
 
 export interface ServeModeOptions {
   provider: Provider;
@@ -231,7 +233,8 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     });
 
     session.eventBus.on("turn_end", () => {
-      // Don't flush — let agent_done send response + summary as one message
+      // Flush text after each turn so each response is a separate Telegram message
+      flushText(state).catch(() => {});
     });
 
     session.eventBus.on("agent_done", ({ totalTurns, totalUsage }) => {
@@ -279,13 +282,15 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     "link",
     "unlink",
     "start",
+    "new",
+    "n",
     "m",
     "model",
   ]);
   /** Chats waiting for a model number selection. */
   const pendingModelSelections = new Map<number, typeof MODELS>();
 
-  function buildHelpText(chatId: number): string {
+  async function buildHelpText(chatId: number): Promise<string> {
     const projectPath = resolveProjectPath(chatId);
     const linked = config.chats[String(chatId)];
     const state = chatStates.get(chatId);
@@ -296,21 +301,45 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     text += `Project: \`${path.basename(projectPath)}\`\n`;
     text += `Model: *${modelInfo?.name ?? currentModel}*\n\n`;
 
-    text += `*Commands*\n`;
+    text += `*Telegram Commands*\n`;
     text += `/m — switch model\n`;
     text += `/link — switch project\n`;
+    text += `/unlink — unlink from project\n`;
     text += `/status — current state\n`;
-    text += `/compact — compress context\n`;
-    text += `/branch — fork conversation\n`;
-    text += `/new — fresh session\n`;
     text += `/cancel — abort current task\n`;
     text += `/help — this message\n`;
+
+    text += `\n*Session Commands*\n`;
+    text += `/compact — compress context\n`;
+    text += `/new — fresh session\n`;
+    text += `/session — list sessions\n`;
+    text += `/branch — fork conversation\n`;
+    text += `/branches — list branches\n`;
+    text += `/clear — clear session\n`;
+    text += `/settings — show/modify settings\n`;
+
+    // Prompt-template commands
+    if (PROMPT_COMMANDS.length > 0) {
+      text += `\n*Agent Commands*\n`;
+      for (const cmd of PROMPT_COMMANDS) {
+        text += `/${cmd.name} — ${cmd.description}\n`;
+      }
+    }
+
+    // Custom commands from .gg/commands/
+    const customCmds = await loadCustomCommands(projectPath);
+    if (customCmds.length > 0) {
+      text += `\n*Custom Commands*\n`;
+      for (const cmd of customCmds) {
+        text += `/${cmd.name} — ${cmd.description}\n`;
+      }
+    }
 
     if (!linked) {
       text += `\n_Tip: send /link to connect this chat to a specific project._`;
     }
 
-    text += `\n\nSend any message to start coding.`;
+    text += `\nSend any message to start coding.`;
 
     return text;
   }
@@ -401,7 +430,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     // ── Telegram-specific commands ──
 
     if (cmd === "help") {
-      await bot.send(chatId, buildHelpText(chatId));
+      await bot.send(chatId, await buildHelpText(chatId));
       return;
     }
 
@@ -504,7 +533,15 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     }
 
     if (cmd === "start") {
-      await bot.send(chatId, buildHelpText(chatId));
+      await bot.send(chatId, await buildHelpText(chatId));
+      return;
+    }
+
+    if (cmd === "new" || cmd === "n") {
+      const projectPath = resolveProjectPath(chatId);
+      const state = await getOrCreateChat(chatId, projectPath);
+      await state.session.newSession();
+      await bot.send(chatId, "── *New session* ──");
       return;
     }
 
@@ -573,16 +610,30 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
       const state = await getOrCreateChat(chatId, projectPath);
 
       if (state.isProcessing) {
-        await bot.send(chatId, "_Working..._ send /cancel to interrupt.");
+        await bot.send(
+          chatId,
+          "ggcoder is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+        );
         return;
       }
 
+      state.isProcessing = true;
+      startTyping(state);
+      state.textBuffer = "";
+      state.activeTools = new Map();
+
       try {
-        state.textBuffer = "";
         await state.session.prompt(text.trim());
         await flushText(state);
       } catch (err) {
-        await bot.send(chatId, `Command failed: ${formatUserError(err)}`);
+        if (err instanceof Error && err.name === "AbortError") {
+          await bot.send(chatId, "Cancelled.");
+        } else {
+          await bot.send(chatId, `Command failed: ${formatUserError(err)}`);
+        }
+      } finally {
+        stopTyping(state);
+        state.isProcessing = false;
       }
       return;
     }
@@ -595,7 +646,10 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     const state = await getOrCreateChat(chatId, projectPath);
 
     if (state.isProcessing) {
-      await bot.send(chatId, "_Working..._ send /cancel to interrupt.");
+      await bot.send(
+        chatId,
+        "ggcoder is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+      );
       return;
     }
 
@@ -607,13 +661,14 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     try {
       await state.session.prompt(text);
     } catch (err) {
-      stopTyping(state);
-      state.isProcessing = false;
       if (err instanceof Error && err.name === "AbortError") {
         await bot.send(chatId, "Cancelled.");
       } else {
         await bot.send(chatId, `Error: ${formatUserError(err)}`);
       }
+    } finally {
+      stopTyping(state);
+      state.isProcessing = false;
     }
   }
 

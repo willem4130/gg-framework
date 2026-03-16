@@ -6,6 +6,8 @@ import {
   createBuiltinCommands,
   type SlashCommandContext,
 } from "./slash-commands.js";
+import { PROMPT_COMMANDS, getPromptCommand } from "./prompt-commands.js";
+import { loadCustomCommands } from "./custom-commands.js";
 import { SettingsManager } from "./settings-manager.js";
 import { AuthStorage } from "./auth-storage.js";
 import { SessionManager, type MessageEntry, type BranchInfo } from "./session-manager.js";
@@ -174,16 +176,39 @@ export class AgentSession {
       this.slashCommands.register(cmd);
     }
 
-    // Wire up /help to show all registered commands
+    // Wire up /help to show all registered + prompt + custom commands
     const helpCmd = this.slashCommands.get("help");
     if (helpCmd) {
       const registry = this.slashCommands;
-      helpCmd.execute = () => {
+      const cwd = this.cwd;
+      helpCmd.execute = async () => {
         const all = registry.getAll();
         const lines = all.map(
           (c) =>
             `  /${c.name}${c.aliases.length ? ` (${c.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${c.description}`,
         );
+
+        // Add prompt-template commands
+        if (PROMPT_COMMANDS.length > 0) {
+          lines.push("");
+          lines.push("Prompt commands:");
+          for (const cmd of PROMPT_COMMANDS) {
+            lines.push(
+              `  /${cmd.name}${cmd.aliases.length ? ` (${cmd.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${cmd.description}`,
+            );
+          }
+        }
+
+        // Add custom commands from .gg/commands/
+        const customCmds = await loadCustomCommands(cwd);
+        if (customCmds.length > 0) {
+          lines.push("");
+          lines.push("Custom commands:");
+          for (const cmd of customCmds) {
+            lines.push(`  /${cmd.name} — ${cmd.description}`);
+          }
+        }
+
         return "Available commands:\n" + lines.join("\n");
       };
     }
@@ -208,6 +233,28 @@ export class AgentSession {
     // Check for slash commands
     const parsed = this.slashCommands.parse(content);
     if (parsed) {
+      // Check prompt-template commands first (built-in + custom)
+      const builtinPromptCmd = getPromptCommand(parsed.name);
+      const customCmds = await loadCustomCommands(this.cwd);
+      const customPromptCmd = !builtinPromptCmd
+        ? customCmds.find((c) => c.name === parsed.name)
+        : undefined;
+      const promptText = builtinPromptCmd?.prompt ?? customPromptCmd?.prompt;
+
+      if (promptText) {
+        // Inject the prompt-template command as a user message to the agent
+        const fullPrompt = parsed.args
+          ? `${promptText}\n\n## User Instructions\n\n${parsed.args}`
+          : promptText;
+        // Run as a normal prompt (push message + agent loop)
+        const userMessage: Message = { role: "user", content: fullPrompt };
+        this.messages.push(userMessage);
+        await this.persistMessage(userMessage);
+        this.lastPersistedIndex = this.messages.length;
+        await this.runLoop();
+        return;
+      }
+
       const cmdContext = this.createSlashCommandContext();
       const result = await this.slashCommands.execute(content, cmdContext);
       if (result) {
@@ -222,6 +269,11 @@ export class AgentSession {
     await this.persistMessage(userMessage);
     this.lastPersistedIndex = this.messages.length;
 
+    await this.runLoop();
+  }
+
+  /** Auto-compact if needed, run agent loop with auth retry, and persist messages. */
+  private async runLoop(): Promise<void> {
     // Auto-compact if needed
     if (this.settingsManager.get("autoCompact")) {
       const contextWindow = getContextWindow(this.model);
