@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "../core/agent-session.js";
+import { isAbortError } from "@kenkaiiii/gg-agent";
 import { formatUserError } from "../utils/error-handler.js";
 import { closeLogger } from "../core/logger.js";
 
@@ -157,7 +158,7 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
       }
     }
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (isAbortError(err)) {
       emit({ type: "error", message: "Interrupted" });
       process.exit(130);
     }

@@ -1,4 +1,5 @@
 import { AgentSession, type AgentSessionOptions } from "../core/agent-session.js";
+import { isAbortError } from "@kenkaiiii/gg-agent";
 import { formatUserError } from "../utils/error-handler.js";
 import { initLogger, log, attachToEventBus, closeLogger } from "../core/logger.js";
 import { getAppPaths } from "../config.js";
@@ -51,7 +52,7 @@ export async function runPrintMode(options: PrintModeOptions): Promise<void> {
     await session.prompt(options.message);
     process.stdout.write("\n");
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (isAbortError(err)) {
       process.stderr.write("\nInterrupted.\n");
       process.exit(130);
     }

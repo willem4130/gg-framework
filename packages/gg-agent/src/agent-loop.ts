@@ -21,6 +21,17 @@ import type {
 const DEFAULT_MAX_TURNS = 100;
 
 /**
+ * Detect abort errors — user-initiated cancellation or AbortSignal.
+ * These should be caught and handled gracefully, not re-thrown.
+ */
+export function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return true;
+  const msg = err.message.toLowerCase();
+  return msg.includes("aborted") || msg.includes("abort");
+}
+
+/**
  * Detect context window overflow errors from LLM providers.
  * Anthropic: "prompt is too long: N tokens > M maximum"
  * OpenAI:    "context_length_exceeded" / "maximum context length"
@@ -173,6 +184,11 @@ export async function* agentLoop(
           await new Promise((r) => setTimeout(r, OVERLOAD_RETRY_DELAY_MS));
           turn--; // Don't count the failed turn
           continue;
+        }
+        // Abort errors (user cancellation) — exit loop cleanly instead of
+        // crashing the process with an unhandled rejection.
+        if (isAbortError(err) || options.signal?.aborted) {
+          break;
         }
         throw err;
       }
@@ -352,9 +368,18 @@ export async function* agentLoop(
         .catch((err) => eventStream.abort(err instanceof Error ? err : new Error(String(err))));
 
       // Yield events as they arrive from parallel tools
+      let toolsAborted = false;
       try {
         for await (const event of eventStream) {
           yield event;
+        }
+      } catch (err) {
+        // Tool event stream aborted (Ctrl+C) — don't propagate, just mark
+        // so the finally block can clean up and the loop can exit.
+        if (isAbortError(err) || options.signal?.aborted) {
+          toolsAborted = true;
+        } else {
+          throw err;
         }
       } finally {
         options.signal?.removeEventListener("abort", abortHandler);
@@ -380,6 +405,9 @@ export async function* agentLoop(
         }
         messages.push({ role: "tool", content: toolResults });
       }
+
+      // Exit loop after cleaning up aborted tools
+      if (toolsAborted) break;
     }
   } finally {
     // Sanitize orphaned server_tool_use blocks on abort.

@@ -1,4 +1,4 @@
-import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
+import { agentLoop, isAbortError, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
 import { ProviderError, type Message, type Provider, type ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { EventBus } from "./event-bus.js";
 import {
@@ -311,6 +311,10 @@ export class AgentSession {
     try {
       await runAgentLoop(creds.accessToken, creds.accountId);
     } catch (err) {
+      // Abort errors are expected (user cancellation) — don't retry or re-throw
+      if (isAbortError(err) || this.opts.signal?.aborted) {
+        return;
+      }
       if (err instanceof ProviderError && err.statusCode === 401) {
         log("INFO", "auth", "Got 401, force-refreshing token and retrying");
         creds = await this.authStorage.resolveCredentials(this.provider, { forceRefresh: true });

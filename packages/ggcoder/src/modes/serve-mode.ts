@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "../core/agent-session.js";
+import { isAbortError } from "@kenkaiiii/gg-agent";
 import { TelegramBot, type TelegramMessage } from "../core/telegram.js";
 import chalk from "chalk";
 import { formatUserError } from "../utils/error-handler.js";
@@ -626,7 +627,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
         await state.session.prompt(text.trim());
         await flushText(state);
       } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
+        if (isAbortError(err)) {
           await bot.send(chatId, "Cancelled.");
         } else {
           await bot.send(chatId, `Command failed: ${formatUserError(err)}`);
@@ -661,7 +662,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     try {
       await state.session.prompt(text);
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
+      if (isAbortError(err)) {
         await bot.send(chatId, "Cancelled.");
       } else {
         await bot.send(chatId, `Error: ${formatUserError(err)}`);

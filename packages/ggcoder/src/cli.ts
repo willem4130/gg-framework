@@ -1,5 +1,20 @@
 #!/usr/bin/env node
 
+// Catch stray abort-related promise rejections that escape the normal error
+// handling chain (e.g. race conditions during Ctrl+C). Without this, Node.js
+// v25+ crashes the process on any unhandled rejection.
+process.on("unhandledRejection", (reason) => {
+  if (reason instanceof Error) {
+    const msg = reason.message.toLowerCase();
+    if (reason.name === "AbortError" || msg.includes("aborted") || msg.includes("abort")) {
+      // Silently swallow abort rejections — these are expected during cancellation
+      return;
+    }
+  }
+  // Re-throw non-abort rejections so they still crash with a useful stack trace
+  throw reason;
+});
+
 // Drain performance entries to prevent buffer overflow warning from dependencies
 import { PerformanceObserver, performance } from "node:perf_hooks";
 new PerformanceObserver((list) => {

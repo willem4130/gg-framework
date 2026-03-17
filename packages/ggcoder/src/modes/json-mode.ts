@@ -1,5 +1,6 @@
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "../core/agent-session.js";
+import { isAbortError } from "@kenkaiiii/gg-agent";
 import { formatUserError } from "../utils/error-handler.js";
 import { closeLogger } from "../core/logger.js";
 
@@ -76,7 +77,7 @@ export async function runJsonMode(options: JsonModeOptions): Promise<void> {
     await session.initialize();
     await session.prompt(options.message);
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (isAbortError(err)) {
       emitJson({ type: "error", message: "Interrupted" });
       process.exit(130);
     }
