@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, Static, useInput } from "ink";
 import { useTheme } from "../theme/theme.js";
 import { Markdown } from "./Markdown.js";
+import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -64,6 +65,8 @@ const AMBER_GRADIENT = [
 ];
 
 const GAP = "   ";
+const LOGO_WIDTH = 9;
+const SIDE_BY_SIDE_MIN = LOGO_WIDTH + GAP.length + 20;
 
 function PlanGradientText({ text }: { text: string }) {
   const chars: React.ReactNode[] = [];
@@ -85,6 +88,9 @@ function PlanGradientText({ text }: { text: string }) {
   return <Text>{chars}</Text>;
 }
 
+// ── Prefix width — matches AssistantMessage / StreamingArea ──
+const PREFIX_WIDTH = 2;
+
 // ── Static items for the expanded view ───────────────────
 
 interface BannerStaticItem {
@@ -101,6 +107,7 @@ interface PlanHeaderStaticItem {
 interface PlanContentStaticItem {
   kind: "plan_content";
   content: string;
+  markdownWidth: number;
   id: string;
 }
 
@@ -126,6 +133,11 @@ export function PlanOverlay({
   onDeletePlan,
 }: PlanOverlayProps) {
   const theme = useTheme();
+
+  const { columns } = useTerminalSize();
+  // Pre-compute the width available for Markdown — same as AssistantMessage.
+  // Prefix (2) = 2 chars overhead.
+  const markdownWidth = Math.max(40, columns - PREFIX_WIDTH);
 
   const [plans, setPlans] = useState<PlanEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -173,21 +185,18 @@ export function PlanOverlay({
     void readFile(plan.path, "utf-8")
       .then((content) => {
         setExpandedPlan(plan);
-
-        // Build static items for Ink's <Static> — renders to scrollback
         setStaticItems([
           { kind: "banner", id: getId() },
           { kind: "plan_header", name: plan.name, id: getId() },
-          { kind: "plan_content", content, id: getId() },
+          { kind: "plan_content", content, markdownWidth, id: getId() },
         ]);
       })
       .catch(() => {
         setExpandedPlan(plan);
-
         setStaticItems([
           { kind: "banner", id: getId() },
           { kind: "plan_header", name: plan.name, id: getId() },
-          { kind: "plan_content", content: "(could not read plan)", id: getId() },
+          { kind: "plan_content", content: "(could not read plan)", markdownWidth, id: getId() },
         ]);
       });
   }
@@ -309,8 +318,31 @@ export function PlanOverlay({
         <Static items={staticItems}>
           {(item) => {
             if (item.kind === "banner") {
-              return (
-                <Box key={item.id} flexDirection="column" marginTop={1} marginBottom={1}>
+              return columns < SIDE_BY_SIDE_MIN ? (
+                <Box
+                  key={item.id}
+                  flexDirection="column"
+                  marginTop={1}
+                  marginBottom={1}
+                  width={columns}
+                >
+                  <PlanGradientText text={PLAN_LOGO[0]} />
+                  <PlanGradientText text={PLAN_LOGO[1]} />
+                  <PlanGradientText text={PLAN_LOGO[2]} />
+                  <Box marginTop={1}>
+                    <Text color={theme.planPrimary} bold>
+                      Plan Pane
+                    </Text>
+                  </Box>
+                </Box>
+              ) : (
+                <Box
+                  key={item.id}
+                  flexDirection="column"
+                  marginTop={1}
+                  marginBottom={1}
+                  width={columns}
+                >
                   <Box>
                     <PlanGradientText text={PLAN_LOGO[0]} />
                     <Text>{GAP}</Text>
@@ -339,15 +371,13 @@ export function PlanOverlay({
             }
             if (item.kind === "plan_content") {
               return (
-                <Box
-                  key={item.id}
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.planBorder}
-                  paddingLeft={1}
-                  paddingRight={1}
-                >
-                  <Markdown>{item.content}</Markdown>
+                <Box key={item.id} flexDirection="row" marginTop={1} paddingRight={1}>
+                  <Box width={PREFIX_WIDTH} flexShrink={0}>
+                    <Text color={theme.planPrimary}>{"◇ "}</Text>
+                  </Box>
+                  <Box flexDirection="column" flexGrow={1} width={item.markdownWidth}>
+                    <Markdown width={item.markdownWidth}>{item.content}</Markdown>
+                  </Box>
                 </Box>
               );
             }
@@ -405,25 +435,41 @@ export function PlanOverlay({
   return (
     <Box flexDirection="column">
       {/* Banner */}
-      <Box flexDirection="column" marginTop={1} marginBottom={1}>
-        <Box>
+      {columns < SIDE_BY_SIDE_MIN ? (
+        <Box flexDirection="column" marginTop={1} marginBottom={1} width={columns}>
           <PlanGradientText text={PLAN_LOGO[0]} />
-          <Text>{GAP}</Text>
-          <Text color={theme.planPrimary} bold>
-            Plan Pane
-          </Text>
-        </Box>
-        <Box>
           <PlanGradientText text={PLAN_LOGO[1]} />
-          <Text>{GAP}</Text>
+          <PlanGradientText text={PLAN_LOGO[2]} />
+          <Box marginTop={1}>
+            <Text color={theme.planPrimary} bold>
+              Plan Pane
+            </Text>
+          </Box>
           <Text color={theme.textDim}>
             {plans.length} plan{plans.length !== 1 ? "s" : ""} in .gg/plans/
           </Text>
         </Box>
-        <Box>
-          <PlanGradientText text={PLAN_LOGO[2]} />
+      ) : (
+        <Box flexDirection="column" marginTop={1} marginBottom={1} width={columns}>
+          <Box>
+            <PlanGradientText text={PLAN_LOGO[0]} />
+            <Text>{GAP}</Text>
+            <Text color={theme.planPrimary} bold>
+              Plan Pane
+            </Text>
+          </Box>
+          <Box>
+            <PlanGradientText text={PLAN_LOGO[1]} />
+            <Text>{GAP}</Text>
+            <Text color={theme.textDim}>
+              {plans.length} plan{plans.length !== 1 ? "s" : ""} in .gg/plans/
+            </Text>
+          </Box>
+          <Box>
+            <PlanGradientText text={PLAN_LOGO[2]} />
+          </Box>
         </Box>
-      </Box>
+      )}
 
       {loaded && plans.length === 0 && (
         <Box flexDirection="column">

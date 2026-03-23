@@ -19,6 +19,7 @@ export interface TelegramUpdate {
     from: { id: number; first_name: string };
     chat: { id: number; type: string; title?: string };
     text?: string;
+    voice?: { file_id: string; duration: number; mime_type?: string; file_size?: number };
   };
   callback_query?: {
     id: string;
@@ -46,6 +47,15 @@ export interface TelegramMessage {
   chatTitle?: string;
 }
 
+/** Incoming voice note with chat context. */
+export interface TelegramVoiceMessage {
+  fileId: string;
+  duration: number;
+  chatId: number;
+  chatType: "private" | "group" | "supergroup" | "channel";
+  chatTitle?: string;
+}
+
 export class TelegramBot {
   private token: string;
   private allowedUserId: number;
@@ -53,6 +63,7 @@ export class TelegramBot {
   private running = false;
 
   private onMessage: ((msg: TelegramMessage) => void) | null = null;
+  private onVoiceMessage: ((msg: TelegramVoiceMessage) => void) | null = null;
   private onCallback: ((data: string, chatId: number) => void) | null = null;
   private onBotAdded: ((chatId: number, chatTitle?: string) => void) | null = null;
   private onBotRemoved: ((chatId: number) => void) | null = null;
@@ -65,6 +76,11 @@ export class TelegramBot {
   /** Register handler for incoming text messages. */
   onText(handler: (msg: TelegramMessage) => void): void {
     this.onMessage = handler;
+  }
+
+  /** Register handler for incoming voice notes. */
+  onVoice(handler: (msg: TelegramVoiceMessage) => void): void {
+    this.onVoiceMessage = handler;
   }
 
   /** Register handler for inline keyboard button presses. */
@@ -155,6 +171,14 @@ export class TelegramBot {
     });
   }
 
+  /** Get a direct download URL for a Telegram file. */
+  async getFileUrl(fileId: string): Promise<string> {
+    const result = await this.apiCall("getFile", { file_id: fileId });
+    if (!result.ok) throw new Error(`Failed to get file: ${JSON.stringify(result)}`);
+    const filePath = (result.result as { file_path: string }).file_path;
+    return `${TELEGRAM_API}/file/bot${this.token}/${filePath}`;
+  }
+
   // ── Private ───────────────────────────────────────────
 
   private async getUpdates(): Promise<TelegramUpdate[]> {
@@ -185,6 +209,14 @@ export class TelegramBot {
       if (msg.text && this.onMessage) {
         this.onMessage({
           text: msg.text,
+          chatId: msg.chat.id,
+          chatType: msg.chat.type as TelegramMessage["chatType"],
+          chatTitle: msg.chat.title,
+        });
+      } else if (msg.voice && this.onVoiceMessage) {
+        this.onVoiceMessage({
+          fileId: msg.voice.file_id,
+          duration: msg.voice.duration,
           chatId: msg.chat.id,
           chatType: msg.chat.type as TelegramMessage["chatType"],
           chatTitle: msg.chat.title,

@@ -3,7 +3,8 @@ import path from "node:path";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "../core/agent-session.js";
 import { isAbortError } from "@kenkaiiii/gg-agent";
-import { TelegramBot, type TelegramMessage } from "../core/telegram.js";
+import { TelegramBot, type TelegramMessage, type TelegramVoiceMessage } from "../core/telegram.js";
+import { transcribeVoice, isModelLoaded, setProgressCallback } from "../core/voice-transcriber.js";
 import chalk from "chalk";
 import { formatUserError } from "../utils/error-handler.js";
 import { log, closeLogger } from "../core/logger.js";
@@ -637,6 +638,61 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
         state.isProcessing = false;
       }
       return;
+    }
+  });
+
+  // ── Voice note handler ────────────────────────────────
+
+  bot.onVoice(async (msg: TelegramVoiceMessage) => {
+    const { chatId } = msg;
+
+    const state = chatStates.get(chatId);
+    if (state?.isProcessing) {
+      await bot.send(
+        chatId,
+        "ggcoder is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+      );
+      return;
+    }
+
+    try {
+      if (!isModelLoaded()) {
+        await bot.send(
+          chatId,
+          "Setting up voice transcription — downloading Whisper model. This only happens once.",
+        );
+        setProgressCallback((info) => {
+          if (info.status === "progress" && info.progress !== undefined) {
+            const pct = Math.round(info.progress);
+            if (pct % 25 === 0 && pct > 0) {
+              bot.sendTyping(chatId).catch(() => {});
+            }
+          }
+        });
+      }
+      await bot.sendTyping(chatId);
+
+      const fileUrl = await bot.getFileUrl(msg.fileId);
+      const text = await transcribeVoice(fileUrl);
+
+      if (!text) {
+        await bot.send(chatId, "_Could not transcribe voice note._");
+        return;
+      }
+
+      // Show what was heard, then process as a prompt
+      await bot.send(chatId, `_Voice: "${text}"_`);
+      await handlePrompt(chatId, text);
+    } catch (err) {
+      log(
+        "ERROR",
+        "telegram",
+        `Voice transcription failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      await bot.send(
+        chatId,
+        `_Voice transcription failed: ${err instanceof Error ? err.message : String(err)}_`,
+      );
     }
   });
 

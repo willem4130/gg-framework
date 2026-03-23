@@ -14,28 +14,36 @@ import {
  * Render a markdown string as Ink components.
  * Measures its own available width via Ink's layout engine so tables
  * always fit regardless of parent padding, prefixes, or sidebars.
+ *
+ * Pass an explicit `width` to bypass measurement (required inside
+ * Ink's `<Static>` where re-renders don't update flushed output).
  */
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, width: explicitWidth }: { children: string; width?: number }) {
   const theme = useTheme();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement>(null);
   const [measuredWidth, setMeasuredWidth] = useState(0);
 
   useLayoutEffect(() => {
+    if (explicitWidth != null) return; // skip measurement when width is provided
     if (ref.current) {
       const { width } = measureElement(ref.current);
       if (width > 0 && width !== measuredWidth) {
         setMeasuredWidth(width);
       }
     }
-  }, [children, measuredWidth]);
+  }, [children, measuredWidth, explicitWidth]);
 
-  // Use measured width when available. On first mount (before layout runs)
-  // fall back to stdout.columns minus padding overhead so tables don't
-  // overflow. The "⏺ " prefix = 2 cols, live area paddingRight = 1 col,
+  // Use explicit width if provided, then measured width, then fallback.
+  // The "⏺ " prefix = 2 cols, live area paddingRight = 1 col,
   // plus 1 col safety margin = 4.  After the first layout pass,
   // measuredWidth takes over with the exact value.
-  const columns = measuredWidth > 0 ? measuredWidth : Math.max(40, (stdout?.columns ?? 80) - 4);
+  const columns =
+    explicitWidth != null
+      ? explicitWidth
+      : measuredWidth > 0
+        ? measuredWidth
+        : Math.max(40, (stdout?.columns || 80) - 4);
 
   // Stabilise table rendering during streaming: if the text ends with an
   // incomplete table row (starts with `|` but doesn't end with `|`), strip

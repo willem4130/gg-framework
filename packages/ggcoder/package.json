@@ -1,6 +1,6 @@
 {
   "name": "@kenkaiiii/ggcoder",
-  "version": "4.2.46",
+  "version": "4.2.50",
   "type": "module",
   "description": "CLI coding agent with OAuth authentication for Anthropic and OpenAI",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.6.0",
     "@kenkaiiii/gg-agent": "workspace:*",
     "@kenkaiiii/gg-ai": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -37,6 +38,7 @@
     "ignore": "^7.0.5",
     "ink": "^6.8.0",
     "marked": "^15.0.12",
+    "ogg-opus-decoder": "^1.6.13",
     "marked-terminal": "^7.3.0",
     "react": "^19.2.4",
     "sharp": "^0.34.5",

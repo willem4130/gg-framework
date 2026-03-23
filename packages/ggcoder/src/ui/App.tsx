@@ -434,7 +434,7 @@ export interface AppProps {
 export function App(props: AppProps) {
   const theme = useTheme();
   const { stdout } = useStdout();
-  const { resizeKey } = useTerminalSize();
+  const { columns, resizeKey } = useTerminalSize();
 
   // Terminal title — updated later after agentLoop is created
   // (hoisted here so the hook is always called in the same order)
@@ -472,6 +472,8 @@ export function App(props: AppProps) {
     toolsUsed: string[];
     verb: string;
   } | null>(null);
+  // Suppress "done" status when a plan overlay is about to open
+  const planOverlayPendingRef = useRef(false);
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState(props.model);
   const [currentProvider, setCurrentProvider] = useState(props.provider);
@@ -559,10 +561,14 @@ export function App(props: AppProps) {
         approvedPlanPathRef.current = planPath;
         // Use setTimeout to open pane after the current tool execution completes,
         // so the turn can finish and the UI transitions cleanly
+        // Flag that the plan overlay is about to open — suppresses the
+        // premature "done" status that fires when the agent loop finishes
+        planOverlayPendingRef.current = true;
         setTimeout(() => {
           stdout?.write("\x1b[2J\x1b[3J\x1b[H");
           setPlanAutoExpand(true);
           setOverlay("plan");
+          planOverlayPendingRef.current = false;
         }, 300);
         return (
           "Plan submitted. Exiting plan mode.\n" +
@@ -1060,6 +1066,9 @@ export function App(props: AppProps) {
           duration: `${durationMs}ms`,
           toolsUsed: toolsUsed.join(",") || "none",
         });
+        // Don't show "done" status when plan overlay is about to open —
+        // the agent loop finished but we're waiting for user plan review
+        if (planOverlayPendingRef.current) return;
         setDoneStatus({ durationMs, toolsUsed, verb: pickDurationVerb(toolsUsed) });
         playNotificationSound();
         // Two-phase flush to avoid Ink text clipping.
@@ -1775,7 +1784,7 @@ export function App(props: AppProps) {
   const isOverlayView = isTaskView || isSkillsView || isPlanView;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns}>
       {/* History — scrolled up, managed by Ink Static. */}
       <Static
         key={`${resizeKey}-${staticKey}`}
@@ -1877,6 +1886,7 @@ export function App(props: AppProps) {
             setStaticKey((k) => k + 1);
             setPlanAutoExpand(false);
             setOverlay(null);
+            setDoneStatus(null);
             // Send rejection + feedback to the agent
             const msg =
               `The plan at ${planPath} was rejected.\n\nFeedback: ${feedback}\n\n` +
@@ -1917,6 +1927,7 @@ export function App(props: AppProps) {
               }
               paddingLeft={1}
               paddingRight={1}
+              width={columns}
             >
               <ActivityIndicator
                 phase={agentLoop.activityPhase}
