@@ -12,6 +12,23 @@ A modular TypeScript framework for building LLM-powered apps — from raw stream
 
 **Install**: `npm i -g @kenkaiiii/ggcoder`
 
+**Update to latest**:
+```bash
+npm cache clean --force
+npm i -g @kenkaiiii/ggcoder@latest
+```
+
+**Auto-update**: A crontab job (`~/.gg/check-update.sh`) runs every 2 hours, checks for new versions on npm, then fetches upstream/main, merges into the `custom` branch, builds from source, and installs globally — preserving custom patches. Shows a macOS notification via `terminal-notifier` on success or failure (merge conflict, build error). Requires `terminal-notifier` (`brew install terminal-notifier`).
+
+**Custom features (not yet merged upstream)**: The `custom` branch has image vision support for the read tool (PR #8). The auto-update cron job handles merging upstream and building from source, so custom patches are preserved automatically. If a merge conflict occurs, the cron job aborts and notifies — resolve manually:
+```bash
+cd ~/Dev/ggcoder
+git fetch upstream && git merge upstream/main
+# resolve conflicts
+pnpm install && pnpm build && npm i -g packages/ggcoder
+```
+Once Ken merges PR #8, the custom branch can be retired.
+
 ## Project Structure
 
 ```
@@ -43,6 +60,7 @@ packages/
           │   └── extensions/ # Extension system
           ├── tools/         # Agentic tools (bash, read, write, edit, grep, find, ls, web-fetch, subagent)
           ├── ui/            # Ink/React terminal UI components & hooks
+          │   ├── activity-phrases.ts # Shared activity phrases (titlebar + indicator)
           │   ├── components/ # 25+ UI components (one per file)
           │   ├── hooks/     # useAgentLoop, useSessionManager, useSlashCommands, etc.
           │   └── theme/     # dark.json, light.json

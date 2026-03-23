@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { useTheme } from "../theme/theme.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
+import { useAnimationTick, deriveFrame } from "./AnimationContext.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -118,12 +119,20 @@ export function TaskOverlay({
 }: TaskOverlayProps) {
   const theme = useTheme();
   const { columns } = useTerminalSize();
+  const tick = useAnimationTick();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [mode, setMode] = useState<"normal" | "adding" | "editing">("normal");
-  const [inputText, setInputText] = useState("");
+  const [mode, setMode] = useState<"normal" | "adding" | "editing" | "editing-prompt">("normal");
+  const cursorVisible = mode !== "normal" && deriveFrame(tick, 530, 2) === 0;
+  const [editor, setEditor] = useState({ text: "", cursor: 0 });
+  const editorRef = useRef({ text: "", cursor: 0 });
+  const updateEditor = useCallback((text: string, cursor: number) => {
+    editorRef.current = { text, cursor };
+    setEditor({ text, cursor });
+  }, []);
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState("");
+  const [showPrompt, setShowPrompt] = useState(false);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showStatus = useCallback((msg: string) => {
@@ -177,14 +186,16 @@ export function TaskOverlay({
 
   useInput((input, key) => {
     // ── Input mode ──
-    if (mode === "adding" || mode === "editing") {
+    if (mode === "adding" || mode === "editing" || mode === "editing-prompt") {
+      const { text: txt, cursor: pos } = editorRef.current;
+
       if (key.escape) {
         setMode("normal");
-        setInputText("");
+        updateEditor("", 0);
         return;
       }
       if (key.return) {
-        const text = inputText.trim();
+        const text = txt.trim();
         if (text) {
           if (mode === "adding") {
             const newTask: Task = {
@@ -196,22 +207,72 @@ export function TaskOverlay({
             };
             setTasks((prev) => [...prev, newTask]);
             setSelectedIndex(tasks.length);
-          } else {
+          } else if (mode === "editing") {
             setTasks((prev) =>
               prev.map((t, i) => (i === selectedIndex ? { ...t, title: text } : t)),
+            );
+          } else {
+            setTasks((prev) =>
+              prev.map((t, i) => (i === selectedIndex ? { ...t, prompt: text } : t)),
             );
           }
         }
         setMode("normal");
-        setInputText("");
+        updateEditor("", 0);
         return;
       }
+
+      // ── Cursor navigation ──
+
+      // Word jump backward: Option+Left (macOS sends ESC b → meta+"b")
+      if ((key.meta && input === "b") || (key.leftArrow && (key.ctrl || key.meta))) {
+        const before = txt.slice(0, pos);
+        const m = before.match(/\S+\s*$/);
+        updateEditor(txt, m ? pos - m[0].length : 0);
+        return;
+      }
+      // Word jump forward: Option+Right (macOS sends ESC f → meta+"f")
+      if ((key.meta && input === "f") || (key.rightArrow && (key.ctrl || key.meta))) {
+        const after = txt.slice(pos);
+        const m = after.match(/^\s*\S+/);
+        updateEditor(txt, m ? pos + m[0].length : txt.length);
+        return;
+      }
+
+      // Line jump backward: Up — jump to previous newline
+      if (key.upArrow) {
+        const before = txt.slice(0, pos);
+        const nl = before.lastIndexOf("\n");
+        updateEditor(txt, nl === -1 ? 0 : nl);
+        return;
+      }
+      // Line jump forward: Down — jump to next newline
+      if (key.downArrow) {
+        const nl = txt.indexOf("\n", pos);
+        updateEditor(txt, nl === -1 ? txt.length : nl + 1);
+        return;
+      }
+
+      if (key.leftArrow) {
+        updateEditor(txt, Math.max(0, pos - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        updateEditor(txt, Math.min(txt.length, pos + 1));
+        return;
+      }
+
+      // Backspace — delete before cursor
       if (key.backspace || key.delete) {
-        setInputText((prev) => prev.slice(0, -1));
+        if (pos > 0) {
+          updateEditor(txt.slice(0, pos - 1) + txt.slice(pos), pos - 1);
+        }
         return;
       }
+
+      // Insert character at cursor
       if (input && !key.ctrl && !key.meta) {
-        setInputText((prev) => prev + input);
+        updateEditor(txt.slice(0, pos) + input + txt.slice(pos), pos + input.length);
       }
       return;
     }
@@ -246,7 +307,7 @@ export function TaskOverlay({
 
     if (input === "a") {
       setMode("adding");
-      setInputText("");
+      updateEditor("", 0);
       return;
     }
 
@@ -254,7 +315,21 @@ export function TaskOverlay({
       const task = tasks[selectedIndex];
       if (task) {
         setMode("editing");
-        setInputText(task.title);
+        updateEditor(task.title, task.title.length);
+      }
+      return;
+    }
+
+    if (input === "p" && tasks.length > 0) {
+      setShowPrompt((prev) => !prev);
+      return;
+    }
+
+    if (input === "P" && tasks.length > 0) {
+      const task = tasks[selectedIndex];
+      if (task) {
+        setMode("editing-prompt");
+        updateEditor(task.prompt, task.prompt.length);
       }
       return;
     }
@@ -394,43 +469,87 @@ export function TaskOverlay({
               ? "#fbbf24"
               : theme.text;
         return (
-          <Text key={task.id} color={color} bold={selected}>
-            {prefix}[{check}] {task.title}
-          </Text>
+          <Box key={task.id} flexDirection="column">
+            <Text color={color} bold={selected}>
+              {prefix}[{check}] {task.title}
+            </Text>
+            {selected && showPrompt && mode !== "editing-prompt" && task.prompt !== task.title && (
+              <Text color={theme.textDim} wrap="truncate-end">
+                {"    ↳ "}
+                {task.prompt}
+              </Text>
+            )}
+          </Box>
         );
       })}
 
       {mode !== "normal" && (
-        <Box>
-          <Text color={theme.primary}>{mode === "adding" ? " + " : " ✎ "}</Text>
-          <Text>{inputText}</Text>
-          <Text color={theme.textDim}>█</Text>
+        <Box flexDirection="column">
+          <Text>
+            <Text color={theme.primary}>
+              {mode === "adding" ? " + " : mode === "editing-prompt" ? " ✎ prompt: " : " ✎ "}
+            </Text>
+            {editor.text.slice(0, editor.cursor)}
+            {(() => {
+              const ch = editor.cursor < editor.text.length ? editor.text[editor.cursor] : "";
+              const isWhitespace = !ch || ch === " " || ch === "\n" || ch === "\t";
+              return isWhitespace ? (
+                <Text color={theme.primary} dimColor={!cursorVisible}>
+                  █
+                </Text>
+              ) : (
+                <Text color={theme.text} inverse={cursorVisible}>
+                  {ch}
+                </Text>
+              );
+            })()}
+            {editor.text.slice(editor.cursor + 1)}
+          </Text>
         </Box>
       )}
 
       {status && <Text color="#4ade80">{" " + status}</Text>}
 
       <Box marginTop={1}>
-        <Text color={theme.textDim}>
-          <Text color={theme.primary}>↑↓</Text>
-          {" move · "}
-          <Text color={theme.primary}>g/G</Text>
-          {" jump · ("}
-          <Text color={theme.primary}>a</Text>
-          {")dd · ("}
-          <Text color={theme.primary}>e</Text>
-          {")dit · ("}
-          <Text color={theme.primary}>d</Text>
-          {")elete · ("}
-          <Text color={theme.primary}>t</Text>
-          {")oggle · "}
-          <Text color={theme.primary}>Enter</Text>
-          {" start · ("}
-          <Text color={theme.primary}>r</Text>
-          {")un all · "}
-          <Text color={theme.primary}>ESC</Text>
-          {" close"}
-        </Text>
+        {mode === "normal" ? (
+          <Text color={theme.textDim}>
+            <Text color={theme.primary}>↑↓</Text>
+            {" move · "}
+            <Text color={theme.primary}>g/G</Text>
+            {" jump · ("}
+            <Text color={theme.primary}>a</Text>
+            {")dd · ("}
+            <Text color={theme.primary}>e</Text>
+            {")dit · ("}
+            <Text color={theme.primary}>p</Text>
+            {")rompt · "}
+            <Text color={theme.primary}>P</Text>
+            {" edit prompt · ("}
+            <Text color={theme.primary}>d</Text>
+            {")elete · ("}
+            <Text color={theme.primary}>t</Text>
+            {")oggle · "}
+            <Text color={theme.primary}>Enter</Text>
+            {" start · ("}
+            <Text color={theme.primary}>r</Text>
+            {")un all · "}
+            <Text color={theme.primary}>ESC</Text>
+            {" close"}
+          </Text>
+        ) : (
+          <Text color={theme.textDim}>
+            <Text color={theme.primary}>←→</Text>
+            {" move · "}
+            <Text color={theme.primary}>⌥←→</Text>
+            {" word · "}
+            <Text color={theme.primary}>↑↓</Text>
+            {" line · "}
+            <Text color={theme.primary}>Enter</Text>
+            {" save · "}
+            <Text color={theme.primary}>ESC</Text>
+            {" cancel"}
+          </Text>
+        )}
       </Box>
     </Box>
   );

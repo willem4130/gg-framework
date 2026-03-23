@@ -27,7 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.6.0",
+    "@huggingface/transformers": "^3.8.1",
     "@kenkaiiii/gg-agent": "workspace:*",
     "@kenkaiiii/gg-ai": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -38,8 +38,8 @@
     "ignore": "^7.0.5",
     "ink": "^6.8.0",
     "marked": "^15.0.12",
-    "ogg-opus-decoder": "^1.6.13",
     "marked-terminal": "^7.3.0",
+    "ogg-opus-decoder": "^1.7.3",
     "react": "^19.2.4",
     "sharp": "^0.34.5",
     "string-width": "^8.2.0",
