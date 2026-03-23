@@ -209,6 +209,13 @@ interface ServerToolDoneItem {
   id: string;
 }
 
+interface PlanTransitionItem {
+  kind: "plan_transition";
+  text: string;
+  active: boolean;
+  id: string;
+}
+
 interface TombstoneItem {
   kind: "tombstone";
   id: string;
@@ -249,6 +256,7 @@ export type CompletedItem =
   | BannerItem
   | SubAgentGroupItem
   | ToolGroupItem
+  | PlanTransitionItem
   | TombstoneItem;
 
 /**
@@ -436,11 +444,22 @@ export function App(props: AppProps) {
   const { stdout } = useStdout();
   const { columns, resizeKey } = useTerminalSize();
 
+  // Hoisted before terminal title hook so it can reference them
+  const [lastUserMessage, setLastUserMessage] = useState("");
+  const [planMode, setPlanMode] = useState(false);
+
   // Terminal title — updated later after agentLoop is created
   // (hoisted here so the hook is always called in the same order)
   const [titlePhase, setTitlePhase] = useState<ActivityPhase>("idle");
   const [titleRunning, setTitleRunning] = useState(false);
-  useTerminalTitle(titlePhase, titleRunning);
+  const [titleToolNames, setTitleToolNames] = useState<string[]>([]);
+  useTerminalTitle({
+    phase: titlePhase,
+    isRunning: titleRunning,
+    userMessage: lastUserMessage,
+    activeToolNames: titleToolNames,
+    planMode,
+  });
 
   // Items scrolled into Static (history).  For restored sessions, skip the
   // banner and add restored items via useEffect so Ink's <Static> treats them
@@ -466,7 +485,6 @@ export function App(props: AppProps) {
   const startTaskRef = useRef<(title: string, prompt: string, taskId: string) => void>(() => {});
   const cwdRef = useRef(props.cwd);
   const [staticKey, setStaticKey] = useState(0);
-  const [lastUserMessage, setLastUserMessage] = useState("");
   const [doneStatus, setDoneStatus] = useState<{
     durationMs: number;
     toolsUsed: string[];
@@ -480,7 +498,6 @@ export function App(props: AppProps) {
   const [currentTools, setCurrentTools] = useState(props.tools);
   const [thinkingEnabled, setThinkingEnabled] = useState(!!props.thinking);
   const messagesRef = useRef<Message[]>(props.messages);
-  const [planMode, setPlanMode] = useState(false);
   const [planAutoExpand, setPlanAutoExpand] = useState(false);
   const approvedPlanPathRef = useRef<string | undefined>(undefined);
   const nextIdRef = useRef(0);
@@ -546,8 +563,11 @@ export function App(props: AppProps) {
     if (props.onEnterPlanRef) {
       props.onEnterPlanRef.current = (reason?: string) => {
         setPlanMode(true);
-        const msg = reason ? `Plan mode activated: ${reason}` : "Plan mode activated";
-        setLiveItems((prev) => [...prev, { kind: "info", text: msg, id: getId() }]);
+        const msg = reason ? `Plan Mode Activated — ${reason}` : "Plan Mode Activated";
+        setLiveItems((prev) => [
+          ...prev,
+          { kind: "plan_transition", text: msg, active: true, id: getId() },
+        ]);
       };
     }
   }, [props.onEnterPlanRef]);
@@ -1196,10 +1216,12 @@ export function App(props: AppProps) {
   });
 
   // Sync terminal title with agent loop state
+  const activeToolNamesKey = agentLoop.activeToolCalls.map((tc) => tc.name).join(",");
   useEffect(() => {
     setTitlePhase(agentLoop.activityPhase);
     setTitleRunning(agentLoop.isRunning);
-  }, [agentLoop.activityPhase, agentLoop.isRunning]);
+    setTitleToolNames(agentLoop.activeToolCalls.map((tc) => tc.name));
+  }, [agentLoop.activityPhase, agentLoop.isRunning, activeToolNamesKey]);
 
   // Animated thinking border — derived from global animation tick
   const animTick = useAnimationTick();
@@ -1263,7 +1285,7 @@ export function App(props: AppProps) {
         setPlanMode(true);
         setLiveItems((prev) => [
           ...prev,
-          { kind: "info", text: "Plan mode activated", id: getId() },
+          { kind: "plan_transition", text: "Plan Mode Activated", active: true, id: getId() },
         ]);
         return;
       }
@@ -1271,7 +1293,12 @@ export function App(props: AppProps) {
         setPlanMode(false);
         setLiveItems((prev) => [
           ...prev,
-          { kind: "info", text: "Plan mode deactivated", id: getId() },
+          {
+            kind: "plan_transition",
+            text: "Plan Mode Deactivated",
+            active: false,
+            id: getId(),
+          },
         ]);
         return;
       }
@@ -1680,6 +1707,15 @@ export function App(props: AppProps) {
             </Text>
           </Box>
         );
+      case "plan_transition":
+        return (
+          <Box key={item.id} marginTop={1} flexShrink={1}>
+            <Text color={theme.planPrimary} bold wrap="wrap">
+              {item.active ? "⊞ " : "⊟ "}
+              {item.text}
+            </Text>
+          </Box>
+        );
       case "queued":
         return (
           <Box key={item.id} marginTop={1}>
@@ -1983,7 +2019,12 @@ export function App(props: AppProps) {
               log("INFO", "plan", `Plan mode ${next ? "enabled" : "disabled"}`);
               setLiveItems((items) => [
                 ...items,
-                { kind: "info", text: `Plan mode ${next ? "on" : "off"}`, id: getId() },
+                {
+                  kind: "plan_transition",
+                  text: next ? "Plan Mode Activated" : "Plan Mode Deactivated",
+                  active: next,
+                  id: getId(),
+                },
               ]);
             }}
             cwd={props.cwd}
