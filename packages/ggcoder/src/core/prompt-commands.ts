@@ -851,6 +851,99 @@ If strong candidates had no ecosystem match, list them at the bottom:
 
 After presenting the list, ask which (if any) to install. Install nothing without explicit confirmation. Once confirmed, hand off to find-skills to perform the actual install.`,
   },
+  {
+    name: "setup",
+    aliases: ["setup-project"],
+    description: "Audit project hygiene, tooling, verify pipeline, and style-pack alignment",
+    prompt: `Audit this project across six categories and report gaps. **Do not fix anything yet.** Wait for me to choose what to address after the report.
+
+Language-agnostic and project-agnostic — adapt findings to the languages and stack actually present. Ignore categories that don't apply (e.g. skip CI for a local-only scratchpad).
+
+## Categories
+
+### 1. Project hygiene
+
+- \`.gitignore\` present and covers the active language(s)?
+- \`README.md\` present with at least install + run instructions?
+- License file present (if this looks like a public/shareable project)?
+- \`.editorconfig\` present?
+- Git initialized? (\`.git\` directory exists)
+
+### 2. Toolchain version pinning
+
+- Language version pinned in a canonical file: \`.nvmrc\` / \`package.json#engines\` (Node), \`.python-version\` / \`pyproject.toml#requires-python\` (Python), \`rust-toolchain.toml\` (Rust), the \`go\` line in \`go.mod\`, \`.ruby-version\` (Ruby), etc.
+- Lockfile present and committed? (\`package-lock.json\`, \`pnpm-lock.yaml\`, \`yarn.lock\`, \`bun.lockb\`, \`uv.lock\`, \`poetry.lock\`, \`Cargo.lock\`, \`go.sum\`, \`Gemfile.lock\`, \`composer.lock\`)
+
+### 3. Code quality tooling
+
+For each active language, check that a formatter, linter, and (where applicable) type checker are configured:
+- **Formatter**: Prettier / ruff format / gofmt (built-in) / rustfmt (built-in) / clang-format / etc.
+- **Linter**: ESLint / Ruff / golangci-lint / Clippy / etc. — with a reasonable strictness preset
+- **Type checker** (statically-typed langs only): tsc strict, Pyright strict, mypy strict
+- **Test framework**: vitest / jest / pytest / go test / cargo test / rspec / etc.
+
+Report which are present, missing, or configured below the pack's strictness recommendation.
+
+### 4. Verify pipeline
+
+- Are \`lint\` / \`typecheck\` / \`format:check\` / \`test\` (or language-equivalent) wired as runnable commands? (scripts in \`package.json\`, \`pyproject.toml\`, a \`Makefile\`, or \`justfile\`)
+- Pre-commit hook configured? (\`.husky/\`, \`pre-commit\` framework, \`lefthook\`, etc.) — nice-to-have, not required.
+- CI config present? (\`.github/workflows/\`, \`.gitlab-ci.yml\`, \`.circleci/\`, etc.)
+
+### 5. Style pack alignment
+
+"Active style packs" refers specifically to the **Language Style Packs** section in your system prompt (e.g. TypeScript, Python, Go). It does **NOT** include Skills (\`.gg/skills/\`) or any other extension category. If the Language Style Packs section is absent or empty, **skip this entire section entirely** — do not substitute Skills or any other concept.
+
+When Language Style Packs are present, compare the project against each pack's **Tooling** bullet and the system prompt's **Verification** commands:
+- Tooling: which strict-mode flags or lint-rule presets does the pack recommend that the project is missing? (e.g. \`tsconfig\` missing \`noUncheckedIndexedAccess\`, \`pyproject\` missing \`[tool.ruff]\`).
+- Dependencies: list which pack-mentioned libs (Zod, neverthrow, Pydantic, thiserror, etc.) the project uses, has an equivalent for, or lacks. **Observation only — no recommendation to install.**
+
+### 6. Documentation hygiene
+
+- \`CLAUDE.md\` or \`AGENTS.md\` present?
+- Public API documented? (top-level docstrings, type signatures, or README examples)
+- Architecture doc for non-trivial projects? (\`ARCHITECTURE.md\`, \`docs/architecture/\`, ADRs)
+
+## How to investigate
+
+- Read the project root + obvious config locations (\`./\`, \`.github/\`, \`.husky/\`, \`docs/\`).
+- Don't recurse into \`node_modules\`, \`dist\`, \`build\`, \`target\`, vendored folders.
+- Use \`ls\`, \`read\`, \`find\` (with name patterns) — do not \`grep\` source code for this audit; it's about scaffolding, not code review.
+- Cap at ~20 file reads total. If a file is huge (e.g. \`pnpm-lock.yaml\`), don't read its body — presence is what matters.
+
+## Output format
+
+A single Markdown report, organized by category. Within each category, mark each item as one of:
+- \`[OK]\` — present and reasonable
+- \`[GAP]\` — missing or misconfigured; safe to add/fix
+- \`[INFO]\` — observation only, no action implied
+- \`[N/A]\` — doesn't apply to this project (omit from output if obvious)
+
+Keep each line to one sentence. No prose paragraphs.
+
+At the end:
+
+\`\`\`
+## Summary
+
+<N> gaps in hygiene, <N> in tooling, <N> in verify pipeline, <N> in style-pack alignment.
+
+Which (if any) would you like me to fix? Options:
+- A) All [GAP] items that are safe + additive (no overwrites)
+- B) Pick category: hygiene / tooling / verify / style-pack alignment
+- C) Specific items — tell me which
+- D) None — just the report
+\`\`\`
+
+## Rules
+
+- **Report only.** No edits, no installs, no commits without explicit user confirmation after the report.
+- **No code refactors recommended.** This audit is about scaffolding/tooling, not code review. Use \`/scan\` or \`/verify\` for code-level findings.
+- **No dependency installations in the report.** Listing them as observations is fine; recommending installation is not — that's the user's call.
+- **Skip empty categories.** If a category has no findings, omit it.
+- **Adapt to scale.** A 50-line script doesn't need CI, a license, or an ARCHITECTURE.md. Use judgment.
+- **Brand-new empty project**: report "Empty project — nothing to audit. To bootstrap, tell me the stack you want and I'll scaffold from scratch." and stop.`,
+  },
 ];
 
 /** Look up a prompt command by name or alias */

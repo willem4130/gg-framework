@@ -69,8 +69,15 @@ import { SettingsManager, type Settings } from "../core/settings-manager.js";
 import { shouldCompact, compact } from "../core/compaction/compactor.js";
 import { estimateConversationTokens } from "../core/compaction/token-estimator.js";
 import { PROMPT_COMMANDS, getPromptCommand } from "../core/prompt-commands.js";
+import { isFirstTimeSetup, markSetupAudited } from "../core/setup-history.js";
 import { loadCustomCommands, type CustomCommand } from "../core/custom-commands.js";
 import { buildSystemPrompt } from "../system-prompt.js";
+import {
+  detectLanguages,
+  LANGUAGE_DISPLAY_NAMES,
+  type LanguageId,
+} from "../core/language-detector.js";
+import { detectVerifyCommands } from "../core/verify-commands.js";
 import type { Skill } from "../core/skills.js";
 import {
   extractPlanSteps,
@@ -194,6 +201,25 @@ interface InfoItem {
   id: string;
 }
 
+interface StylePackItem {
+  kind: "style_pack";
+  /** Newly-added language ids in this injection. Rendered via LANGUAGE_DISPLAY_NAMES. */
+  added: readonly LanguageId[];
+  /** Show the one-time /setup hint. Only true for the first badge in a session. */
+  showSetupHint: boolean;
+  id: string;
+}
+
+/**
+ * Shown once per session when initial language detection finds no packs —
+ * keeps `/setup` discoverable in dirs that don't look like a project root
+ * (parent folders, scratch dirs, etc.).
+ */
+interface SetupHintItem {
+  kind: "setup_hint";
+  id: string;
+}
+
 interface UpdateNoticeItem {
   kind: "update_notice";
   text: string;
@@ -307,6 +333,8 @@ export type CompletedItem =
   | ServerToolDoneItem
   | ErrorItem
   | InfoItem
+  | StylePackItem
+  | SetupHintItem
   | UpdateNoticeItem
   | QueuedItem
   | CompactingItem
@@ -689,6 +717,26 @@ export function App(props: AppProps) {
   const lastActualTokensTimestampRef = useRef(0);
   /** Timestamp of last compaction — used for time-based cooldown and staleness detection. */
   const lastCompactionTimeRef = useRef(0);
+  /**
+   * Languages whose style packs are currently injected into the system prompt.
+   * Grown by `maybeInjectLanguagePacks` after `write`/`bash` tool results when
+   * the language detector sees new marker files. Reset on `chdir` (pixel-fix).
+   * Only grows within a session; we never strip packs once injected (cheaper
+   * than invalidating prompt caching, and stale guidance is harmless).
+   */
+  const injectedLanguagesRef = useRef<Set<LanguageId>>(new Set());
+  /**
+   * True until the first style-pack badge is pushed. Used to gate the
+   * one-time "/setup" hint so users learn the slash command without being
+   * spammed on every subsequent pack swap.
+   */
+  const setupHintShownRef = useRef(false);
+  /**
+   * Callback that fires `/setup` programmatically. Assigned later in the
+   * component once `agentLoop` is in scope. Called from the initial
+   * language-detection path when this cwd has never been audited before.
+   */
+  const triggerAutoSetupRef = useRef<() => Promise<void>>(async () => {});
 
   const getId = () => String(nextIdRef.current++);
 
@@ -779,6 +827,91 @@ export function App(props: AppProps) {
     }
   }, [planMode, props.planModeRef]);
 
+  /**
+   * Unified "apply detection result" pipeline. Called from three sites:
+   *   1. Initial mount (existing project at startup).
+   *   2. After every `write`/`bash` tool result (reactive to new manifests).
+   *   3. Before every user submit (catches external changes between turns,
+   *      and ensures non-writing prompts still surface the badge).
+   *
+   * No-op when no new languages were added vs `injectedLanguagesRef.current`.
+   * The set-growth gate keeps this safe to call from every hot path.
+   */
+  const applyLanguageDetectionRef = useRef<(source: "initial" | "tool" | "input") => Promise<void>>(
+    async () => {},
+  );
+  applyLanguageDetectionRef.current = async (source) => {
+    const cwd = cwdRef.current;
+    const detected = detectLanguages(cwd);
+    const added: LanguageId[] = [];
+    for (const id of detected) {
+      if (!injectedLanguagesRef.current.has(id)) added.push(id);
+    }
+    if (added.length === 0) {
+      // No new packs to inject. The empty-detection hint + auto-run are
+      // first-time-per-cwd only — once the user has been shown the box and
+      // /setup has had a chance to run, re-showing on every session is noise.
+      // (Contrast with the with-packs path: the badge re-shows each session
+      // as project-state info; only its embedded /setup tip is one-time.)
+      if (
+        source === "initial" &&
+        !setupHintShownRef.current &&
+        injectedLanguagesRef.current.size === 0 &&
+        isFirstTimeSetup(cwd)
+      ) {
+        setupHintShownRef.current = true;
+        markSetupAudited(cwd);
+        log("INFO", "language", `No style packs detected for ${cwd}`, { source });
+        setLiveItems((prev) => [...prev, { kind: "setup_hint", id: getId() }]);
+        // /setup handles the empty / parent-folder / scratch-dir case via
+        // its brand-new-empty-project branch in the prompt template.
+        void triggerAutoSetupRef.current();
+      }
+      return;
+    }
+    injectedLanguagesRef.current = detected;
+    try {
+      const newPrompt = await buildSystemPrompt(
+        cwd,
+        props.skills,
+        planMode,
+        approvedPlanPathRef.current,
+        undefined,
+        detected,
+      );
+      if (messagesRef.current[0]?.role === "system") {
+        messagesRef.current[0] = { role: "system" as const, content: newPrompt };
+      }
+      const verifyCmds = detectVerifyCommands(cwd, detected);
+      const tag = source === "initial" ? "Initial style packs" : "Style pack(s) loaded";
+      log("INFO", "language", `${tag}: ${added.join(", ")}`, {
+        source,
+        active: [...detected].join(","),
+        verify_count: String(verifyCmds.length),
+        verify: verifyCmds.map((c) => `${c.language}:${c.label}=${c.command}`).join(" | "),
+      });
+      const showSetupHint = !setupHintShownRef.current;
+      setupHintShownRef.current = true;
+      setLiveItems((prev) => [...prev, { kind: "style_pack", added, showSetupHint, id: getId() }]);
+      // First-time-per-project auto-run. Fires only on the initial mount
+      // detection path — not on tool/input triggers — so we don't surprise
+      // users mid-session. Persisted across sessions via setup-history.json.
+      if (source === "initial" && isFirstTimeSetup(cwd)) {
+        markSetupAudited(cwd);
+        void triggerAutoSetupRef.current();
+      }
+    } catch (err) {
+      log("WARN", "language", `Detection apply failed (${source}): ${(err as Error).message}`);
+    }
+  };
+
+  // Initial language detection — runs once on mount so existing projects with
+  // marker files (package.json, Cargo.toml, etc.) get their style packs from
+  // turn 1, with a visible badge.
+  useEffect(() => {
+    void applyLanguageDetectionRef.current("initial");
+  }, []);
+
   // Rebuild system prompt when plan mode changes
   useEffect(() => {
     void (async () => {
@@ -787,6 +920,8 @@ export function App(props: AppProps) {
         props.skills,
         planMode,
         approvedPlanPathRef.current,
+        undefined,
+        injectedLanguagesRef.current,
       );
       if (messagesRef.current[0]?.role === "system") {
         messagesRef.current[0] = {
@@ -869,6 +1004,30 @@ export function App(props: AppProps) {
     }
     persistedIndexRef.current = allMsgs.length;
   }, []);
+
+  /**
+   * Run the language detector against the current cwd. If the detected set is a
+   * strict superset of what's already injected, rebuild the system prompt with
+   * the expanded set and swap `messagesRef.current[0]`.
+   *
+   * Called from `onToolEnd` after `write`/`bash` succeeds — these are the only
+   * tools that can introduce new marker files (package.json, Cargo.toml, etc.).
+   * Other tool kinds skip detection entirely to avoid wasted filesystem stats.
+   *
+   * No restart required: the system prompt is mutated in place, same mechanism
+   * already used for plan mode + pixel-fix chdir.
+   *
+   * Stored in a ref so `onToolEnd` (whose useCallback dep array is intentionally
+   * empty to keep agent-loop options stable) can call the freshest version.
+   */
+  const maybeInjectLanguagePacksRef = useRef<(toolName: string, isError: boolean) => Promise<void>>(
+    async () => {},
+  );
+  maybeInjectLanguagePacksRef.current = async (toolName, isError) => {
+    if (isError) return;
+    if (toolName !== "write" && toolName !== "bash") return;
+    await applyLanguageDetectionRef.current("tool");
+  };
 
   // ── Compaction ─────────────────────────────────────────
 
@@ -1076,7 +1235,14 @@ export function App(props: AppProps) {
           approvedPlanPathRef.current = undefined;
           // Rebuild system prompt to remove the completed plan from context
           void (async () => {
-            const newPrompt = await buildSystemPrompt(props.cwd, props.skills, planMode, undefined);
+            const newPrompt = await buildSystemPrompt(
+              props.cwd,
+              props.skills,
+              planMode,
+              undefined,
+              undefined,
+              injectedLanguagesRef.current,
+            );
             if (messagesRef.current[0]?.role === "system") {
               messagesRef.current[0] = { role: "system" as const, content: newPrompt };
             }
@@ -1340,6 +1506,10 @@ export function App(props: AppProps) {
           durationMs: number,
           details?: unknown,
         ) => {
+          // Language-pack detection — gated on `write`/`bash` inside the
+          // helper; cheap to call unconditionally. Fire-and-forget; the next
+          // LLM turn picks up the swapped system prompt automatically.
+          void maybeInjectLanguagePacksRef.current(name, isError);
           const level = isError ? "ERROR" : "INFO";
           log(level as "INFO" | "ERROR", "tool", `Tool call ended: ${name}`, {
             id: toolCallId,
@@ -1703,6 +1873,45 @@ export function App(props: AppProps) {
     },
   );
 
+  // First-time-per-project auto-run of /setup. Bound after `agentLoop` is in
+  // scope so the ref closure can dispatch to it. Called from the initial
+  // language-detection path when `isFirstTimeSetup(cwd)` is true. Pushes a
+  // notice item explaining what's happening, then runs the audit prompt.
+  triggerAutoSetupRef.current = async () => {
+    const setupCmd = getPromptCommand("setup");
+    if (!setupCmd) {
+      log("WARN", "setup", "Auto-setup skipped — /setup command not found in registry.");
+      return;
+    }
+    log("INFO", "setup", `Auto-running /setup (first session for ${cwdRef.current})`);
+    setLiveItems((prev) => [
+      ...prev,
+      {
+        kind: "info",
+        text:
+          "First time in this project — auto-running /setup to audit hygiene, tooling, and style-pack alignment. " +
+          "Press Esc to cancel.",
+        id: getId(),
+      },
+      { kind: "user", text: "/setup", id: getId() },
+    ]);
+    setLastUserMessage("/setup");
+    setDoneStatus(null);
+    try {
+      await agentLoop.run(setupCmd.prompt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isAbort = msg.includes("aborted") || msg.includes("abort");
+      log(isAbort ? "INFO" : "ERROR", "setup", `Auto-setup ended: ${msg}`);
+      setLiveItems((prev) => [
+        ...prev,
+        isAbort
+          ? { kind: "info", text: "Auto-setup cancelled.", id: getId() }
+          : { kind: "error", message: msg, id: getId() },
+      ]);
+    }
+  };
+
   // Phase 2 of the two-phase flush: after onDone clears liveItems (phase 1)
   // and Ink renders the smaller live area (updating its internal line
   // counter), this effect pushes the stashed items into Static history.
@@ -1780,6 +1989,11 @@ export function App(props: AppProps) {
           "input",
           `User input: ${truncated}${inputImages.length > 0 ? ` (+${inputImages.length} image${inputImages.length > 1 ? "s" : ""})` : ""}`,
         );
+        // Re-detect on every user submit — cheap (fs stats only). Catches
+        // external changes between turns and ensures non-writing prompts still
+        // surface the badge when packs are newly applicable. No-op if the set
+        // has not grown.
+        void applyLanguageDetectionRef.current("input");
       }
 
       // Handle /model directly — open inline selector
@@ -1815,7 +2029,14 @@ export function App(props: AppProps) {
       if (trimmed === "/clear") {
         if (props.resetUI) {
           void (async () => {
-            const newPrompt = await buildSystemPrompt(props.cwd, props.skills, planMode, undefined);
+            const newPrompt = await buildSystemPrompt(
+              props.cwd,
+              props.skills,
+              planMode,
+              undefined,
+              undefined,
+              injectedLanguagesRef.current,
+            );
             props.resetUI?.({
               wipeSession: true,
               messages: [{ role: "system" as const, content: newPrompt }],
@@ -1834,7 +2055,14 @@ export function App(props: AppProps) {
         planStepsRef.current = [];
         setPlanSteps([]);
         void (async () => {
-          const newPrompt = await buildSystemPrompt(props.cwd, props.skills, planMode, undefined);
+          const newPrompt = await buildSystemPrompt(
+            props.cwd,
+            props.skills,
+            planMode,
+            undefined,
+            undefined,
+            injectedLanguagesRef.current,
+          );
           messagesRef.current = [{ role: "system" as const, content: newPrompt }];
           persistedIndexRef.current = messagesRef.current.length;
         })();
@@ -1901,7 +2129,14 @@ export function App(props: AppProps) {
         setPlanSteps([]);
         // Rebuild system prompt without the plan
         void (async () => {
-          const newPrompt = await buildSystemPrompt(props.cwd, props.skills, planMode, undefined);
+          const newPrompt = await buildSystemPrompt(
+            props.cwd,
+            props.skills,
+            planMode,
+            undefined,
+            undefined,
+            injectedLanguagesRef.current,
+          );
           if (messagesRef.current[0]?.role === "system") {
             messagesRef.current[0] = { role: "system" as const, content: newPrompt };
           }
@@ -2357,6 +2592,81 @@ export function App(props: AppProps) {
             </Text>
           </Box>
         );
+      case "style_pack": {
+        const names = item.added.map((id) => LANGUAGE_DISPLAY_NAMES[id]);
+        const headerLabel = item.added.length > 1 ? "STYLE PACKS ACTIVE" : "STYLE PACK ACTIVE";
+        return (
+          <Box
+            key={item.id}
+            marginTop={1}
+            flexShrink={1}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={theme.language}
+            paddingX={1}
+          >
+            <Text wrap="wrap">
+              <Text color={theme.language} bold>
+                {"◆ "}
+              </Text>
+              <Text color={theme.language} bold>
+                {headerLabel}
+              </Text>
+            </Text>
+            <Text color={theme.text} bold wrap="wrap">
+              {names.join(", ")}
+            </Text>
+            {item.showSetupHint && (
+              <Box marginTop={1}>
+                <Text wrap="wrap">
+                  <Text color={theme.textMuted}>{"Tip: run "}</Text>
+                  <Text color={theme.language} bold>
+                    {"/setup"}
+                  </Text>
+                  <Text color={theme.textMuted}>
+                    {" to audit this project against the active pack(s)"}
+                  </Text>
+                </Text>
+              </Box>
+            )}
+          </Box>
+        );
+      }
+      case "setup_hint":
+        return (
+          <Box
+            key={item.id}
+            marginTop={1}
+            flexShrink={1}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={theme.language}
+            paddingX={1}
+          >
+            <Text wrap="wrap">
+              <Text color={theme.language} bold>
+                {"◆ "}
+              </Text>
+              <Text color={theme.language} bold>
+                {"NO STYLE PACKS DETECTED"}
+              </Text>
+            </Text>
+            <Text color={theme.textMuted} wrap="wrap">
+              {"This directory has no recognized language manifest at its root."}
+            </Text>
+            <Box marginTop={1}>
+              <Text wrap="wrap">
+                <Text color={theme.textMuted}>{"Tip: run "}</Text>
+                <Text color={theme.language} bold>
+                  {"/setup"}
+                </Text>
+                <Text color={theme.textMuted}>
+                  {" to audit project hygiene or bootstrap a new project from scratch"}
+                </Text>
+              </Text>
+            </Box>
+          </Box>
+        );
       case "assistant":
         return (
           <AssistantMessage
@@ -2640,11 +2950,21 @@ export function App(props: AppProps) {
           if (props.rebuildToolsForCwd) {
             setCurrentTools(props.rebuildToolsForCwd(prep.projectPath));
           }
+          // Pixel-fix swaps the project root — reset injected packs so the
+          // new project re-detects from scratch on the next tool call. Also
+          // reset the setup-hint flag so the new project's first badge re-
+          // surfaces the tip (different project, may need the reminder).
+          injectedLanguagesRef.current = new Set();
+          setupHintShownRef.current = false;
+          const detectedForPixelFix = detectLanguages(prep.projectPath);
+          injectedLanguagesRef.current = detectedForPixelFix;
           const newSystemPrompt = await buildSystemPrompt(
             prep.projectPath,
             props.skills,
             false,
             undefined,
+            undefined,
+            detectedForPixelFix,
           );
 
           // Now that the cwd swap is committed, reset chat. Doing this BEFORE
@@ -2841,7 +3161,14 @@ export function App(props: AppProps) {
                 const steps = extractPlanSteps(planContent);
 
                 // Build the new system prompt with the approved plan baked in.
-                const newPrompt = await buildSystemPrompt(props.cwd, props.skills, false, planPath);
+                const newPrompt = await buildSystemPrompt(
+                  props.cwd,
+                  props.skills,
+                  false,
+                  planPath,
+                  undefined,
+                  injectedLanguagesRef.current,
+                );
 
                 // Create a new session file BEFORE remount so the new tree
                 // picks it up via sessionStore.sessionPath.

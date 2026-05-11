@@ -3,6 +3,9 @@ import path from "node:path";
 import { isEyesActive, readJournal } from "@kenkaiiii/ggcoder-eyes";
 import { formatSkillsForPrompt, type Skill } from "./core/skills.js";
 import { TOOL_PROMPT_HINTS, DEFAULT_TOOL_NAMES } from "./tools/prompt-hints.js";
+import type { LanguageId } from "./core/language-detector.js";
+import { renderStylePacksSection } from "./core/style-packs/index.js";
+import { detectVerifyCommands, renderVerifySection } from "./core/verify-commands.js";
 
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".cursorrules", "CONVENTIONS.md"];
 
@@ -19,6 +22,7 @@ export async function buildSystemPrompt(
   planMode?: boolean,
   approvedPlanPath?: string,
   toolNames?: readonly string[],
+  activeLanguages?: Set<LanguageId>,
 ): Promise<string> {
   const sections: string[] = [];
 
@@ -53,7 +57,8 @@ export async function buildSystemPrompt(
       `- **Just do it.** Routine follow-up (build, migrate, seed, re-run) is yours — don't ask.\n` +
       `- **Ask first for destructive actions**: deleting files, force-push, dropping data, killing processes, \`rm -rf\`, \`--hard\`, \`--force\`.\n` +
       `- **Investigate unexpected state** (unfamiliar files, branches, locks) — may be the user's in-progress work.\n` +
-      `- **Honor CLAUDE.md / AGENTS.md** — they override defaults.\n` +
+      `- **Precedence when rules conflict** (highest first): CLAUDE.md / AGENTS.md → existing patterns in the file/module being edited → Language Style Packs → defaults in this prompt. Apply pack conventions to new code; mirror existing patterns when extending old code. Library names in packs are illustrative — use what the project already imports.\n` +
+      `- **Verify after meaningful edits.** When a Verification section is present, run the relevant commands for the language(s) you touched. Fix failures before reporting completion.\n` +
       `- **Untracked files → \`.gitignore\`**: artifacts, configs, secrets, logs, scratch, \`.env\`, caches.\n` +
       `- **Never fake verification.** If you didn't run the check or it failed, say so. Don't invent results.`,
   );
@@ -164,7 +169,28 @@ export async function buildSystemPrompt(
   }
 
   if (contextParts.length > 0) {
-    sections.push(`## Project Context\n\n${contextParts.join("\n\n")}`);
+    sections.push(
+      `## Project Context\n\n` +
+        `**Highest precedence** — the files below override anything stated earlier ` +
+        `in this prompt (How to Talk / How to Work / Code Quality / Style Packs).\n\n` +
+        contextParts.join("\n\n"),
+    );
+  }
+
+  // 6b. Language Style Packs — injected when the language detector has
+  // identified the project's active languages. See `core/language-detector.ts`
+  // and the swap logic in `ui/App.tsx`.
+  if (activeLanguages && activeLanguages.size > 0) {
+    const stylePacks = renderStylePacksSection(activeLanguages, cwd);
+    if (stylePacks) sections.push(stylePacks);
+
+    // 6c. Verification — detected commands for the active languages, so the
+    // agent can close the feedback loop after pack-influenced edits. Without
+    // this anchor, packs are advisory; with it, the model has concrete
+    // commands to run and verify against.
+    const verifyCmds = detectVerifyCommands(cwd, activeLanguages);
+    const verifySection = renderVerifySection(verifyCmds);
+    if (verifySection) sections.push(verifySection);
   }
 
   // 7. Eyes — open improvement signals from past probe use (gated on .gg/eyes/manifest.json)
