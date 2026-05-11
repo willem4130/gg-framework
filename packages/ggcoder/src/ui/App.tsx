@@ -69,7 +69,12 @@ import { SettingsManager, type Settings } from "../core/settings-manager.js";
 import { shouldCompact, compact } from "../core/compaction/compactor.js";
 import { estimateConversationTokens } from "../core/compaction/token-estimator.js";
 import { PROMPT_COMMANDS, getPromptCommand } from "../core/prompt-commands.js";
-import { isFirstTimeSetup, markSetupAudited } from "../core/setup-history.js";
+import {
+  isFirstTimeSetup,
+  markSetupAudited,
+  getAnnouncedLanguages,
+  markLanguagesAnnounced,
+} from "../core/setup-history.js";
 import { loadCustomCommands, type CustomCommand } from "../core/custom-commands.js";
 import { buildSystemPrompt } from "../system-prompt.js";
 import {
@@ -851,8 +856,9 @@ export function App(props: AppProps) {
       // No new packs to inject. The empty-detection hint + auto-run are
       // first-time-per-cwd only — once the user has been shown the box and
       // /setup has had a chance to run, re-showing on every session is noise.
-      // (Contrast with the with-packs path: the badge re-shows each session
-      // as project-state info; only its embedded /setup tip is one-time.)
+      // The with-packs path below is gated the same way via
+      // getAnnouncedLanguages / markLanguagesAnnounced: badge fires once per
+      // (cwd, language) and stays silent on subsequent sessions / /clear.
       if (
         source === "initial" &&
         !setupHintShownRef.current &&
@@ -890,9 +896,21 @@ export function App(props: AppProps) {
         verify_count: String(verifyCmds.length),
         verify: verifyCmds.map((c) => `${c.language}:${c.label}=${c.command}`).join(" | "),
       });
-      const showSetupHint = !setupHintShownRef.current;
-      setupHintShownRef.current = true;
-      setLiveItems((prev) => [...prev, { kind: "style_pack", added, showSetupHint, id: getId() }]);
+      // The badge is purely user-facing notification ("hey, this pack just
+      // turned on"). The system prompt is already updated above — that's the
+      // load-bearing part. We persist the announced set per-cwd so /clear,
+      // restart, and new sessions stay quiet for packs the user has seen.
+      const alreadyAnnounced = new Set(getAnnouncedLanguages(cwd));
+      const toAnnounce = added.filter((id) => !alreadyAnnounced.has(id));
+      if (toAnnounce.length > 0) {
+        markLanguagesAnnounced(cwd, toAnnounce);
+        const showSetupHint = !setupHintShownRef.current;
+        setupHintShownRef.current = true;
+        setLiveItems((prev) => [
+          ...prev,
+          { kind: "style_pack", added: toAnnounce, showSetupHint, id: getId() },
+        ]);
+      }
       // First-time-per-project auto-run. Fires only on the initial mount
       // detection path — not on tool/input triggers — so we don't surprise
       // users mid-session. Persisted across sessions via setup-history.json.

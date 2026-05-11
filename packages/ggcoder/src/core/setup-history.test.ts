@@ -52,4 +52,35 @@ describe("setup-history", () => {
     const { isFirstTimeSetup } = await loadModule();
     expect(isFirstTimeSetup("/tmp/anywhere")).toBe(true);
   });
+
+  it("getAnnouncedLanguages returns [] when never announced", async () => {
+    const { getAnnouncedLanguages } = await loadModule();
+    expect(getAnnouncedLanguages("/tmp/fresh")).toEqual([]);
+  });
+
+  it("markLanguagesAnnounced persists and dedupes across calls", async () => {
+    const { getAnnouncedLanguages, markLanguagesAnnounced } = await loadModule();
+    const cwd = "/tmp/proj";
+    markLanguagesAnnounced(cwd, ["typescript"]);
+    expect(getAnnouncedLanguages(cwd)).toEqual(["typescript"]);
+    markLanguagesAnnounced(cwd, ["typescript", "rust"]);
+    expect(getAnnouncedLanguages(cwd).sort()).toEqual(["rust", "typescript"]);
+  });
+
+  it("markLanguagesAnnounced and markSetupAudited coexist without clobbering", async () => {
+    const { isFirstTimeSetup, markSetupAudited, getAnnouncedLanguages, markLanguagesAnnounced } =
+      await loadModule();
+    const cwd = "/tmp/coexist";
+    markLanguagesAnnounced(cwd, ["python"]);
+    expect(isFirstTimeSetup(cwd)).toBe(true);
+    markSetupAudited(cwd);
+    expect(isFirstTimeSetup(cwd)).toBe(false);
+    expect(getAnnouncedLanguages(cwd)).toEqual(["python"]);
+  });
+
+  it("markLanguagesAnnounced is a no-op for empty input", async () => {
+    const { getAnnouncedLanguages, markLanguagesAnnounced } = await loadModule();
+    markLanguagesAnnounced("/tmp/noop", []);
+    expect(getAnnouncedLanguages("/tmp/noop")).toEqual([]);
+  });
 });
