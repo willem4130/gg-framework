@@ -312,9 +312,10 @@ export function toAnthropicThinking(
   if (supportsAdaptiveThinking(model)) {
     // Adaptive thinking — model decides when/how much to think.
     // budget_tokens is deprecated on Opus 4.7 / Opus 4.6 / Sonnet 4.6.
-    // "max" effort is Opus-only; downgrade to "high" for Sonnet
-    let effort: string = level;
-    if (level === "max" && !model.includes("opus")) {
+    // Anthropic's output_config.effort uses "max" as the top tier (Opus-only);
+    // map our "xhigh" → "max", and clamp non-Opus models to "high".
+    let effort: string = level === "xhigh" ? "max" : level;
+    if (effort === "max" && !model.includes("opus")) {
       effort = "high";
     }
     return {
@@ -324,8 +325,8 @@ export function toAnthropicThinking(
     };
   }
 
-  // Legacy budget-based thinking for older models ("max" treated as "high")
-  const effectiveLevel = level === "max" ? "high" : level;
+  // Legacy budget-based thinking for older models ("xhigh" treated as "high")
+  const effectiveLevel = level === "xhigh" ? "high" : level;
   const budgetMap: Record<"low" | "medium" | "high", number> = {
     low: Math.max(1024, Math.floor(maxTokens * 0.25)),
     medium: Math.max(2048, Math.floor(maxTokens * 0.5)),
@@ -519,8 +520,20 @@ export function toOpenAIToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToo
   return { type: "function", function: { name: choice.name } };
 }
 
-export function toOpenAIReasoningEffort(level: ThinkingLevel): "low" | "medium" | "high" {
-  return level === "max" ? "high" : level;
+// GPT-5.5-era Pro variants ("gpt-5.5-pro", "gpt-5.4-pro", …) only accept
+// medium / high / xhigh — they reject `low` and `none`. Standard models
+// (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex) accept the full range.
+// Reference: https://developers.openai.com/api/docs/models/gpt-5.5
+function isOpenAIProVariant(model: string): boolean {
+  return /^gpt-5\.\d+-pro$/i.test(model);
+}
+
+export function toOpenAIReasoningEffort(
+  level: ThinkingLevel,
+  model: string,
+): "low" | "medium" | "high" | "xhigh" {
+  if (isOpenAIProVariant(model) && level === "low") return "medium";
+  return level;
 }
 
 // ── Response Normalization ─────────────────────────────────

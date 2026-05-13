@@ -1,16 +1,23 @@
 import React from "react";
 import { Text, Box } from "ink";
+import type { ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { useTheme } from "../theme/theme.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { getContextWindow } from "../../core/model-registry.js";
 import { PARTIAL_BLOCKS, LIGHT_SHADE } from "../constants/figures.js";
+import { useAnimationActive, useAnimationTick, useReducedMotion } from "./AnimationContext.js";
 
 interface FooterProps {
   model: string;
   tokensIn: number;
   cwd: string;
   gitBranch?: string | null;
-  thinkingEnabled?: boolean;
+  /**
+   * Active thinking tier, or `undefined` when thinking is off. The footer
+   * renders the tier verbatim (`Thinking xhigh`) and color-codes by power.
+   * `xhigh` additionally shimmers to signal it's the top tier.
+   */
+  thinkingLevel?: ThinkingLevel;
   planMode?: boolean;
   exitPending?: boolean;
   /** Hide the plan-mode toggle entirely (for products that don't have plan mode). */
@@ -62,12 +69,57 @@ function getContextColor(pct: number, theme: ReturnType<typeof useTheme>): strin
   return theme.success;
 }
 
+// ── Thinking-level visual treatment ─────────────────────────
+//
+// Higher tier = warmer / more saturated color. `xhigh` adds a moving shimmer
+// so the top tier reads as visibly "on full power" at a glance.
+
+const XHIGH_COLOR = "#db2777"; // hot pink — the visible "max power" tone
+const XHIGH_SHIMMER_COLOR = "#f472b6"; // brighter pink that rides the shimmer
+const SHIMMER_WIDTH = 2;
+
+function getThinkingColor(
+  level: ThinkingLevel | undefined,
+  theme: ReturnType<typeof useTheme>,
+): string {
+  if (!level) return theme.textDim;
+  if (level === "low") return theme.textMuted;
+  if (level === "medium") return theme.accent;
+  if (level === "high") return theme.warning;
+  return XHIGH_COLOR; // xhigh
+}
+
+/**
+ * Per-char shimmer for the xhigh thinking label. A bright spot rides across
+ * the text; chars within `SHIMMER_WIDTH` of the spot render bright/bold, the
+ * rest stay in the base color. Subscribes to the global animation tick so
+ * the timer only runs while xhigh is visible.
+ */
+const XhighShimmer: React.FC<{ text: string }> = ({ text }) => {
+  useAnimationActive();
+  const tick = useAnimationTick();
+  const cycle = text.length + SHIMMER_WIDTH * 2;
+  const pos = (tick % cycle) - SHIMMER_WIDTH;
+  return (
+    <Text>
+      {text.split("").map((ch, i) => {
+        const isBright = Math.abs(i - pos) <= SHIMMER_WIDTH;
+        return (
+          <Text key={i} color={isBright ? XHIGH_SHIMMER_COLOR : XHIGH_COLOR} bold={isBright}>
+            {ch}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+};
+
 export function Footer({
   model,
   tokensIn,
   cwd,
   gitBranch,
-  thinkingEnabled,
+  thinkingLevel,
   planMode,
   exitPending,
   hidePlan,
@@ -120,7 +172,12 @@ export function Footer({
 
   // Plan/Thinking labels
   const planText = planMode ? "Plan on" : "Plan off";
-  const thinkingText = thinkingEnabled ? "Thinking on" : "Thinking off";
+  // Show the actual tier when on (`Thinking xhigh`) so users see what they're
+  // paying for. Off is the only state that stays generic.
+  const thinkingText = thinkingLevel ? `Thinking ${thinkingLevel}` : "Thinking off";
+  const thinkingColor = getThinkingColor(thinkingLevel, theme);
+  const reducedMotion = useReducedMotion();
+  const shimmerXhigh = thinkingLevel === "xhigh" && !reducedMotion;
   const showPlan = !hidePlan;
 
   // Calculate whether everything fits on one line
@@ -160,7 +217,13 @@ export function Footer({
         </>
       ) : null}
       {sep}
-      <Text color={thinkingEnabled ? theme.accent : theme.textDim}>{thinkingText}</Text>
+      {shimmerXhigh ? (
+        <XhighShimmer text={thinkingText} />
+      ) : (
+        <Text color={thinkingColor} bold={thinkingLevel === "high"}>
+          {thinkingText}
+        </Text>
+      )}
     </>
   );
 

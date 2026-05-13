@@ -23,7 +23,10 @@ export async function loadSettings(): Promise<BossSettings> {
   try {
     const content = await fs.readFile(settingsPath(), "utf-8");
     const parsed = JSON.parse(content) as BossSettings;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    // Legacy "max" → "xhigh" rename for thinking levels.
+    if ((parsed.bossThinkingLevel as unknown) === "max") parsed.bossThinkingLevel = "xhigh";
+    return parsed;
   } catch {
     return {};
   }

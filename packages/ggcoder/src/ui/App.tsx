@@ -56,7 +56,7 @@ import {
 } from "./components/AnimationContext.js";
 import { useTerminalTitle } from "./hooks/useTerminalTitle.js";
 import { getGitBranch } from "../utils/git.js";
-import { getModel, getContextWindow } from "../core/model-registry.js";
+import { getModel, getContextWindow, getMaxThinkingLevel } from "../core/model-registry.js";
 import { SessionManager, type MessageEntry } from "../core/session-manager.js";
 import { log } from "../core/logger.js";
 import {
@@ -834,9 +834,9 @@ export function App(props: AppProps) {
   }, [currentProvider, onRuntimeStateChange]);
   useEffect(() => {
     onRuntimeStateChange?.({
-      thinking: thinkingEnabled ? (props.thinking ?? "medium") : undefined,
+      thinking: thinkingEnabled ? getMaxThinkingLevel(currentModel) : undefined,
     });
-  }, [thinkingEnabled, props.thinking, onRuntimeStateChange]);
+  }, [thinkingEnabled, currentModel, onRuntimeStateChange]);
 
   // Mirror session state into renderApp's closure so resetUI() can re-seed
   // the conversation on remount. Each panel that previously did a bare ANSI
@@ -1299,7 +1299,7 @@ export function App(props: AppProps) {
       tools: currentTools,
       webSearch: props.webSearch,
       maxTokens: props.maxTokens,
-      thinking: thinkingEnabled ? (props.thinking ?? "medium") : undefined,
+      thinking: thinkingEnabled ? getMaxThinkingLevel(currentModel) : undefined,
       apiKey: activeApiKey,
       baseUrl: activeBaseUrl,
       accountId: activeAccountId,
@@ -3626,7 +3626,7 @@ export function App(props: AppProps) {
               tokensIn={agentLoop.contextUsed}
               cwd={displayedCwd}
               gitBranch={gitBranch}
-              thinkingEnabled={thinkingEnabled}
+              thinkingLevel={thinkingEnabled ? getMaxThinkingLevel(currentModel) : undefined}
               planMode={planMode}
               exitPending={exitPending}
             />

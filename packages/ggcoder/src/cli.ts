@@ -72,7 +72,7 @@ import { isEyesActive, journalCount } from "@kenkaiiii/ggcoder-eyes";
 import { createTools } from "./tools/index.js";
 import { shouldCompact, compact } from "./core/compaction/compactor.js";
 import { setEstimatorModel } from "./core/compaction/token-estimator.js";
-import { getContextWindow, getDefaultModel } from "./core/model-registry.js";
+import { getContextWindow, getDefaultModel, getMaxThinkingLevel } from "./core/model-registry.js";
 import { MCPClientManager, getMCPServers } from "./core/mcp/index.js";
 import { discoverAgents } from "./core/agents.js";
 import { discoverSkills } from "./core/skills.js";
@@ -433,7 +433,9 @@ function main(): void {
   }
 
   const model: string = saved.model ?? getHardcodedDefault(provider);
-  const thinkingLevel: ThinkingLevel | undefined = saved.thinkingEnabled ? "medium" : undefined;
+  const thinkingLevel: ThinkingLevel | undefined = saved.thinkingEnabled
+    ? getMaxThinkingLevel(model)
+    : undefined;
 
   // Interactive mode (Ink TUI)
   const cwd = process.cwd();
@@ -1165,7 +1167,9 @@ async function runSessions(): Promise<void> {
   }
 
   const model = saved2.model ?? getDefault(provider);
-  const thinkingLevel: ThinkingLevel | undefined = saved2.thinkingEnabled ? "medium" : undefined;
+  const thinkingLevel: ThinkingLevel | undefined = saved2.thinkingEnabled
+    ? getMaxThinkingLevel(model)
+    : undefined;
 
   closeLogger();
 
@@ -1395,7 +1399,6 @@ async function runServe(): Promise<void> {
   }
 
   const saved3 = loadSavedSettings();
-  const thinkingLevel: ThinkingLevel | undefined = saved3.thinkingEnabled ? "medium" : undefined;
 
   const paths = await ensureAppDirs();
   const authStorage = new AuthStorage(paths.authFile);
@@ -1408,6 +1411,10 @@ async function runServe(): Promise<void> {
     preferredProvider,
     serveValues.model ?? saved3.model,
   );
+
+  const thinkingLevel: ThinkingLevel | undefined = saved3.thinkingEnabled
+    ? getMaxThinkingLevel(model)
+    : undefined;
 
   initLogger(paths.logFile, {
     version: CLI_VERSION,
@@ -1571,7 +1578,6 @@ async function runAgentHome(): Promise<void> {
   }
 
   const saved4 = loadSavedSettings();
-  const thinkingLevel: ThinkingLevel | undefined = saved4.thinkingEnabled ? "medium" : undefined;
 
   const paths = await ensureAppDirs();
   const authStorage = new AuthStorage(paths.authFile);
@@ -1584,6 +1590,10 @@ async function runAgentHome(): Promise<void> {
     preferredProvider,
     ahValues.model ?? saved4.model,
   );
+
+  const thinkingLevel: ThinkingLevel | undefined = saved4.thinkingEnabled
+    ? getMaxThinkingLevel(model)
+    : undefined;
 
   initLogger(paths.logFile, {
     version: CLI_VERSION,

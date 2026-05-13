@@ -5,6 +5,7 @@ export {
   getModelsForProvider,
   getDefaultModel,
   getContextWindow,
+  getMaxThinkingLevel,
   type ModelInfo,
 } from "./model-registry.js";
 export { AuthStorage, NotLoggedInError } from "./auth-storage.js";

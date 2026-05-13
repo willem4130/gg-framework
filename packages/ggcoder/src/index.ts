@@ -36,6 +36,7 @@ export {
   getModelsForProvider,
   getDefaultModel,
   getContextWindow,
+  getMaxThinkingLevel,
   shouldCompact,
   compact,
   discoverSkills,
