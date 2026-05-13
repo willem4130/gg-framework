@@ -191,12 +191,40 @@ const INK_OPTIONS = {
   exitOnCtrlC: false,
 };
 
+// XTMODKEYS "off" — turns off xterm's modifyOtherKeys=2 mode where Shift+Enter,
+// Ctrl+letters, etc. arrive as ESC[27;<mod>;<keycode>~. Some terminals
+// (Terminal.app, tmux passthrough, certain xterm configs) leave this enabled
+// by default, which conflicts with the kitty keyboard protocol we enable
+// above — both modes overlap and the raw CSI 27 bytes leak into Ink's text
+// input. Writing this at startup (and on each screen clear) matches the
+// pattern used by openai/codex (keyboard_modes.rs) and google-gemini/gemini-cli
+// (terminal.ts), which both disable modifyOtherKeys immediately before
+// enabling kitty enhancement flags. Cleared again on exit so we don't leave
+// the terminal in an unusual state.
+const DISABLE_MODIFY_OTHER_KEYS = "\x1b[>4;0m";
+const SCREEN_CLEAR = DISABLE_MODIFY_OTHER_KEYS + "\x1b[2J\x1b[3J\x1b[H";
+
 export async function renderApp(config: RenderAppConfig): Promise<void> {
   const themeSetting = config.theme ?? "auto";
   const resolvedTheme = themeSetting === "auto" ? await detectTheme() : themeSetting;
 
-  // Clear screen + scrollback so old commands don't appear above the TUI
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  // Clear screen + scrollback so old commands don't appear above the TUI.
+  // Also disables modifyOtherKeys (see DISABLE_MODIFY_OTHER_KEYS).
+  process.stdout.write(SCREEN_CLEAR);
+
+  // Belt-and-suspenders cleanup: tmux can re-enable modifyOtherKeys when it
+  // forwards keyboard mode changes, and Ink's unmount path doesn't touch this
+  // mode (it manages kitty + alternate-screen but not XTMODKEYS). Re-disable
+  // on every exit path so the terminal isn't left generating CSI 27 sequences
+  // that confuse the parent shell.
+  const onProcessExit = (): void => {
+    try {
+      process.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
+    } catch {
+      // stdout may already be torn down; nothing useful to do here.
+    }
+  };
+  process.on("exit", onProcessExit);
 
   // Runtime state lives in this closure so unmount/remount doesn't lose
   // the user's runtime model/provider/thinking choices.
@@ -307,7 +335,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
     if (options?.sessionPath !== undefined) sessionStore.sessionPath = options.sessionPath;
     if (options?.pendingAction) sessionStore.pendingAction = options.pendingAction;
 
-    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+    process.stdout.write(SCREEN_CLEAR);
     old.unmount();
     ref.instance = render(buildElement(), INK_OPTIONS);
   }
@@ -362,5 +390,14 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
   } finally {
     process.stdout.off("resize", onTerminalResize);
     if (resizeTimer) clearTimeout(resizeTimer);
+    process.off("exit", onProcessExit);
+    // Final cleanup on normal exit — also covered by the "exit" handler,
+    // but writing here ensures the disable lands before Node tears stdout
+    // down on process termination.
+    try {
+      process.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
+    } catch {
+      // ignored
+    }
   }
 }

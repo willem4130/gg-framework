@@ -399,35 +399,73 @@ export function InputArea({
     return () => clearTimeout(timer);
   }, [value, cwd, disabled]);
 
-  // Normalize numpad Enter (kpenter) to regular Enter.  With the kitty
-  // keyboard protocol enabled, numpad Enter sends codepoint 57414 which Ink
-  // parses as "kpenter" instead of "return", so key.return is never set.
-  // We listen on Ink's internal event emitter and re-emit the sequence as
-  // a plain carriage return (\r) that Ink recognises as key.return.
+  // Normalize Enter/Tab sequences from terminals that don't speak kitty
+  // keyboard protocol cleanly. Two cases handled:
+  //
+  // 1. Numpad Enter (kitty form: ESC[57414u or ESC[57414;Nu) — Ink parses
+  //    this as "kpenter" rather than "return", so key.return is never set.
+  // 2. xterm modifyOtherKeys=2 form: ESC[27;<mod>;<keycode>~ — Terminal.app,
+  //    older xterms, and some iTerm2 configs send Shift+Enter as
+  //    ESC[27;2;13~ when the kitty enable request is ignored. Ink can't
+  //    parse this form and the raw bytes leak into the text input.
+  //
+  // We wrap the internal event emitter so we can both translate the
+  // sequence into something Ink recognises AND swallow the original
+  // bytes before Ink's parser sees them.
   const { internal_eventEmitter } = useStdin() as ReturnType<typeof useStdin> & {
     internal_eventEmitter: EventEmitter;
   };
   useEffect(() => {
     if (!isActive || !internal_eventEmitter) return;
-    // Matches ESC[57414u  or  ESC[57414;Nu  (N = modifier) — numpad Enter
-    // in the kitty keyboard protocol.
     // eslint-disable-next-line no-control-regex
     const kpEnterRe = /^\x1b\[57414(;\d+)?u$/;
-    const onInput = (data: string): void => {
-      if (kpEnterRe.test(data)) {
-        // Determine modifier flags from the sequence
-        const modMatch = /;(\d+)u$/.exec(data);
-        const mod = modMatch ? Math.max(0, parseInt(modMatch[1], 10) - 1) : 0;
-        const hasShift = !!(mod & 1);
-        const hasMeta = !!(mod & 10);
-        // Re-emit as regular Enter, preserving shift/meta for newline insertion
-        const synth = hasShift ? "\x1b[13;2u" : hasMeta ? "\x1b\r" : "\r";
-        internal_eventEmitter.emit("input", synth);
-      }
+    // eslint-disable-next-line no-control-regex
+    const xtermModifyRe = /^\x1b\[27;(\d+);(\d+)~$/;
+
+    const synthForEnter = (mod: number): string => {
+      const hasShift = !!(mod & 1);
+      const hasMeta = !!(mod & 10);
+      return hasShift ? "\x1b[13;2u" : hasMeta ? "\x1b\r" : "\r";
     };
-    internal_eventEmitter.on("input", onInput);
+
+    const originalEmit = internal_eventEmitter.emit.bind(internal_eventEmitter);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wrappedEmit = (event: string | symbol, ...args: any[]): boolean => {
+      if (event === "input" && typeof args[0] === "string") {
+        const data = args[0] as string;
+
+        if (kpEnterRe.test(data)) {
+          const modMatch = /;(\d+)u$/.exec(data);
+          const mod = modMatch ? Math.max(0, parseInt(modMatch[1], 10) - 1) : 0;
+          return originalEmit("input", synthForEnter(mod));
+        }
+
+        const xtermMatch = xtermModifyRe.exec(data);
+        if (xtermMatch) {
+          const mod = Math.max(0, parseInt(xtermMatch[1], 10) - 1);
+          const keycode = parseInt(xtermMatch[2], 10);
+          if (keycode === 13) {
+            return originalEmit("input", synthForEnter(mod));
+          }
+          if (keycode === 9) {
+            const hasShift = !!(mod & 1);
+            return originalEmit("input", hasShift ? "\x1b[Z" : "\t");
+          }
+          // Unknown keycode in this form — swallow so the raw bytes
+          // don't end up in the text field.
+          return true;
+        }
+      }
+      return originalEmit(event, ...args);
+    };
+
+    internal_eventEmitter.emit = wrappedEmit as typeof internal_eventEmitter.emit;
+
     return () => {
-      internal_eventEmitter.removeListener("input", onInput);
+      if (internal_eventEmitter.emit === wrappedEmit) {
+        internal_eventEmitter.emit = originalEmit as typeof internal_eventEmitter.emit;
+      }
     };
   }, [isActive, internal_eventEmitter]);
 
