@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { fuzzyFindText, countOccurrences, generateDiff, findClosestSnippet } from "./edit-diff.js";
+import {
+  fuzzyFindText,
+  countOccurrences,
+  generateDiff,
+  findClosestSnippet,
+  findOccurrenceLines,
+} from "./edit-diff.js";
 
 describe("fuzzyFindText", () => {
   it("finds exact match with usedFuzzy=false", () => {
@@ -123,6 +129,42 @@ describe("findClosestSnippet", () => {
     // by the bestScore/3 cutoff.
     expect(snippet).not.toBeNull();
     expect(snippet!.split("\n---\n")).toHaveLength(1);
+  });
+});
+
+describe("findOccurrenceLines", () => {
+  it("returns 1-indexed line numbers and trimmed previews for every match", () => {
+    const css = [
+      ".timer { color: white; }",
+      ".button { color: black; }",
+      ".label { color: white; }",
+      ".footer { color: white; }",
+    ].join("\n");
+
+    const matches = findOccurrenceLines(css, "color: white;");
+    expect(matches).toEqual([
+      { line: 1, preview: ".timer { color: white; }" },
+      { line: 3, preview: ".label { color: white; }" },
+      { line: 4, preview: ".footer { color: white; }" },
+    ]);
+  });
+
+  it("caps results at `max` so dozens of matches stay compact", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `row ${i} }`);
+    const matches = findOccurrenceLines(lines.join("\n"), "}", 4);
+    expect(matches).toHaveLength(4);
+    expect(matches[0].line).toBe(1);
+  });
+
+  it("falls back to fuzzy matching when exact yields zero", () => {
+    const content = "say “hi”";
+    const matches = findOccurrenceLines(content, 'say "hi"');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].line).toBe(1);
+  });
+
+  it("returns empty array for no matches at all", () => {
+    expect(findOccurrenceLines("hello world", "missing")).toEqual([]);
   });
 });
 

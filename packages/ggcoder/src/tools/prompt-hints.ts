@@ -7,7 +7,7 @@
 export const TOOL_PROMPT_HINTS: Record<string, string> = {
   read: "Read file contents. Use offset/limit for large files.",
   write: "Create or fully rewrite a file. Must read first if it exists. Prefer edit for changes.",
-  edit: "Surgical edits via { old_text, new_text } pairs. Copy `old_text` verbatim from the read — no paraphrasing, no `...`. Each must match exactly once. Must read first.",
+  edit: "Surgical edits via { old_text, new_text } pairs. Copy `old_text` verbatim from the read — no paraphrasing, no `...`. Each must match exactly once, or pass `replace_all: true` to swap every occurrence (renames). Must read first.",
   bash: "Run shell commands. CWD is the project root. Set run_in_background=true for long processes.",
   find: "Find files/dirs by name pattern. Faster than bash find, respects .gitignore.",
   grep: "Regex search across files. Use for usages, definitions, imports.",

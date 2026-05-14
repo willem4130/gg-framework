@@ -149,6 +149,48 @@ export function findClosestSnippet(
 }
 
 /**
+ * Locate every occurrence of `text` in `content` and return the 1-indexed line
+ * number plus a trimmed preview of that line. Tries exact first, then the same
+ * fuzzy normalization as `countOccurrences` so the line numbers match what the
+ * caller saw in `countOccurrences`. Capped at `max` so error messages stay
+ * compact when a token like `}` matches dozens of times.
+ */
+export function findOccurrenceLines(
+  content: string,
+  text: string,
+  max = 6,
+): { line: number; preview: string }[] {
+  const collectOffsets = (haystack: string, needle: string): number[] => {
+    if (!needle) return [];
+    const offsets: number[] = [];
+    let pos = 0;
+    while ((pos = haystack.indexOf(needle, pos)) !== -1) {
+      offsets.push(pos);
+      pos += needle.length;
+    }
+    return offsets;
+  };
+
+  let source = content;
+  let offsets = collectOffsets(content, text);
+  if (offsets.length === 0) {
+    source = normalizeForFuzzyMatch(content);
+    offsets = collectOffsets(source, normalizeForFuzzyMatch(text));
+  }
+
+  const out: { line: number; preview: string }[] = [];
+  for (const offset of offsets.slice(0, max)) {
+    const before = source.slice(0, offset);
+    const line = before.split("\n").length;
+    const lineStart = before.lastIndexOf("\n") + 1;
+    const nextNewline = source.indexOf("\n", lineStart);
+    const lineText = source.slice(lineStart, nextNewline === -1 ? undefined : nextNewline);
+    out.push({ line, preview: lineText.trim() });
+  }
+  return out;
+}
+
+/**
  * Generate a unified diff string.
  */
 export function generateDiff(oldContent: string, newContent: string, filePath: string): string {

@@ -291,6 +291,118 @@ describe("createEditTool", () => {
     ).rejects.toThrow(/found 3 times/);
   });
 
+  it("includes line numbers of every duplicate match in the error", async () => {
+    const filePath = path.join(tmpDir, "pomodoro.css");
+    await fs.writeFile(
+      filePath,
+      [
+        ".timer { color: white; }",
+        ".button { color: black; }",
+        ".label { color: white; }",
+        ".footer { color: white; }",
+        "",
+      ].join("\n"),
+    );
+
+    const tool = createEditTool(tmpDir);
+    await expect(
+      tool.execute(
+        {
+          file_path: "pomodoro.css",
+          edits: [{ old_text: "color: white;", new_text: "color: red;" }],
+        },
+        { signal: new AbortController().signal, toolCallId: "test-dup-lines" },
+      ),
+    ).rejects.toThrow(/Matches at:[\s\S]*line 1[\s\S]*line 3[\s\S]*line 4/);
+  });
+
+  it("hints at replace_all in the duplicate-match error", async () => {
+    const filePath = path.join(tmpDir, "hint.txt");
+    await fs.writeFile(filePath, "foo\nfoo\nfoo\n");
+
+    const tool = createEditTool(tmpDir);
+    await expect(
+      tool.execute(
+        { file_path: "hint.txt", edits: [{ old_text: "foo", new_text: "bar" }] },
+        { signal: new AbortController().signal, toolCallId: "test-dup-hint" },
+      ),
+    ).rejects.toThrow(/replace_all: true/);
+  });
+
+  it("replaces every occurrence when replace_all: true is set", async () => {
+    const filePath = path.join(tmpDir, "rename.css");
+    await fs.writeFile(
+      filePath,
+      [".timer { color: white; }", ".label { color: white; }", ".footer { color: white; }"].join(
+        "\n",
+      ) + "\n",
+    );
+
+    const tool = createEditTool(tmpDir);
+    const result = await tool.execute(
+      {
+        file_path: "rename.css",
+        edits: [{ old_text: "color: white;", new_text: "color: red;", replace_all: true }],
+      },
+      { signal: new AbortController().signal, toolCallId: "test-replace-all" },
+    );
+
+    const summary = typeof result === "string" ? result : (result as { content: string }).content;
+    expect(summary).toMatch(/Successfully/);
+
+    const written = await fs.readFile(filePath, "utf-8");
+    expect(written).toBe(
+      [".timer { color: red; }", ".label { color: red; }", ".footer { color: red; }"].join("\n") +
+        "\n",
+    );
+  });
+
+  it("replace_all still errors when no occurrences exist (with closest-match hint)", async () => {
+    const filePath = path.join(tmpDir, "missing-all.txt");
+    await fs.writeFile(filePath, "alpha beta\n");
+
+    const tool = createEditTool(tmpDir);
+    await expect(
+      tool.execute(
+        {
+          file_path: "missing-all.txt",
+          edits: [{ old_text: "gamma", new_text: "delta", replace_all: true }],
+        },
+        { signal: new AbortController().signal, toolCallId: "test-replace-all-missing" },
+      ),
+    ).rejects.toThrow(/old_text not found/);
+  });
+
+  it("replace_all coexists with sequential edits in one batch", async () => {
+    const filePath = path.join(tmpDir, "mixed.css");
+    await fs.writeFile(
+      filePath,
+      [".a { color: white; }", ".b { color: white; }", ".header { font-size: 12px; }"].join("\n") +
+        "\n",
+    );
+
+    const tool = createEditTool(tmpDir);
+    const result = await tool.execute(
+      {
+        file_path: "mixed.css",
+        edits: [
+          { old_text: "color: white;", new_text: "color: red;", replace_all: true },
+          { old_text: "font-size: 12px;", new_text: "font-size: 14px;" },
+        ],
+      },
+      { signal: new AbortController().signal, toolCallId: "test-mixed" },
+    );
+
+    const summary = typeof result === "string" ? result : (result as { content: string }).content;
+    expect(summary).toContain("2 edits");
+
+    const written = await fs.readFile(filePath, "utf-8");
+    expect(written).toBe(
+      [".a { color: red; }", ".b { color: red; }", ".header { font-size: 14px; }"].join("\n") +
+        "\n",
+    );
+  });
+
   it("handles fuzzy matching with trailing whitespace and smart quotes", async () => {
     const filePath = path.join(tmpDir, "fuzzy.txt");
     await fs.writeFile(filePath, "const msg = 'hello';  \nend\n");

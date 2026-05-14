@@ -2,13 +2,26 @@ import path from "node:path";
 import { z } from "zod";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { resolvePath, rejectSymlink } from "./path-utils.js";
-import { fuzzyFindText, countOccurrences, generateDiff, findClosestSnippet } from "./edit-diff.js";
+import {
+  fuzzyFindText,
+  countOccurrences,
+  generateDiff,
+  findClosestSnippet,
+  findOccurrenceLines,
+} from "./edit-diff.js";
 import { localOperations, type ToolOperations } from "./operations.js";
 import { assertFresh, recordWrite, type ReadTracker } from "./read-tracker.js";
 
 const EditItem = z.object({
   old_text: z.string().describe("The exact text to find and replace"),
   new_text: z.string().describe("The replacement text"),
+  replace_all: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence of old_text instead of requiring a unique match. " +
+        "Use for renames or repeated tokens. Defaults to false.",
+    ),
 });
 
 // Some models (Opus 4.6, GLM-5.1) occasionally send `edits` as a JSON string
@@ -44,10 +57,11 @@ export function createEditTool(
     name: "edit",
     description:
       "Replace one or more text strings in a file. The file must be read first before editing. " +
-      "Pass `edits` as an array of { old_text, new_text } pairs; edits are applied sequentially " +
-      "so each subsequent match runs against the result of the prior edits. " +
-      "Every old_text must uniquely match exactly one location in the file when applied. " +
-      "Returns a unified diff of the combined change.",
+      "Pass `edits` as an array of { old_text, new_text, replace_all? } items; edits are applied " +
+      "sequentially so each subsequent match runs against the result of the prior edits. " +
+      "Each old_text must uniquely match exactly one location when applied — if it matches more, " +
+      "either include surrounding context to make the match unique or set replace_all: true to " +
+      "swap every occurrence (useful for renames). Returns a unified diff of the combined change.",
     parameters: EditParams,
     async execute({ file_path, edits }) {
       if (planModeRef?.current) {
@@ -67,11 +81,20 @@ export function createEditTool(
       const errors: string[] = [];
 
       for (let i = 0; i < edits.length; i++) {
-        const { old_text, new_text } = edits[i];
+        const { old_text, new_text, replace_all } = edits[i];
         const normalizedOld = hasCRLF ? old_text.replace(/\r\n/g, "\n") : old_text;
         const normalizedNew = hasCRLF ? new_text.replace(/\r\n/g, "\n") : new_text;
 
         const label = edits.length > 1 ? ` (edit ${i + 1}/${edits.length})` : "";
+
+        // replace_all path: if there is at least one literal match, swap them
+        // all at once and skip the uniqueness check. Falls through to the
+        // normal not-found error when no exact matches exist (so the model
+        // gets the closest-snippet hint instead of a silent no-op).
+        if (replace_all && normalizedOld.length > 0 && working.includes(normalizedOld)) {
+          working = working.split(normalizedOld).join(normalizedNew);
+          continue;
+        }
 
         const occurrences = countOccurrences(working, normalizedOld);
         if (occurrences === 0) {
@@ -85,9 +108,17 @@ export function createEditTool(
           continue;
         }
         if (occurrences > 1) {
+          const matches = findOccurrenceLines(working, normalizedOld);
+          const matchLines = matches.map((m) => `  line ${m.line}: ${m.preview}`).join("\n");
+          const more =
+            occurrences > matches.length ? `\n  …and ${occurrences - matches.length} more` : "";
           errors.push(
             `old_text found ${occurrences} times in ${fileName}${label}. ` +
-              "Include more surrounding context to make the match unique.",
+              "Include more surrounding context to make the match unique, " +
+              "or set replace_all: true to swap every occurrence.\n" +
+              "Matches at:\n" +
+              matchLines +
+              more,
           );
           continue;
         }
