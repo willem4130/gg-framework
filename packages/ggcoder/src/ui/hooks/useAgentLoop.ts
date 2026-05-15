@@ -162,6 +162,9 @@ export function useAgentLoop(
     onAborted?: () => void;
     /** Called when a queued message starts processing (after the previous run completes). */
     onQueuedStart?: (content: UserContent) => void;
+    /** Polled when the agent would otherwise stop. Return a user message to
+     *  inject and continue the loop (e.g. "continue with the next plan step"). */
+    getFollowUpMessages?: () => Message[] | null;
   },
 ): UseAgentLoopReturn {
   const onComplete = callbacks?.onComplete;
@@ -175,6 +178,7 @@ export function useAgentLoop(
   const onDone = callbacks?.onDone;
   const onAborted = callbacks?.onAborted;
   const onQueuedStart = callbacks?.onQueuedStart;
+  const getFollowUpMessages = callbacks?.getFollowUpMessages;
   const [isRunning, setIsRunning] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
@@ -446,6 +450,10 @@ export function useAgentLoop(
               onQueuedStart?.(merged);
               return [{ role: "user" as const, content: merged }];
             },
+            // Polled when the agent would otherwise stop — used to inject
+            // "continue with the next plan step" when an approved plan still
+            // has incomplete steps. See App.tsx for the implementation.
+            getFollowUpMessages: getFollowUpMessages,
             // clearToolUses disabled — causes model to output unsolicited context
             // summaries ("KEY CONTEXT TO REMEMBER") when it sees gaps from stripped
             // tool blocks. Normal client-side compaction handles context management.
@@ -814,6 +822,7 @@ export function useAgentLoop(
       onDone,
       onAborted,
       onQueuedStart,
+      getFollowUpMessages,
     ],
   );
 

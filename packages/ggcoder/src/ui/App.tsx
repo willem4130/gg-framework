@@ -763,6 +763,11 @@ export function App(props: AppProps) {
   const approvedPlanPathRef = useRef<string | undefined>(props.sessionStore?.approvedPlanPath);
   const planStepsRef = useRef<PlanStep[]>(props.sessionStore?.planSteps ?? []);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>(props.sessionStore?.planSteps ?? []);
+  // Stuck-guard for the plan-continuation follow-up nudge. Tracks how many
+  // times we've nudged the agent to continue the same step. Reset whenever a
+  // new [DONE:n] marker advances progress (see onTurnText). Caps at 2 nudges
+  // so a genuinely stuck agent surfaces instead of looping forever.
+  const followUpNudgesRef = useRef<{ step: number; count: number }>({ step: 0, count: 0 });
   // Seed the per-item ID counter so it doesn't collide with IDs already in
   // sessionStore.history (which survives remount). Without this, a remount
   // (resize, overlay toggle, etc.) starts the counter at 0 and new items
@@ -1398,6 +1403,9 @@ export function App(props: AppProps) {
               planStepsRef.current = updated;
               setPlanSteps(updated);
             }
+            // Real progress happened — reset the stuck-guard so the next
+            // step gets its own fresh nudge budget.
+            followUpNudgesRef.current = { step: 0, count: 0 };
           }
         }
 
@@ -1952,6 +1960,34 @@ export function App(props: AppProps) {
         setLastUserMessage(displayText);
         setDoneStatus(null);
         setLiveItems([userItem]);
+      }, []),
+      // Inject a "continue with the next step" follow-up when the agent
+      // would otherwise stop mid-plan. The prompt-only instruction wasn't
+      // enough — some models (notably Opus) treat each [DONE:n] as a
+      // natural completion boundary regardless. The stuck-guard caps
+      // nudges per step so a genuinely blocked agent surfaces.
+      getFollowUpMessages: useCallback(() => {
+        const steps = planStepsRef.current;
+        if (steps.length === 0 || !approvedPlanPathRef.current) return null;
+        const next = steps.find((s) => !s.completed);
+        if (!next) return null;
+        const r = followUpNudgesRef.current;
+        if (r.step !== next.step) {
+          r.step = next.step;
+          r.count = 0;
+        }
+        if (r.count >= 2) return null;
+        r.count++;
+        return [
+          {
+            role: "user" as const,
+            content:
+              `Continue with step ${next.step}: ${next.text}. ` +
+              `Emit [DONE:${next.step}] when done, then proceed to step ${next.step + 1} ` +
+              `in the same turn. Only stop when every step in \`## Steps\` is complete ` +
+              `or you genuinely need user input.`,
+          },
+        ];
       }, []),
     },
   );

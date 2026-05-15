@@ -100,8 +100,7 @@ export async function buildSystemPrompt(
           `Follow this plan strictly. File: ${approvedPlanPath}\n\n` +
           `<approved_plan>\n${planContent.trim()}\n</approved_plan>\n\n` +
           `- Follow step order. Don't deviate without user confirmation.\n` +
-          `- After each step from \`## Steps\`, output \`[DONE:n]\` (e.g. \`[DONE:1]\`) to update the progress widget.\n` +
-          `- After emitting \`[DONE:n]\`, immediately continue with step n+1 in the same turn. Do NOT stop or wait for confirmation between steps. Only stop when every step in \`## Steps\` is complete, or you genuinely need user input to proceed.`,
+          `- After each step from \`## Steps\`, output \`[DONE:n]\` (e.g. \`[DONE:1]\`) to update the progress widget, then continue with step n+1 in the same turn.`,
       );
     }
   }
