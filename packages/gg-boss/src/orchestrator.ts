@@ -6,7 +6,13 @@ import {
   getContextWindow,
   shouldCompact,
 } from "@kenkaiiii/ggcoder";
-import type { Message, Provider, ThinkingLevel, Usage } from "@kenkaiiii/gg-ai";
+import {
+  formatError,
+  type Message,
+  type Provider,
+  type ThinkingLevel,
+  type Usage,
+} from "@kenkaiiii/gg-ai";
 import { Worker } from "./worker.js";
 import { EventQueue } from "./event-queue.js";
 import { createBossTools, WORKER_PROMPT_BRIEF } from "./tools.js";
@@ -676,7 +682,7 @@ export class GGBoss {
             }
             break;
           case "error":
-            bossStore.appendInfo(formatProviderError(e.error.message), "error");
+            bossStore.appendInfo(formatProviderError(e.error), "error");
             break;
           default:
             break;
@@ -701,7 +707,7 @@ export class GGBoss {
       }
       const message = err instanceof Error ? err.message : String(err);
       log("ERROR", "boss_turn", message);
-      bossStore.appendInfo(formatProviderError(message), "error");
+      bossStore.appendInfo(formatProviderError(err), "error");
     }
     bossStore.finishStreaming();
     // Post-turn heap-pressure relief: truncate oversized tool_result blocks
@@ -1032,33 +1038,12 @@ function computeContextUsed(usage: Usage, provider: Provider): number {
  * Map raw provider error text to a human-friendly hint. Mirrors ggcoder's
  * pattern in App.tsx so users see the same diagnostic phrasing.
  */
-function formatProviderError(message: string): string {
-  const lower = message.toLowerCase();
-  if (lower.includes("overloaded") || lower.includes("engine_overloaded")) {
-    return `${message}\nHint: provider is under heavy load — try again in a moment.`;
-  }
-  if (
-    lower.includes("insufficient balance") ||
-    lower.includes("quota exceeded") ||
-    lower.includes("recharge")
-  ) {
-    return `${message}\nHint: billing or quota issue — check your account balance.`;
-  }
-  if (
-    lower.includes("rate limit") ||
-    lower.includes("too many requests") ||
-    lower.includes("429")
-  ) {
-    return `${message}\nHint: provider rate limit — wait a moment before retrying.`;
-  }
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return `${message}\nHint: provider timed out — their servers may be slow.`;
-  }
-  if (
-    lower.includes("does not recognize the requested model") ||
-    (lower.includes("model") && (lower.includes("not exist") || lower.includes("not found")))
-  ) {
-    return `${message}\nHint: use /model to switch, or check that your account has access.`;
-  }
-  return message;
+function formatProviderError(err: unknown): string {
+  const formatted = formatError(err);
+  const message = formatted.message || (err instanceof Error ? err.message : String(err));
+  const lines = [formatted.headline];
+  if (message && message !== formatted.headline) lines.push(message);
+  lines.push(`Hint: ${formatted.guidance}`);
+  if (formatted.requestId) lines.push(`Request ID: ${formatted.requestId}`);
+  return lines.join("\n");
 }

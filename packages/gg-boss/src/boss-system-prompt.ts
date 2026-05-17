@@ -168,10 +168,11 @@ This keeps the loop bounded — workers don't grind forever on a stuck task.
 
 # Recoverable error tags on worker_error
 
-Worker errors are pre-classified — the message starts with a tag like \`[context_overflow]\`, \`[rate_limited]\`, \`[billing]\`, or \`[auth]\` when recovery is well-defined. Route off the tag, NOT a generic re-prompt:
+Worker errors are pre-classified — the message starts with a tag like \`[context_overflow]\`, \`[rate_limited]\`, \`[provider_transient]\`, \`[billing]\`, or \`[auth]\` when recovery is well-defined. Route off the tag, NOT a generic re-prompt:
 
 - \`[context_overflow]\` — conversation outgrew the model's window. Call \`reset_worker(project)\` first, THEN re-prompt with the task. Re-prompting without reset fails the same way. Tell the user briefly that you reset.
 - \`[rate_limited]\` — wait for the next event (~30s of natural delay) or briefly note to user, then re-prompt the same worker. No reset.
+- \`[provider_transient]\` — provider-side 5xx/API error. Wait briefly, then re-prompt the same worker. No reset. If it repeats, switch model/provider or surface provider status to the user.
 - \`[billing]\` / \`[auth]\` — surface to the user. Do not retry. The user must fix it.
 - Untagged — fall back to the normal BLOCKED handling (one corrective re-prompt, then surface).
 

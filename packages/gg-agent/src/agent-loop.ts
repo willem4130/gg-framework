@@ -123,16 +123,22 @@ export function isToolPairingError(err: unknown): boolean {
 }
 
 /**
- * Distinguish rate-limit (HTTP 429) from server-side overload (HTTP 529).
- * Returns null for errors that should not enter the overload-retry bucket.
- * Both kinds use the same backoff schedule, but the UI shows different copy
- * and the log line records the true cause.
+ * Distinguish rate-limit (HTTP 429), server-side overload (HTTP 529), and
+ * transient provider 5xx/API failures. Returns null for errors that should not
+ * enter the retry bucket. All kinds use the same backoff schedule, but the UI
+ * shows different copy and the log line records the true cause.
  */
-export function classifyOverload(err: unknown): "rate_limit" | "overloaded" | null {
+export function classifyOverload(
+  err: unknown,
+): "rate_limit" | "overloaded" | "provider_error" | null {
   if (!(err instanceof Error)) return null;
   if (isBillingError(err)) return null;
   const msg = err.message.toLowerCase();
+  const errorWithStatus = err as Error & { statusCode?: unknown };
+  const statusCode =
+    typeof errorWithStatus.statusCode === "number" ? errorWithStatus.statusCode : undefined;
   if (
+    statusCode === 429 ||
     msg.includes("rate_limit") ||
     msg.includes("rate limit") ||
     msg.includes("too many requests") ||
@@ -140,8 +146,22 @@ export function classifyOverload(err: unknown): "rate_limit" | "overloaded" | nu
   ) {
     return "rate_limit";
   }
-  if (msg.includes("overloaded") || msg.includes("529")) {
+  if (statusCode === 529 || msg.includes("overloaded") || msg.includes("529")) {
     return "overloaded";
+  }
+  if (
+    statusCode === 500 ||
+    statusCode === 502 ||
+    statusCode === 503 ||
+    statusCode === 504 ||
+    msg.includes("api_error") ||
+    msg.includes("server_error") ||
+    msg.includes("internal server error") ||
+    msg.includes("bad gateway") ||
+    msg.includes("service unavailable") ||
+    msg.includes("gateway timeout")
+  ) {
+    return "provider_error";
   }
   return null;
 }
@@ -668,7 +688,7 @@ export async function* agentLoop(
           yield { type: "error" as const, error: err instanceof Error ? err : new Error(errMsg) };
           throw err;
         }
-        // Overloaded / rate-limited: exponential backoff, retry up to 10 times
+        // Transient provider errors (5xx), overload, and rate-limit: exponential backoff.
         const overloadKind = classifyOverload(err);
         if (overloadRetries < MAX_OVERLOAD_RETRIES && overloadKind) {
           overloadRetries++;

@@ -79,6 +79,25 @@ describe("classifyWorkerError — rate limited", () => {
   }
 });
 
+describe("classifyWorkerError — provider transient", () => {
+  const cases = [
+    "api_error: Internal server error",
+    "500 Internal server error",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "529 overloaded_error",
+    '{"type":"error","error":{"details":null,"type":"api_error","message":"Internal server error"},"request_id":"req_011Cb6hYLp9bbMmkqdo2yTWL"}',
+  ];
+  for (const raw of cases) {
+    it(`tags "${raw}" as [provider_transient]`, () => {
+      const out = classifyWorkerError(raw);
+      expect(out).toMatch(/^\[provider_transient\]/);
+      expect(out).toContain("no reset needed");
+      expect(out).toContain(raw);
+    });
+  }
+});
+
 describe("classifyWorkerError — billing", () => {
   const cases = [
     "Insufficient balance on account",

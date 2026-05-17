@@ -544,12 +544,34 @@ function messageToResponse(message: Anthropic.Message): StreamResponse {
 
 function toError(err: unknown): ProviderError {
   if (err instanceof Anthropic.APIError) {
-    // Anthropic surfaces request IDs on the APIError itself (`request_id`)
-    // and sometimes inside the body. Prefer the structured field.
+    // Anthropic exposes request IDs as `requestID` in current SDKs, `request_id`
+    // in older/compat shapes, and sometimes inside the streamed error body.
+    const errorBody = err.error as Record<string, unknown> | undefined;
+    const nestedError = errorBody?.error as Record<string, unknown> | undefined;
     const requestId =
-      (err as unknown as { request_id?: string }).request_id ??
-      ((err.error as Record<string, unknown> | undefined)?.request_id as string | undefined);
-    return new ProviderError("anthropic", err.message, {
+      (err as unknown as { requestID?: string | null }).requestID ??
+      (err as unknown as { request_id?: string | null }).request_id ??
+      (typeof errorBody?.request_id === "string" ? errorBody.request_id : undefined) ??
+      (typeof nestedError?.request_id === "string" ? nestedError.request_id : undefined) ??
+      undefined;
+    const bodyMessage =
+      typeof nestedError?.message === "string"
+        ? nestedError.message
+        : typeof errorBody?.message === "string"
+          ? errorBody.message
+          : undefined;
+    const bodyType =
+      typeof nestedError?.type === "string"
+        ? nestedError.type
+        : typeof errorBody?.type === "string"
+          ? errorBody.type
+          : typeof (err as unknown as { type?: unknown }).type === "string"
+            ? ((err as unknown as { type: string }).type as string)
+            : undefined;
+    const message =
+      bodyType && bodyMessage ? `${bodyType}: ${bodyMessage}` : (bodyMessage ?? err.message);
+
+    return new ProviderError("anthropic", message, {
       statusCode: err.status,
       ...(requestId ? { requestId } : {}),
       cause: err,

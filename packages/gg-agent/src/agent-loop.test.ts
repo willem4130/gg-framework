@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { isContextOverflow, agentLoop } from "./agent-loop.js";
+import { ProviderError } from "@kenkaiiii/gg-ai";
+import { agentLoop, classifyOverload, isContextOverflow } from "./agent-loop.js";
 import type { AgentEvent, AgentResult } from "./types.js";
 import type { Message, StreamOptions } from "@kenkaiiii/gg-ai";
 
@@ -102,6 +103,31 @@ describe("isContextOverflow", () => {
     expect(isContextOverflow("some string")).toBe(false);
     expect(isContextOverflow(null)).toBe(false);
     expect(isContextOverflow(undefined)).toBe(false);
+  });
+});
+
+describe("classifyOverload", () => {
+  it("classifies provider 5xx and api_error as transient provider errors", () => {
+    const cases = [
+      new ProviderError("anthropic", "api_error: Internal server error", { statusCode: undefined }),
+      new ProviderError("anthropic", "Internal server error", { statusCode: 500 }),
+      new ProviderError("anthropic", "Bad Gateway", { statusCode: 502 }),
+      new ProviderError("anthropic", "Service Unavailable", { statusCode: 503 }),
+      new ProviderError("anthropic", "Gateway Timeout", { statusCode: 504 }),
+    ];
+
+    for (const error of cases) {
+      expect(classifyOverload(error)).toBe("provider_error");
+    }
+  });
+
+  it("keeps rate limits and overloads distinct", () => {
+    expect(
+      classifyOverload(new ProviderError("anthropic", "rate_limit_error", { statusCode: 429 })),
+    ).toBe("rate_limit");
+    expect(
+      classifyOverload(new ProviderError("anthropic", "overloaded_error", { statusCode: 529 })),
+    ).toBe("overloaded");
   });
 });
 

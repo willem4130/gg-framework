@@ -55,6 +55,18 @@ const RATE_LIMIT_PATTERNS: RegExp[] = [
   /requests per minute/i,
 ];
 
+const PROVIDER_TRANSIENT_PATTERNS: RegExp[] = [
+  /\b5\d\d\b/,
+  /api_error/i,
+  /server_error/i,
+  /internal server error/i,
+  /bad gateway/i,
+  /service unavailable/i,
+  /gateway timeout/i,
+  /overloaded/i,
+  /\b529\b/,
+];
+
 const BILLING_PATTERNS: RegExp[] = [
   /insufficient balance/i,
   /insufficient[ _]quota/i,
@@ -100,6 +112,9 @@ export function classifyWorkerError(message: string): string {
   }
   if (matchesAny(message, RATE_LIMIT_PATTERNS)) {
     return `[rate_limited] Provider rate limit hit. Recovery: wait ~30s, then re-prompt the same worker (no reset needed).\n\nOriginal: ${message}`;
+  }
+  if (matchesAny(message, PROVIDER_TRANSIENT_PATTERNS)) {
+    return `[provider_transient] Provider server-side/transient error. Recovery: wait briefly, then re-prompt the same worker (no reset needed). If it keeps happening, switch models/providers or check provider status.\n\nOriginal: ${message}`;
   }
   return message;
 }

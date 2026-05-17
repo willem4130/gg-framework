@@ -146,6 +146,7 @@ interface ActivityIndicatorProps {
 const RETRY_REASON_LABELS: Record<RetryInfo["reason"], string> = {
   overloaded: "Provider overloaded",
   rate_limit: "Rate limited",
+  provider_error: "Provider server error",
   empty_response: "Empty response",
   stream_stall: "Provider stream stalled",
   overflow_compact: "Context overflow — compacting",
