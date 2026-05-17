@@ -604,9 +604,6 @@ async function runInkTUI(opts: {
     projectDir: cwd,
   });
 
-  // Build system prompt & tools (with sub-agent support)
-  const systemPrompt = await buildSystemPrompt(cwd, skills);
-
   // Plan mode refs — shared between tools and UI
   const planModeRef = { current: false };
   const onEnterPlanRef: { current: (reason?: string) => void } = {
@@ -656,6 +653,14 @@ async function runInkTUI(opts: {
       `MCP initialization failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+
+  const systemPrompt = await buildSystemPrompt(
+    cwd,
+    skills,
+    false,
+    undefined,
+    tools.map((tool) => tool.name),
+  );
 
   // Kill all background processes on exit (synchronous — catches all exit paths)
   process.on("exit", () => {

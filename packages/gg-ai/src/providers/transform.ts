@@ -269,8 +269,9 @@ export function toAnthropicMessages(
     }
   }
 
-  // Build system as block array (supports cache_control).
-  // Split on "<!-- uncached -->" marker: text before is cached, text after is not.
+  // Anthropic supports block-level cache_control. GG Coder keeps reusable prompt
+  // content before the "<!-- uncached -->" marker and volatile text (currently
+  // the date) after it, so only the reusable prefix receives cache_control.
   let system: Anthropic.TextBlockParam[] | undefined;
   if (systemText) {
     const marker = "<!-- uncached -->";
@@ -400,6 +401,9 @@ export function toOpenAIMessages(
 
   for (const msg of messages) {
     if (msg.role === "system") {
+      // OpenAI-style APIs receive the system prompt literally. They may do
+      // provider-side prefix/key caching, but there is no Anthropic-style
+      // uncached block split here; the marker remains ordinary text.
       out.push({ role: "system", content: msg.content });
       continue;
     }

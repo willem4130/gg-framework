@@ -43,8 +43,7 @@ export function renderStylePacksSection(active: Set<LanguageId>, cwd: string): s
   if (parts.length === 0) return "";
   return (
     `## Language Style Packs\n\n` +
-    `Conventions for new code in each active language. Library names below are ` +
-    `illustrative — use whatever the project already imports.\n\n` +
+    `Conventions for new code in active languages. Project context and existing local patterns override these defaults; library names are illustrative.\n\n` +
     `${AGENT_WRITTEN_CODE_PREAMBLE}\n\n` +
     parts.join("\n\n")
   );
@@ -61,11 +60,11 @@ export function renderStylePacksSection(active: Set<LanguageId>, cwd: string): s
  */
 const AGENT_WRITTEN_CODE_PREAMBLE = `### Agent-Written Code (cross-cutting)
 
-Universal rules — apply to every language below.
+Universal rules for agent-written code:
 
-- **Observability at boundaries.** Structured logging (key/value pairs, not string interpolation) at every external I/O — HTTP calls, DB queries, file reads, subprocess runs. Log inputs, outcome, and elapsed time. Use the language's stdlib or canonical structured logger (\`log/slog\`, \`tracing\`, \`structlog\`, Pino, \`Microsoft.Extensions.Logging\`, etc.). Never leave \`console.log\`/\`print\`/\`fmt.Println\` debugging in committed code.
-- **Determinism by default.** Sort before iterating maps/sets where output order is observable. Stable IDs (UUIDv7, ULID, or content hash) — never \`random + timestamp\`. Never read wall-clock time inside pure logic; inject a clock at the boundary. Use canonical-form serialization (sorted keys) for anything that gets compared, hashed, persisted, or diffed.
-- **No hidden state.** No module-level mutables, no global singletons as the primary state container, no implicit DI through container magic. Pass dependencies explicitly through function signatures or constructors. State that escapes the signature is invisible at the call site, which means invisible to the agent reading it later.
-- **Local verifiability.** A function should be small enough that its correctness is confirmable by reading it plus its direct callers — not by tracing through four layers of indirection. Prefer composing small pure functions over deep class hierarchies. The agent will re-read this code; optimize for that.
-- **Tests pin behavior, not implementation.** Arrange-Act-Assert with each phase visible. No shared mutable fixtures across tests. Each test runnable independently in any order. Table-driven when there's a clear input→output mapping. A test that breaks on a refactor without a behavior change is a bad test.
-- **Fail loudly at boundaries, handle locally inside.** Validate untrusted input the moment it crosses into your code (per the per-language Data rules). Once validated, interior code trusts the types. Errors as values for the local-handling half — see each pack's Errors rule.`;
+- **Observe boundaries.** Use structured logging at external I/O; include inputs, outcome, and elapsed time. Do not commit debug prints.
+- **Deterministic output.** Sort observable map/set iteration; use stable IDs; inject clocks; canonicalize serialized data used for hashes, persistence, comparisons, or diffs.
+- **Explicit state.** Avoid module-level mutables, global state containers, and implicit DI. Pass dependencies through signatures or constructors.
+- **Locally verifiable.** Prefer small pure functions and shallow composition over deep indirection.
+- **Behavioral tests.** Arrange-Act-Assert, no shared mutable fixtures, table-driven where natural, independent test order.
+- **Validate at boundaries.** Validate untrusted input as it enters; inside, rely on validated types and use local error values for expected failures.`;

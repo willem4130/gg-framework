@@ -420,14 +420,17 @@ Write the file, then summarize what was researched.`,
     name: "init",
     aliases: [],
     description: "Generate or update CLAUDE.md for this project",
-    prompt: `Generate or update a minimal CLAUDE.md with project structure, guidelines, and quality checks.
+    prompt: `Generate or update a minimal CLAUDE.md with project-specific context only: what this project is, how it is structured, and commands/workflows that are unique to it.
+
+Do NOT add generic agent behavior already covered by the system prompt, including: read before edit/write, re-read after formatters, ask before destructive actions, no fake verification, generic code-quality advice, single-responsibility rules, one-file-per-component rules, or language-style conventions. Include only project-specific overrides or stricter local requirements.
 
 ## Step 1: Check if CLAUDE.md Exists
 
 If CLAUDE.md exists:
 - Read the existing file
 - Preserve custom sections the user may have added
-- Update the structure, quality checks, and organization rules
+- Update only project-specific facts that are stale or missing
+- Remove generic guidance that is already covered by the system prompt unless it is a deliberate project-specific override
 
 If CLAUDE.md does NOT exist:
 - Create a new one from scratch
@@ -445,12 +448,12 @@ Wait for all sub-agents to complete, then synthesize the information.
 ## Step 3: Detect Project Type & Commands
 
 Check for config files:
-- package.json -> JavaScript/TypeScript (extract lint, typecheck, server scripts)
+- package.json -> JavaScript/TypeScript (extract package-manager, build, lint, typecheck, test, format, and server scripts)
 - pyproject.toml or requirements.txt -> Python
 - go.mod -> Go
 - Cargo.toml -> Rust
 
-Extract linting commands, typechecking commands, and server start command (if applicable).
+Extract exact commands that are useful project facts. Do not restate generic "run checks after edits" behavior unless this project requires a stricter command sequence than the system prompt's Verification section.
 
 ## Step 4: Generate Project Tree
 
@@ -458,7 +461,15 @@ Create a concise tree structure showing key directories and files with brief des
 
 ## Step 5: Generate or Update CLAUDE.md
 
-Create CLAUDE.md with: project description, project structure tree, organization rules (one file per component, single responsibility), and zero-tolerance code quality checks with the exact commands for this project.
+Create CLAUDE.md with only sections that add project-specific value. Prefer this structure:
+
+- Project name and one-sentence purpose
+- Key packages/apps/modules and what each owns
+- Important project-specific architecture or workflow notes
+- Exact local commands (install/build/check/test/dev/publish/deploy) when they are not obvious from package scripts alone
+- Project-specific constraints that override defaults (for example required publish order, generated-file workflow, auth/secrets storage, deployment caveats)
+
+Avoid generic sections named "Code Quality", "Organization Rules", or "How to Work" unless every bullet is specific to this project. Do not duplicate language style packs or generic verification rules.
 
 Keep total file under 100 lines. If updating, preserve any custom sections the user added.
 

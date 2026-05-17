@@ -39,15 +39,25 @@ export async function runInteractive(config: CliConfig): Promise<void> {
   await fs.mkdir(path.join(localGGDir, "commands"), { recursive: true });
   await fs.mkdir(path.join(localGGDir, "agents"), { recursive: true });
 
-  // Discover skills & build system prompt
+  // Discover skills and create tools before building the prompt so tool names are accurate.
   const skills = await discoverSkills({
     globalSkillsDir: paths.skillsDir,
     projectDir: cwd,
   });
-  const systemPrompt = config.systemPrompt ?? (await buildSystemPrompt(cwd, skills));
-
-  // Create tools
-  const { tools, processManager } = createTools(cwd, { skills });
+  const { tools, processManager } = createTools(cwd, {
+    skills,
+    provider,
+    model,
+  });
+  const systemPrompt =
+    config.systemPrompt ??
+    (await buildSystemPrompt(
+      cwd,
+      skills,
+      false,
+      undefined,
+      tools.map((tool) => tool.name),
+    ));
   process.on("exit", () => processManager.shutdownAll());
   const authStorage = new AuthStorage(paths.authFile);
   await authStorage.load();

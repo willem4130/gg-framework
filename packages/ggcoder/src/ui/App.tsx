@@ -757,12 +757,14 @@ export function App(props: AppProps) {
   const [currentModel, setCurrentModel] = useState(props.model);
   const [currentProvider, setCurrentProvider] = useState(props.provider);
   const [currentTools, setCurrentTools] = useState(props.tools);
+  const currentToolsRef = useRef(props.tools);
   const [thinkingEnabled, setThinkingEnabled] = useState(!!props.thinking);
   const messagesRef = useRef<Message[]>(props.sessionStore?.messages ?? props.messages);
   const [planAutoExpand, setPlanAutoExpand] = useState(props.sessionStore?.planAutoExpand ?? false);
   const approvedPlanPathRef = useRef<string | undefined>(props.sessionStore?.approvedPlanPath);
   const planStepsRef = useRef<PlanStep[]>(props.sessionStore?.planSteps ?? []);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>(props.sessionStore?.planSteps ?? []);
+  const planModeStateRef = useRef(planMode);
   // Stuck-guard for the plan-continuation follow-up nudge. Tracks how many
   // times we've nudged the agent to continue the same step. Reset whenever a
   // new [DONE:n] marker advances progress (see onTurnText). Caps at 2 nudges
@@ -898,13 +900,53 @@ export function App(props: AppProps) {
     reloadCustomCommands();
   }, [reloadCustomCommands]);
 
+  useEffect(() => {
+    currentToolsRef.current = currentTools;
+  }, [currentTools]);
+
   // ── Plan mode wiring ─────────────────────────────────────
   // Sync planModeRef with React state
   useEffect(() => {
+    planModeStateRef.current = planMode;
     if (props.planModeRef) {
       props.planModeRef.current = planMode;
     }
   }, [planMode, props.planModeRef]);
+
+  const rebuildSystemPrompt = useCallback(
+    async (options?: {
+      cwd?: string;
+      planMode?: boolean;
+      approvedPlanPath?: string;
+      clearApprovedPlan?: boolean;
+      activeLanguages?: Set<LanguageId>;
+      tools?: AgentTool[];
+    }): Promise<string> => {
+      const approvedPlanPath = options?.clearApprovedPlan
+        ? undefined
+        : (options?.approvedPlanPath ?? approvedPlanPathRef.current);
+      return buildSystemPrompt(
+        options?.cwd ?? cwdRef.current,
+        props.skills,
+        options?.planMode ?? planModeStateRef.current,
+        approvedPlanPath,
+        (options?.tools ?? currentToolsRef.current).map((tool) => tool.name),
+        options?.activeLanguages ?? injectedLanguagesRef.current,
+      );
+    },
+    [props.skills],
+  );
+
+  const replaceSystemPrompt = useCallback(
+    async (options?: Parameters<typeof rebuildSystemPrompt>[0]): Promise<string> => {
+      const newPrompt = await rebuildSystemPrompt(options);
+      if (messagesRef.current[0]?.role === "system") {
+        messagesRef.current[0] = { role: "system" as const, content: newPrompt };
+      }
+      return newPrompt;
+    },
+    [rebuildSystemPrompt],
+  );
 
   /**
    * Unified "apply detection result" pipeline. Called from three sites:
@@ -951,17 +993,7 @@ export function App(props: AppProps) {
     }
     injectedLanguagesRef.current = detected;
     try {
-      const newPrompt = await buildSystemPrompt(
-        cwd,
-        props.skills,
-        planMode,
-        approvedPlanPathRef.current,
-        undefined,
-        detected,
-      );
-      if (messagesRef.current[0]?.role === "system") {
-        messagesRef.current[0] = { role: "system" as const, content: newPrompt };
-      }
+      await replaceSystemPrompt({ cwd, activeLanguages: detected });
       const verifyCmds = detectVerifyCommands(cwd, detected);
       const tag = source === "initial" ? "Initial style packs" : "Style pack(s) loaded";
       log("INFO", "language", `${tag}: ${added.join(", ")}`, {
@@ -1006,23 +1038,8 @@ export function App(props: AppProps) {
 
   // Rebuild system prompt when plan mode changes
   useEffect(() => {
-    void (async () => {
-      const newPrompt = await buildSystemPrompt(
-        props.cwd,
-        props.skills,
-        planMode,
-        approvedPlanPathRef.current,
-        undefined,
-        injectedLanguagesRef.current,
-      );
-      if (messagesRef.current[0]?.role === "system") {
-        messagesRef.current[0] = {
-          role: "system" as const,
-          content: newPrompt,
-        };
-      }
-    })();
-  }, [planMode, props.cwd, props.skills]);
+    void replaceSystemPrompt({ planMode });
+  }, [planMode, replaceSystemPrompt]);
 
   // Wire onEnterPlan callback ref
   useEffect(() => {
@@ -1043,8 +1060,10 @@ export function App(props: AppProps) {
     if (props.onExitPlanRef) {
       props.onExitPlanRef.current = async (planPath: string) => {
         // Deactivate plan mode, store approved plan path, open pane
+        planModeStateRef.current = false;
         setPlanMode(false);
         approvedPlanPathRef.current = planPath;
+        await replaceSystemPrompt({ planMode: false, approvedPlanPath: planPath });
         // Use setTimeout to open pane after the current tool execution completes,
         // so the turn can finish and the UI transitions cleanly
         // Flag that the plan overlay is about to open — suppresses the
@@ -1075,7 +1094,7 @@ export function App(props: AppProps) {
         );
       };
     }
-  }, [props.onExitPlanRef, stdout]);
+  }, [props.onExitPlanRef, replaceSystemPrompt, stdout]);
 
   const persistNewMessages = useCallback(async () => {
     const sm = sessionManagerRef.current;
@@ -1322,19 +1341,7 @@ export function App(props: AppProps) {
           setPlanSteps([]);
           approvedPlanPathRef.current = undefined;
           // Rebuild system prompt to remove the completed plan from context
-          void (async () => {
-            const newPrompt = await buildSystemPrompt(
-              props.cwd,
-              props.skills,
-              planMode,
-              undefined,
-              undefined,
-              injectedLanguagesRef.current,
-            );
-            if (messagesRef.current[0]?.role === "system") {
-              messagesRef.current[0] = { role: "system" as const, content: newPrompt };
-            }
-          })();
+          void replaceSystemPrompt({ clearApprovedPlan: true });
         }
 
         // Generate session title after the first turn (background, best-effort)
@@ -2140,7 +2147,7 @@ export function App(props: AppProps) {
         // external changes between turns and ensures non-writing prompts still
         // surface the badge when packs are newly applicable. No-op if the set
         // has not grown.
-        void applyLanguageDetectionRef.current("input");
+        await applyLanguageDetectionRef.current("input");
       }
 
       // Handle /model directly — open inline selector
@@ -2176,14 +2183,7 @@ export function App(props: AppProps) {
       if (trimmed === "/clear") {
         if (props.resetUI) {
           void (async () => {
-            const newPrompt = await buildSystemPrompt(
-              props.cwd,
-              props.skills,
-              planMode,
-              undefined,
-              undefined,
-              injectedLanguagesRef.current,
-            );
+            const newPrompt = await rebuildSystemPrompt({ clearApprovedPlan: true });
             props.resetUI?.({
               wipeSession: true,
               messages: [{ role: "system" as const, content: newPrompt }],
@@ -2202,14 +2202,7 @@ export function App(props: AppProps) {
         planStepsRef.current = [];
         setPlanSteps([]);
         void (async () => {
-          const newPrompt = await buildSystemPrompt(
-            props.cwd,
-            props.skills,
-            planMode,
-            undefined,
-            undefined,
-            injectedLanguagesRef.current,
-          );
+          const newPrompt = await rebuildSystemPrompt({ clearApprovedPlan: true });
           messagesRef.current = [{ role: "system" as const, content: newPrompt }];
           persistedIndexRef.current = messagesRef.current.length;
         })();
@@ -2275,19 +2268,7 @@ export function App(props: AppProps) {
         planStepsRef.current = [];
         setPlanSteps([]);
         // Rebuild system prompt without the plan
-        void (async () => {
-          const newPrompt = await buildSystemPrompt(
-            props.cwd,
-            props.skills,
-            planMode,
-            undefined,
-            undefined,
-            injectedLanguagesRef.current,
-          );
-          if (messagesRef.current[0]?.role === "system") {
-            messagesRef.current[0] = { role: "system" as const, content: newPrompt };
-          }
-        })();
+        void replaceSystemPrompt({ clearApprovedPlan: true });
         setLiveItems([{ kind: "plan_event", event: "dismissed", id: getId() }]);
         return;
       }
@@ -2487,7 +2468,13 @@ export function App(props: AppProps) {
         ]);
       }
     },
-    [agentLoop, props.onSlashCommand, compactConversation],
+    [
+      agentLoop,
+      props.onSlashCommand,
+      compactConversation,
+      rebuildSystemPrompt,
+      replaceSystemPrompt,
+    ],
   );
 
   const handleDoubleExit = useDoublePress(setExitPending, () => process.exit(0));
@@ -2526,6 +2513,11 @@ export function App(props: AppProps) {
       const newModelId = value.slice(colonIdx + 1);
       log("INFO", "model", `Model changed`, { provider: newProvider, model: newModelId });
 
+      const rebuildPromptWithTools = (tools: AgentTool[]) => {
+        currentToolsRef.current = tools;
+        void replaceSystemPrompt({ tools });
+      };
+
       // Handle provider-specific tool changes when provider changes
       setCurrentProvider((prevProvider) => {
         if (newProvider !== prevProvider) {
@@ -2533,14 +2525,16 @@ export function App(props: AppProps) {
           // Anthropic has native server-side web search; all other providers need the client tool.
           setCurrentTools((prev) => {
             const hasWebSearch = prev.some((t) => t.name === "web_search");
+            let next = prev;
             if (newProvider === "anthropic" && hasWebSearch) {
               // Switching TO anthropic — remove client-side web_search (server-side handles it)
-              return prev.filter((t) => t.name !== "web_search");
+              next = prev.filter((t) => t.name !== "web_search");
             } else if (newProvider !== "anthropic" && !hasWebSearch) {
               // Switching FROM anthropic — add client-side web_search
-              return [...prev, createWebSearchTool()];
+              next = [...prev, createWebSearchTool()];
             }
-            return prev;
+            rebuildPromptWithTools(next);
+            return next;
           });
 
           // Reconnect MCP servers
@@ -2565,10 +2559,11 @@ export function App(props: AppProps) {
                 const mcpTools = await props.mcpManager!.connectAll(
                   getMCPServers(newProvider, apiKey),
                 );
-                setCurrentTools((prev) => [
-                  ...prev.filter((t) => !t.name.startsWith("mcp__")),
-                  ...mcpTools,
-                ]);
+                setCurrentTools((prev) => {
+                  const next = [...prev.filter((t) => !t.name.startsWith("mcp__")), ...mcpTools];
+                  rebuildPromptWithTools(next);
+                  return next;
+                });
                 log("INFO", "mcp", `MCP servers reconnected for provider ${newProvider}`);
               } catch (err) {
                 log(
@@ -2577,7 +2572,11 @@ export function App(props: AppProps) {
                   `MCP reconnection failed: ${err instanceof Error ? err.message : String(err)}`,
                 );
                 // Still remove old MCP tools even if reconnection fails
-                setCurrentTools((prev) => prev.filter((t) => !t.name.startsWith("mcp__")));
+                setCurrentTools((prev) => {
+                  const next = prev.filter((t) => !t.name.startsWith("mcp__"));
+                  rebuildPromptWithTools(next);
+                  return next;
+                });
               }
             })();
           }
@@ -3167,8 +3166,11 @@ export function App(props: AppProps) {
           }
           cwdRef.current = prep.projectPath;
           setDisplayedCwd(prep.projectPath);
+          let toolsForPixelFix = currentToolsRef.current;
           if (props.rebuildToolsForCwd) {
-            setCurrentTools(props.rebuildToolsForCwd(prep.projectPath));
+            toolsForPixelFix = props.rebuildToolsForCwd(prep.projectPath);
+            currentToolsRef.current = toolsForPixelFix;
+            setCurrentTools(toolsForPixelFix);
           }
           // Pixel-fix swaps the project root — reset injected packs so the
           // new project re-detects from scratch on the next tool call. Also
@@ -3178,14 +3180,13 @@ export function App(props: AppProps) {
           setupHintShownRef.current = false;
           const detectedForPixelFix = detectLanguages(prep.projectPath);
           injectedLanguagesRef.current = detectedForPixelFix;
-          const newSystemPrompt = await buildSystemPrompt(
-            prep.projectPath,
-            props.skills,
-            false,
-            undefined,
-            undefined,
-            detectedForPixelFix,
-          );
+          const newSystemPrompt = await rebuildSystemPrompt({
+            cwd: prep.projectPath,
+            planMode: false,
+            clearApprovedPlan: true,
+            activeLanguages: detectedForPixelFix,
+            tools: toolsForPixelFix,
+          });
 
           // Now that the cwd swap is committed, reset chat. Doing this BEFORE
           // the chdir would print a banner with the old cwd, then bumping
@@ -3395,14 +3396,10 @@ export function App(props: AppProps) {
                 const steps = extractPlanSteps(planContent);
 
                 // Build the new system prompt with the approved plan baked in.
-                const newPrompt = await buildSystemPrompt(
-                  props.cwd,
-                  props.skills,
-                  false,
-                  planPath,
-                  undefined,
-                  injectedLanguagesRef.current,
-                );
+                const newPrompt = await rebuildSystemPrompt({
+                  planMode: false,
+                  approvedPlanPath: planPath,
+                });
 
                 // Create a new session file BEFORE remount so the new tree
                 // picks it up via sessionStore.sessionPath.

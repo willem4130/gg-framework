@@ -144,10 +144,6 @@ export class AgentSession {
       projectDir: this.cwd,
     });
 
-    // Build system prompt
-    const basePrompt = this.customSystemPrompt ?? (await buildSystemPrompt(this.cwd, this.skills));
-    this.messages = [{ role: "system", content: basePrompt }];
-
     // Discover agents and create tools (with sub-agent support)
     const agents = await discoverAgents({
       globalAgentsDir: paths.agentsDir,
@@ -186,6 +182,17 @@ export class AgentSession {
         `MCP initialization failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+
+    const basePrompt =
+      this.customSystemPrompt ??
+      (await buildSystemPrompt(
+        this.cwd,
+        this.skills,
+        false,
+        undefined,
+        this.tools.map((tool) => tool.name),
+      ));
+    this.messages = [{ role: "system", content: basePrompt }];
 
     // Load or create session. Transient sessions (subagent spawns) never
     // touch the session store — sessionPath stays empty and persistMessage
@@ -491,7 +498,15 @@ export class AgentSession {
   }
 
   async newSession(): Promise<void> {
-    const basePrompt = this.customSystemPrompt ?? (await buildSystemPrompt(this.cwd, this.skills));
+    const basePrompt =
+      this.customSystemPrompt ??
+      (await buildSystemPrompt(
+        this.cwd,
+        this.skills,
+        false,
+        undefined,
+        this.tools.map((tool) => tool.name),
+      ));
     this.messages = [{ role: "system", content: basePrompt }];
     await this.createNewSession();
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
