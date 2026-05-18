@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { z } from "zod";
 import { ProviderError } from "@kenkaiiii/gg-ai";
-import { agentLoop, classifyOverload, isContextOverflow } from "./agent-loop.js";
+import {
+  agentLoop,
+  classifyOverload,
+  extractContextOverflowDetails,
+  isContextOverflow,
+} from "./agent-loop.js";
 import type { AgentEvent, AgentResult } from "./types.js";
 import type { Message, StreamOptions } from "@kenkaiiii/gg-ai";
 
@@ -82,6 +87,22 @@ describe("isContextOverflow", () => {
         "However, your messages resulted in 130000 tokens.",
     );
     expect(isContextOverflow(err)).toBe(true);
+  });
+
+  it("extracts provider-reported overflow token counts", () => {
+    expect(
+      extractContextOverflowDetails(
+        new Error(
+          "[openai] This model's maximum context length is 128000 tokens. " +
+            "However, your messages resulted in 130000 tokens.",
+        ),
+      ),
+    ).toEqual({ observedTokens: 130000, observedLimit: 128000 });
+    expect(
+      extractContextOverflowDetails(
+        new Error("[anthropic] prompt is too long: 203,456 tokens > 200,000 maximum"),
+      ),
+    ).toEqual({ observedTokens: 203456, observedLimit: 200000 });
   });
 
   it("detects context_length_exceeded code", () => {
@@ -241,7 +262,9 @@ describe("agentLoop", () => {
   });
 
   it("retries the turn after force-compaction reduces the messages on context overflow", async () => {
-    const overflowErr = new Error("context_length_exceeded");
+    const overflowErr = new Error(
+      "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+    );
     mockStream
       .mockReturnValueOnce(mockErrorResult(overflowErr) as unknown as ReturnType<typeof stream>)
       .mockReturnValueOnce(mockOkResult("recovered") as unknown as ReturnType<typeof stream>);
@@ -266,12 +289,58 @@ describe("agentLoop", () => {
       transformContext,
     });
 
-    expect(events.some((e) => e.type === "retry" && e.reason === "overflow_compact")).toBe(true);
+    const retry = events.find((e) => e.type === "retry" && e.reason === "overflow_compact");
+    expect(retry).toBeDefined();
+    expect(retry && "observedTokens" in retry ? retry.observedTokens : undefined).toBe(130000);
+    expect(retry && "observedLimit" in retry ? retry.observedLimit : undefined).toBe(128000);
     expect(mockStream).toHaveBeenCalledTimes(2);
     const forceCalls = transformContext.mock.calls.filter(
       (c: unknown[]) => (c[1] as { force?: boolean })?.force === true,
     );
     expect(forceCalls.length).toBe(1);
+  });
+
+  it("truncates oversized tool results once before force-compacting on context overflow", async () => {
+    const overflowErr = new Error("prompt is too long: 250000 tokens > 200000 maximum");
+    mockStream
+      .mockReturnValueOnce(mockErrorResult(overflowErr) as unknown as ReturnType<typeof stream>)
+      .mockReturnValueOnce(mockOkResult("recovered") as unknown as ReturnType<typeof stream>);
+
+    const oversized = "x".repeat(250);
+    const messages: Message[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "test" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: "tc1", name: "read", args: {} }],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool_result", toolCallId: "tc1", content: oversized }],
+      },
+    ];
+    const transformContext = vi.fn().mockImplementation((msgs: Message[]) => msgs);
+
+    const { events } = await collectLoop(messages, {
+      provider: "anthropic",
+      model: "test",
+      transformContext,
+      maxToolResultChars: 120,
+    });
+
+    expect(mockStream).toHaveBeenCalledTimes(2);
+    expect(transformContext).toHaveBeenCalledTimes(2);
+    expect(
+      transformContext.mock.calls.every(
+        (c) => (c[1] as { force?: boolean } | undefined)?.force !== true,
+      ),
+    ).toBe(true);
+    const toolMessage = messages.find((m) => m.role === "tool");
+    const result = Array.isArray(toolMessage?.content) ? toolMessage.content[0] : undefined;
+    expect(typeof result?.content === "string" ? result.content.length : 0).toBeLessThan(
+      oversized.length,
+    );
+    expect(events.some((e) => e.type === "retry" && e.reason === "overflow_compact")).toBe(true);
   });
 
   it("throws on context overflow when no transformContext is provided", async () => {

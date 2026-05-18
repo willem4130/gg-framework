@@ -80,6 +80,56 @@ export function isContextOverflow(err: unknown): boolean {
   );
 }
 
+export interface ContextOverflowDetails {
+  observedTokens?: number;
+  observedLimit?: number;
+}
+
+function parseOverflowNumber(value: string): number {
+  return Number(value.replace(/[,_\s]/g, ""));
+}
+
+/** Extract provider-reported token counts from common context overflow messages. */
+export function extractContextOverflowDetails(err: unknown): ContextOverflowDetails {
+  if (!(err instanceof Error)) return {};
+  const text = err.message;
+  const patterns: Array<{ regex: RegExp; tokensGroup: number; limitGroup: number }> = [
+    // Anthropic/OpenAI-compatible: "203456 tokens > 200000 maximum"
+    {
+      regex: /([\d,_.\s]+)\s*tokens?\s*>\s*([\d,_.\s]+)\s*(?:maximum|max|limit)?/i,
+      tokensGroup: 1,
+      limitGroup: 2,
+    },
+    // OpenAI: "maximum context length is 128000 tokens ... resulted in 130000 tokens"
+    {
+      regex:
+        /maximum context length is\s*([\d,_.\s]+)\s*tokens?[\s\S]*?resulted in\s*([\d,_.\s]+)\s*tokens?/i,
+      tokensGroup: 2,
+      limitGroup: 1,
+    },
+    // Generic: "130000 input tokens exceeds 128000 token limit"
+    {
+      regex:
+        /([\d,_.\s]+)\s*(?:input\s*)?tokens?[\s\S]{0,80}?exceeds?[\s\S]{0,80}?([\d,_.\s]+)\s*(?:token\s*)?(?:limit|maximum|max)/i,
+      tokensGroup: 1,
+      limitGroup: 2,
+    },
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern.regex);
+    if (!match) continue;
+    const observedTokens = parseOverflowNumber(match[pattern.tokensGroup] ?? "");
+    const observedLimit = parseOverflowNumber(match[pattern.limitGroup] ?? "");
+    return {
+      ...(Number.isFinite(observedTokens) && observedTokens > 0 ? { observedTokens } : {}),
+      ...(Number.isFinite(observedLimit) && observedLimit > 0 ? { observedLimit } : {}),
+    };
+  }
+
+  return {};
+}
+
 /**
  * Detect billing/quota errors — these should NOT be retried.
  * GLM returns HTTP 429 with "Insufficient balance" for quota exhaustion.
@@ -277,6 +327,7 @@ export async function* agentLoop(
   let emptyResponseRetries = 0;
   let stallRetries = 0;
   let overflowCompactionAttempts = 0;
+  let toolResultTruncationAttempted = false;
   const invalidToolArgumentCounts = new Map<string, number>();
   // Non-streaming fallback mode. After repeated stream stalls, flip to a
   // plain non-streaming request/response -- often survives broken SSE
@@ -649,12 +700,46 @@ export async function* agentLoop(
         // MAX_OVERFLOW_COMPACTIONS to avoid loops when compaction can't reduce
         // enough (e.g. single huge user message).
         if (isContextOverflow(err)) {
+          const overflowDetails = extractContextOverflowDetails(err);
+          diag("context_overflow_detected", {
+            ...overflowDetails,
+            error: errMsg.slice(0, 500),
+            messages: messages.length,
+          });
+
+          const overflowToolResultMaxChars = Math.min(
+            options.maxToolResultChars ?? 100_000,
+            100_000,
+          );
+          if (!toolResultTruncationAttempted) {
+            toolResultTruncationAttempted = true;
+            const truncated = truncateOversizedToolResults(messages, overflowToolResultMaxChars);
+            diag("overflow_tool_result_truncation", {
+              truncated,
+              maxChars: overflowToolResultMaxChars,
+            });
+            if (truncated) {
+              yield {
+                type: "retry" as const,
+                reason: "overflow_compact" as const,
+                attempt: overflowCompactionAttempts + 1,
+                maxAttempts: MAX_OVERFLOW_COMPACTIONS,
+                delayMs: 0,
+                ...overflowDetails,
+                silent: true,
+              };
+              turn--;
+              continue;
+            }
+          }
+
           if (options.transformContext && overflowCompactionAttempts < MAX_OVERFLOW_COMPACTIONS) {
             overflowCompactionAttempts++;
             diag("overflow_compact_start", {
               attempt: overflowCompactionAttempts,
               maxAttempts: MAX_OVERFLOW_COMPACTIONS,
               messages: messages.length,
+              ...overflowDetails,
             });
             try {
               const compacted = await options.transformContext(messages, { force: true });
@@ -664,6 +749,7 @@ export async function* agentLoop(
                 diag("overflow_compact_success", {
                   attempt: overflowCompactionAttempts,
                   messages: messages.length,
+                  ...overflowDetails,
                 });
                 yield {
                   type: "retry" as const,
@@ -671,6 +757,7 @@ export async function* agentLoop(
                   attempt: overflowCompactionAttempts,
                   maxAttempts: MAX_OVERFLOW_COMPACTIONS,
                   delayMs: 0,
+                  ...overflowDetails,
                 };
                 turn--;
                 continue;
@@ -679,10 +766,12 @@ export async function* agentLoop(
                 attempt: overflowCompactionAttempts,
                 before: messages.length,
                 after: compacted.length,
+                ...overflowDetails,
               });
             } catch (compactErr) {
               diag("overflow_compact_failed", {
                 error: compactErr instanceof Error ? compactErr.message : String(compactErr),
+                ...overflowDetails,
               });
             }
           }
@@ -1199,6 +1288,42 @@ function toolResultPreview(content: ToolResultContent): string {
   return content
     .map((block) => (block.type === "text" ? block.text : `[image ${block.mediaType}]`))
     .join("\n");
+}
+
+function truncateToolResultText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const tailChars = Math.min(Math.floor(maxChars * 0.3), 20_000);
+  const headChars = Math.max(maxChars - tailChars, 0);
+  const omitted = text.length - headChars - tailChars;
+  return `${text.slice(0, headChars)}\n\n[... ${omitted} characters omitted after context overflow ...]\n\n${text.slice(-tailChars)}`;
+}
+
+function truncateOversizedToolResults(messages: Message[], maxChars: number): boolean {
+  if (maxChars <= 0) return false;
+  let changed = false;
+  for (const msg of messages) {
+    if (msg.role !== "tool" || !Array.isArray(msg.content)) continue;
+    const results = msg.content as ToolResult[];
+    for (const result of results) {
+      if (typeof result.content === "string") {
+        const truncated = truncateToolResultText(result.content, maxChars);
+        if (truncated !== result.content) {
+          result.content = truncated;
+          changed = true;
+        }
+      } else {
+        for (const block of result.content) {
+          if (block.type !== "text") continue;
+          const truncated = truncateToolResultText(block.text, maxChars);
+          if (truncated !== block.text) {
+            block.text = truncated;
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return changed;
 }
 
 function extractToolCalls(content: string | ContentPart[]): ToolCall[] {
