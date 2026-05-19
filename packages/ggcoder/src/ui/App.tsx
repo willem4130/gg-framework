@@ -896,6 +896,10 @@ export function App(props: AppProps) {
   const activeApiKey = currentCreds?.accessToken ?? props.apiKey;
   const activeAccountId = currentCreds?.accountId ?? props.accountId;
   const activeBaseUrl = currentCreds?.baseUrl ?? props.baseUrl;
+  const contextWindowOptions = useMemo(
+    () => ({ provider: currentProvider, accountId: activeAccountId }),
+    [currentProvider, activeAccountId],
+  );
 
   // Load git branch — re-runs whenever the displayed cwd changes (e.g. when
   // a pixel fix moves the agent into a different project root).
@@ -1176,7 +1180,7 @@ export function App(props: AppProps) {
 
   const compactConversation = useCallback(
     async (messages: Message[]): Promise<Message[]> => {
-      const contextWindow = getContextWindow(currentModel);
+      const contextWindow = getContextWindow(currentModel, contextWindowOptions);
       const tokensBefore = estimateConversationTokens(messages);
       const spinId = getId();
       log("INFO", "compaction", `Running compaction`, {
@@ -1191,15 +1195,21 @@ export function App(props: AppProps) {
       try {
         // Resolve fresh credentials for compaction too
         let compactApiKey = activeApiKey;
+        let compactAccountId = activeAccountId;
+        let compactBaseUrl = activeBaseUrl;
         if (props.authStorage) {
           const creds = await props.authStorage.resolveCredentials(currentProvider);
           compactApiKey = creds.accessToken;
+          compactAccountId = creds.accountId;
+          compactBaseUrl = creds.baseUrl ?? compactBaseUrl;
         }
 
         const result = await compact(messages, {
           provider: currentProvider,
           model: currentModel,
           apiKey: compactApiKey,
+          accountId: compactAccountId,
+          baseUrl: compactBaseUrl,
           contextWindow,
           signal: undefined,
           approvedPlanPath: approvedPlanPathRef.current,
@@ -1240,7 +1250,15 @@ export function App(props: AppProps) {
         return messages; // Return unchanged on failure
       }
     },
-    [currentModel, currentProvider, activeApiKey],
+    [
+      currentModel,
+      currentProvider,
+      activeApiKey,
+      activeAccountId,
+      activeBaseUrl,
+      contextWindowOptions,
+      props.authStorage,
+    ],
   );
 
   const getRepoMapSignalCount = useCallback((): number => {
@@ -1329,7 +1347,7 @@ export function App(props: AppProps) {
         return injectRepoMapContext(stripped);
       }
 
-      const contextWindow = getContextWindow(currentModel);
+      const contextWindow = getContextWindow(currentModel, contextWindowOptions);
       const modelInfo = getModel(currentModel);
       const reserveTokens = (modelInfo?.maxOutputTokens ?? 0) + 5_000;
       const tokensFresh = lastActualTokensTimestampRef.current > lastCompactionTimeRef.current;
@@ -1342,7 +1360,13 @@ export function App(props: AppProps) {
       }
       return injectRepoMapContext(stripped);
     },
-    [currentModel, compactConversation, injectRepoMapContext, stripRepoMapMessages],
+    [
+      currentModel,
+      compactConversation,
+      contextWindowOptions,
+      injectRepoMapContext,
+      stripRepoMapMessages,
+    ],
   );
 
   // ── Background task bar state (external store) ──────────
@@ -3784,6 +3808,7 @@ export function App(props: AppProps) {
             <Footer
               model={currentModel}
               tokensIn={agentLoop.contextUsed}
+              contextWindowOptions={contextWindowOptions}
               cwd={displayedCwd}
               gitBranch={gitBranch}
               thinkingLevel={thinkingEnabled ? getMaxThinkingLevel(currentModel) : undefined}

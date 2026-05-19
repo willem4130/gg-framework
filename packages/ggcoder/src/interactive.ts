@@ -98,14 +98,16 @@ export async function runInteractive(config: CliConfig): Promise<void> {
   // Auto-compact on load if the restored session exceeds the context window.
   // Without this, huge sessions (1M+ tokens) get loaded into memory and OOM.
   if (messages.length > 1) {
-    const contextWindow = getContextWindow(model);
+    const creds = await authStorage.resolveCredentials(provider);
+    const contextWindow = getContextWindow(model, { provider, accountId: creds.accountId });
     if (shouldCompact(messages, contextWindow, 0.8)) {
       stdout.write("Compacting restored session...\n");
-      const creds = await authStorage.resolveCredentials(provider);
       const compacted = await compact(messages, {
         provider,
         model,
         apiKey: creds.accessToken,
+        accountId: creds.accountId,
+        baseUrl: config.baseUrl ?? creds.baseUrl,
         contextWindow,
       });
       messages.length = 0;

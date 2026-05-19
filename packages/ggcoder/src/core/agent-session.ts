@@ -351,19 +351,24 @@ export class AgentSession {
       });
     }
 
-    // Auto-compact if needed
-    if (this.settingsManager.get("autoCompact")) {
-      const contextWindow = getContextWindow(this.model);
-      const threshold = this.settingsManager.get("compactThreshold");
-      if (shouldCompact(this.messages, contextWindow, threshold)) {
-        await this.compact();
-      }
-    }
-
     // Resolve OAuth credentials and run agent loop.
     // On 401, force-refresh the token and retry once — the provider may have
     // revoked the token server-side before the stored expiry (e.g. after a restart).
     let creds = await this.authStorage.resolveCredentials(this.provider);
+
+    // Auto-compact if needed. This must happen after credential resolution so
+    // OpenAI OAuth/Codex sessions use the Codex product context window instead
+    // of the public API model window.
+    if (this.settingsManager.get("autoCompact")) {
+      const contextWindow = getContextWindow(this.model, {
+        provider: this.provider,
+        accountId: creds.accountId,
+      });
+      const threshold = this.settingsManager.get("compactThreshold");
+      if (shouldCompact(this.messages, contextWindow, threshold)) {
+        await this.compact(creds);
+      }
+    }
 
     const userAgent = this.provider === "anthropic" ? await getClaudeCliUserAgent() : undefined;
 
@@ -389,7 +394,9 @@ export class AgentSession {
         userAgent,
         // clearToolUses disabled — causes model to output unsolicited context summaries
         // Single tool result shouldn't exceed 30% of context window (in chars)
-        maxToolResultChars: Math.floor(getContextWindow(this.model) * 3.5 * 0.3),
+        maxToolResultChars: Math.floor(
+          getContextWindow(this.model, { provider: this.provider, accountId }) * 3.5 * 0.3,
+        ),
       });
 
       for await (const event of generator as AsyncIterable<AgentEvent>) {
@@ -489,16 +496,24 @@ export class AgentSession {
     }
   }
 
-  async compact(): Promise<void> {
-    const contextWindow = getContextWindow(this.model);
+  async compact(existingCredentials?: {
+    accessToken: string;
+    accountId?: string;
+    baseUrl?: string;
+  }): Promise<void> {
+    const creds = existingCredentials ?? (await this.authStorage.resolveCredentials(this.provider));
+    const contextWindow = getContextWindow(this.model, {
+      provider: this.provider,
+      accountId: creds.accountId,
+    });
     this.eventBus.emit("compaction_start", { messageCount: this.messages.length });
-
-    const creds = await this.authStorage.resolveCredentials(this.provider);
 
     const result = await compact(this.messages, {
       provider: this.provider,
       model: this.model,
       apiKey: creds.accessToken,
+      accountId: creds.accountId,
+      baseUrl: this.baseUrl ?? creds.baseUrl,
       contextWindow,
       signal: this.opts.signal,
     });
@@ -686,14 +701,19 @@ export class AgentSession {
 
     // Auto-compact on load if the restored session exceeds the context window.
     // Without this, huge sessions (1M+ tokens) get loaded into memory and OOM.
-    const contextWindow = getContextWindow(this.model);
+    const creds = await this.authStorage.resolveCredentials(this.provider);
+    const contextWindow = getContextWindow(this.model, {
+      provider: this.provider,
+      accountId: creds.accountId,
+    });
     if (shouldCompact(this.messages, contextWindow, 0.8)) {
       log("INFO", "session", `Restored session exceeds context — auto-compacting`);
-      const creds = await this.authStorage.resolveCredentials(this.provider);
       const compacted = await compact(this.messages, {
         provider: this.provider,
         model: this.model,
         apiKey: creds.accessToken,
+        accountId: creds.accountId,
+        baseUrl: this.baseUrl ?? creds.baseUrl,
         contextWindow,
         signal: this.opts.signal,
       });

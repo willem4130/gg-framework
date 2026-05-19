@@ -3,13 +3,14 @@ import { Text, Box } from "ink";
 import type { ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { useTheme } from "../theme/theme.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
-import { getContextWindow } from "../../core/model-registry.js";
+import { getContextWindow, type ContextWindowOptions } from "../../core/model-registry.js";
 import { PARTIAL_BLOCKS, LIGHT_SHADE } from "../constants/figures.js";
 import { useAnimationActive, useAnimationTick, useReducedMotion } from "./AnimationContext.js";
 
 interface FooterProps {
   model: string;
   tokensIn: number;
+  contextWindowOptions?: ContextWindowOptions;
   cwd: string;
   gitBranch?: string | null;
   /**
@@ -55,8 +56,12 @@ function getShortModelName(model: string): string {
   return MODEL_SHORT_NAMES[model] ?? model;
 }
 
-function getContextPercent(model: string, tokensIn: number): number {
-  const limit = getContextWindow(model);
+function getContextPercent(
+  model: string,
+  tokensIn: number,
+  options?: ContextWindowOptions,
+): number {
+  const limit = getContextWindow(model, options);
   if (!limit || tokensIn === 0) return 0;
   return Math.round((tokensIn / limit) * 100);
 }
@@ -115,6 +120,7 @@ const XhighShimmer: React.FC<{ text: string }> = ({ text }) => {
 export function Footer({
   model,
   tokensIn,
+  contextWindowOptions,
   cwd,
   gitBranch,
   thinkingLevel,
@@ -134,7 +140,7 @@ export function Footer({
   const parts = cwd.split("/").filter(Boolean);
   const displayPath = parts.length > 0 ? parts[parts.length - 1] : cwd;
 
-  const contextPct = getContextPercent(model, tokensIn);
+  const contextPct = getContextPercent(model, tokensIn, contextWindowOptions);
   const contextColor = getContextColor(contextPct, theme);
   const sep = <Text color={theme.border}>{" \u2502 "}</Text>;
 

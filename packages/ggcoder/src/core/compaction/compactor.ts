@@ -516,6 +516,8 @@ export async function compact(
     provider: Provider;
     model: string;
     apiKey?: string;
+    accountId?: string;
+    baseUrl?: string;
     contextWindow: number;
     signal?: AbortSignal;
     approvedPlanPath?: string;
@@ -583,7 +585,10 @@ export async function compact(
 
   // Pick the appropriate model for summarization
   const summaryModel = getSummaryModel(options.provider, options.model);
-  const summaryContextWindow = getContextWindow(summaryModel.id);
+  const summaryContextWindow = getContextWindow(summaryModel.id, {
+    provider: options.provider,
+    accountId: options.accountId,
+  });
 
   // Prepare messages: truncate tool results, strip thinking blocks
   const preparedMessages = prepareMessagesForSummary(middleMessages);
@@ -639,6 +644,8 @@ export async function compact(
         messages: summaryMessages,
         maxTokens: MAX_SUMMARY_OUTPUT_TOKENS,
         apiKey: options.apiKey,
+        accountId: options.accountId,
+        baseUrl: options.baseUrl,
         signal: options.signal,
       });
 

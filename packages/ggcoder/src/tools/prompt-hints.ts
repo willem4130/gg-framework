@@ -20,8 +20,10 @@ export const TOOL_PROMPT_HINTS: Record<string, string> = {
     "Manage the Ctrl+T task pane (add/list/done/remove). Only when the user explicitly asks. Do NOT auto-run.",
   subagent: "Delegate focused, isolated subtasks (research, parallel exploration).",
   skill: "Invoke a named skill for specialized instructions.",
+  "mcp__kencode-search__exploreCodeSamples":
+    "Explore public code samples for vague goals/examples/best practices. Use once early to discover candidate repos/files and literal anchors; copy 3–5 suggested follow-up searchCode calls before inventing queries. Results are candidates until verified.",
   "mcp__kencode-search__searchCode":
-    "Search public GitHub code by literal text or RE2 regex; NOT semantic. Anchor concepts on imports/identifiers/config keys. Put filenames in `path`, topics in `repo`, code tokens in `query`. Start with `peek: true`, then narrow by `repo` + `path` for snippets. RE2 only; multi-line needs `(?s)`.",
+    "Verify public GitHub code by literal text or RE2 regex; NOT semantic. Put code/import/API tokens in `query`; `path` is a literal file-path substring, not a concept. Start broad/peek, then narrow by repo/path. RE2 multi-line needs `(?s)`.",
   enter_plan: "Enter plan mode for read-only research + planning on complex multi-file tasks.",
   exit_plan: "Submit your plan for user review and exit plan mode.",
 };
@@ -41,6 +43,7 @@ export const DEFAULT_TOOL_NAMES: readonly string[] = [
   "tasks",
   "subagent",
   "skill",
+  "mcp__kencode-search__exploreCodeSamples",
   "mcp__kencode-search__searchCode",
   "enter_plan",
   "exit_plan",

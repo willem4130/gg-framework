@@ -712,13 +712,15 @@ async function runInkTUI(opts: {
 
         // Auto-compact on load if the restored session exceeds the context window.
         // Without this, huge sessions (1M+ tokens) get loaded into memory and OOM.
-        const contextWindow = getContextWindow(model);
+        const contextWindow = getContextWindow(model, { provider, accountId: creds.accountId });
         if (shouldCompact(messages, contextWindow, 0.8)) {
           log("INFO", "session", `Restored session exceeds context — auto-compacting`);
           const compacted = await compact(messages, {
             provider,
             model,
             apiKey: creds.accessToken,
+            accountId: creds.accountId,
+            baseUrl: cached.baseUrl,
             contextWindow,
           });
           // Replace messages array contents with compacted messages

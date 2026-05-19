@@ -58,7 +58,7 @@ function renderPlanModeSection(): string {
     `You are in PLAN MODE. Research and design an implementation plan before writing any code.\n\n` +
     `### Workflow\n` +
     `1. Explore: read, grep, find, ls to understand the codebase\n` +
-    `2. Research: \`web_search\` + \`web_fetch\` for docs; \`mcp__kencode-search__searchCode\` for real code samples — literal text or RE2 regex (NOT semantic); start with \`peek: true\` for paths+counts, then drill in narrowed by \`repo\` + \`path\` (full usage in Research & Verification below)\n` +
+    `2. Research: \`web_search\` + \`web_fetch\` for docs; for real code, use Explore to discover candidate repos/files/anchors, then SearchCode to verify exact snippets (full usage below)\n` +
     `3. Draft: write the plan to .gg/plans/<name>.md\n` +
     `4. Submit: call exit_plan with the plan path\n\n` +
     `### Rules\n` +
@@ -94,7 +94,8 @@ function renderResearchSection(): string {
     `## Research & Verification\n\n` +
     `Do not assume current APIs, CLI flags, config schema, or error wording — verify.\n\n` +
     `- **Docs first**: use \`web_search\` to find authoritative pages, then \`web_fetch\` to read them.\n` +
-    `- **Real code second**: use \`mcp__kencode-search__searchCode\` for literal text or RE2 regex only; it is NOT semantic search. For concepts, search tokens real files contain: imports, identifiers/hooks/props, or config keys. Put filenames in \`path\`, repos/topics in \`repo\`, code tokens in \`query\`. Start with \`peek: true\`, then narrow by \`repo\` + \`path\` for snippets.\n` +
+    `- **Public code samples**: use \`mcp__kencode-search__exploreCodeSamples\` once early for examples/patterns/ideas/best practices or vague concepts. Treat it as anchor discovery: read its recommended options and copy 3–5 of its follow-up \`searchCode\` calls before inventing new queries.\n` +
+    `- **Exact code search**: use \`mcp__kencode-search__searchCode\` to verify snippets by literal text or RE2 regex only — NOT semantic search. Put code tokens in \`query\`; use \`path\` only for literal file-path substrings and \`repo\` only after a broad/peek search proves the anchor exists. Report Explore-only results as candidates, SearchCode results as verified code.\n` +
     `- **Verify after edits**: run relevant checks, read failures, fix them, and never report unrun or failing checks as passing.`
   );
 }

@@ -5,6 +5,12 @@ export interface ModelInfo {
   name: string;
   provider: Provider;
   contextWindow: number;
+  /**
+   * ChatGPT Codex transport uses product-specific windows that can differ from
+   * the public API model window. OpenAI OAuth requests include an accountId and
+   * route through `/codex/responses`; API-key requests do not.
+   */
+  codexContextWindow?: number;
   maxOutputTokens: number;
   supportsThinking: boolean;
   supportsImages: boolean;
@@ -66,6 +72,7 @@ export const MODELS: ModelInfo[] = [
     name: "GPT-5.5",
     provider: "openai",
     contextWindow: 1_050_000,
+    codexContextWindow: 272_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,
@@ -76,7 +83,8 @@ export const MODELS: ModelInfo[] = [
     id: "gpt-5.4",
     name: "GPT-5.4",
     provider: "openai",
-    contextWindow: 272_000,
+    contextWindow: 1_050_000,
+    codexContextWindow: 272_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,
@@ -243,9 +251,22 @@ export function getDefaultModel(provider: Provider): ModelInfo {
   return MODELS.find((m) => m.id === "claude-sonnet-4-6")!;
 }
 
-export function getContextWindow(modelId: string): number {
+export interface ContextWindowOptions {
+  provider?: Provider;
+  accountId?: string;
+}
+
+export function usesOpenAICodexTransport(options?: ContextWindowOptions): boolean {
+  return options?.provider === "openai" && Boolean(options.accountId);
+}
+
+export function getContextWindow(modelId: string, options?: ContextWindowOptions): number {
   const model = getModel(modelId);
-  return model?.contextWindow ?? 200_000;
+  if (!model) return 200_000;
+  if (usesOpenAICodexTransport(options) && model.codexContextWindow) {
+    return model.codexContextWindow;
+  }
+  return model.contextWindow;
 }
 
 /**
