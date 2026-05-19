@@ -23,7 +23,7 @@ export const StreamingArea = memo(function StreamingArea({
   isRunning,
   streamingText,
   streamingThinking,
-  showThinking = true,
+  showThinking = false,
   thinkingMs,
   planMode,
 }: StreamingAreaProps) {

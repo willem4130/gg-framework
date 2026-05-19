@@ -63,32 +63,38 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function buildMetaSuffix(
+export function buildMetaParts(
   elapsedMs: number,
   thinkingMs: number,
   isThinking: boolean,
   tokenEstimate: number,
-): string {
+): { prefix: string; thinking: string } {
   const parts: string[] = [];
   parts.push(formatElapsed(elapsedMs));
 
   if (tokenEstimate > 0) parts.push(`↓ ${formatTokenCount(tokenEstimate)} tokens`);
 
-  if (isThinking) {
-    // Live label — always show while thinking, add duration once >= 1s
-    parts.push(thinkingMs >= 1000 ? `thinking for ${formatElapsed(thinkingMs)}` : "thinking");
-  } else if (thinkingMs >= 1000) {
-    // Frozen — past tense with duration
-    parts.push(`thought for ${formatElapsed(thinkingMs)}`);
-  }
+  const thinking = isThinking
+    ? thinkingMs >= 1000
+      ? `thinking for ${formatElapsed(thinkingMs)}`
+      : "thinking"
+    : thinkingMs >= 1000
+      ? `thought for ${formatElapsed(thinkingMs)}`
+      : "";
 
-  return parts.join(" · ");
+  return { prefix: parts.join(" · "), thinking };
 }
 
 // ── Shimmer effect ────────────────────────────────────────
 
 const SHIMMER_WIDTH = 3;
 const SHIMMER_INTERVAL = 100;
+
+export function getThinkingShimmerColor(themeName: string): string {
+  if (themeName.includes("ansi")) return "#55ff55";
+  if (themeName.startsWith("light")) return "#15803d";
+  return "#22c55e";
+}
 
 const ShimmerText: React.FC<{ text: string; color: string; shimmerPos: number }> = ({
   text,
@@ -173,6 +179,7 @@ export function ActivityIndicator({
 }: ActivityIndicatorProps) {
   const theme = useTheme();
   const reducedMotion = useReducedMotion();
+  const thinkingShimmerColor = getThinkingShimmerColor(theme.name);
 
   // Smooth elapsed time: compute from runStartRef on each animation tick
   // instead of using the 1000ms state update (which looks jerky).
@@ -233,7 +240,8 @@ export function ActivityIndicator({
   const ellipsisFrame = deriveFrame(tick, ELLIPSIS_INTERVAL, ELLIPSIS_FRAMES.length);
 
   // Phrase rotation — pick phrases based on phase + user message + active tools, shuffle, rotate
-  const toolNamesKey = activeToolNames.sort().join(",");
+  const sortedActiveToolNames = [...activeToolNames].sort();
+  const toolNamesKey = sortedActiveToolNames.join(",");
   const overridePhrases = phrasesByPhase?.[phase];
   const phrases = useMemo(
     () =>
@@ -260,7 +268,9 @@ export function ActivityIndicator({
   // Pad ellipsis to prevent text from shifting
   const paddedEllipsis = ellipsis + " ".repeat(3 - ellipsis.length);
 
-  const meta = buildMetaSuffix(elapsedMs, thinkingMs, isThinking, smoothTokenEstimate);
+  const meta = buildMetaParts(elapsedMs, thinkingMs, isThinking, smoothTokenEstimate);
+  const thinkingShimmerCycle = Math.max(1, meta.thinking.length + SHIMMER_WIDTH * 2);
+  const thinkingShimmerPos = (tick % thinkingShimmerCycle) - SHIMMER_WIDTH;
 
   // ── Plan progress bar ──────────────────────────────────
   const planBar = useMemo(() => {
@@ -307,10 +317,20 @@ export function ActivityIndicator({
         <ShimmerText text={phrase} color={spinnerColor} shimmerPos={shimmerPos} />
       )}
       <Text color={theme.textDim}>{reducedMotion ? "..." : paddedEllipsis}</Text>
-      {meta && (
+      {(meta.prefix || meta.thinking) && (
         <Text color={theme.textDim}>
           {"  ("}
-          {meta}
+          {meta.prefix}
+          {meta.prefix && meta.thinking ? " · " : ""}
+          {isThinking && !reducedMotion && meta.thinking ? (
+            <ShimmerText
+              text={meta.thinking}
+              color={thinkingShimmerColor}
+              shimmerPos={thinkingShimmerPos}
+            />
+          ) : (
+            meta.thinking
+          )}
           {")"}
         </Text>
       )}

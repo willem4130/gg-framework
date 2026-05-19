@@ -608,7 +608,6 @@ export interface AppProps {
   accountId?: string;
   cwd: string;
   version: string;
-  showThinking?: boolean;
   showTokenUsage?: boolean;
   onSlashCommand?: (input: string) => Promise<string | null>;
   loggedInProviders?: Provider[];
@@ -2976,7 +2975,6 @@ export function App(props: AppProps) {
             text={item.text}
             thinking={item.thinking}
             thinkingMs={item.thinkingMs}
-            showThinking={props.showThinking}
             planMode={item.planMode}
           />
         );
@@ -3686,7 +3684,6 @@ export function App(props: AppProps) {
               isRunning={agentLoop.isRunning}
               streamingText={agentLoop.streamingText}
               streamingThinking={agentLoop.streamingThinking}
-              showThinking={props.showThinking}
               thinkingMs={agentLoop.thinkingMs}
               planMode={planMode}
             />

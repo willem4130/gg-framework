@@ -33,7 +33,6 @@ const SettingsSchema = z.object({
     ])
     .default("auto"),
   showTokenUsage: z.boolean().default(true),
-  showThinking: z.boolean().default(true),
   enabledTools: z.array(z.string()).optional(),
 });
 
@@ -47,7 +46,6 @@ export const DEFAULT_SETTINGS: Settings = {
   thinkingEnabled: false,
   theme: "auto",
   showTokenUsage: true,
-  showThinking: true,
 };
 
 // ── Settings Manager ───────────────────────────────────────

@@ -29,7 +29,6 @@ export interface RenderAppConfig {
   cwd: string;
   version: string;
   theme?: "auto" | ThemeName;
-  showThinking?: boolean;
   showTokenUsage?: boolean;
   onSlashCommand?: (input: string) => Promise<string | null>;
   loggedInProviders?: Provider[];
@@ -281,7 +280,6 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
             accountId: config.accountId,
             cwd: config.cwd,
             version: config.version,
-            showThinking: config.showThinking,
             showTokenUsage: config.showTokenUsage,
             onSlashCommand: config.onSlashCommand,
             loggedInProviders: config.loggedInProviders,

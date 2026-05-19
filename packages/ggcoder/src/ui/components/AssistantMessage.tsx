@@ -21,7 +21,7 @@ export const AssistantMessage = React.memo(function AssistantMessage({
   text,
   thinking,
   thinkingMs,
-  showThinking = true,
+  showThinking = false,
   planMode,
 }: AssistantMessageProps) {
   const theme = useTheme();
