@@ -606,24 +606,54 @@ describe("createEditTool", () => {
     ).rejects.toThrow(/old_text not found/);
   });
 
-  it("rejects no-op edits where old_text equals new_text", async () => {
+  it("treats no-op edits where old_text equals new_text as successful no-ops", async () => {
     const filePath = path.join(tmpDir, "noop.txt");
     await fs.writeFile(filePath, "hello world\n");
 
-    const tool = createEditTool(tmpDir);
-    await expect(
-      tool.execute(
-        {
-          file_path: "noop.txt",
-          edits: [{ old_text: "hello", new_text: "hello" }],
-        },
-        { signal: new AbortController().signal, toolCallId: "test-noop" },
-      ),
-    ).rejects.toThrow(/identical[\s\S]*no-op/);
+    const mutated: string[] = [];
+    const tool = createEditTool(tmpDir, undefined, undefined, undefined, (mutatedPath) => {
+      mutated.push(mutatedPath);
+    });
+    const result = await tool.execute(
+      {
+        file_path: "noop.txt",
+        edits: [{ old_text: "hello", new_text: "hello" }],
+      },
+      { signal: new AbortController().signal, toolCallId: "test-noop" },
+    );
+
+    const summary = typeof result === "string" ? result : (result as { content: string }).content;
+    expect(summary).toMatch(/No changes needed[\s\S]*no-op/);
+    expect(mutated).toEqual([]);
 
     // File untouched — confirms we didn't write a no-op.
     const written = await fs.readFile(filePath, "utf-8");
     expect(written).toBe("hello world\n");
+  });
+
+  it("applies real edits atomically when the batch also contains no-ops", async () => {
+    const filePath = path.join(tmpDir, "noop-atomic.txt");
+    await fs.writeFile(filePath, "alpha\nbeta\ngamma\n");
+
+    const tool = createEditTool(tmpDir);
+    const result = await tool.execute(
+      {
+        file_path: "noop-atomic.txt",
+        edits: [
+          { old_text: "alpha", new_text: "ALPHA" },
+          { old_text: "beta", new_text: "beta" },
+          { old_text: "gamma", new_text: "GAMMA" },
+        ],
+        atomic: true,
+      },
+      { signal: new AbortController().signal, toolCallId: "test-noop-atomic" },
+    );
+
+    const summary = typeof result === "string" ? result : (result as { content: string }).content;
+    expect(summary).toContain("3 edits");
+
+    const written = await fs.readFile(filePath, "utf-8");
+    expect(written).toBe("ALPHA\nbeta\nGAMMA\n");
   });
 
   it("no-op edit in a partial-apply batch still lets the other edits land", async () => {
@@ -643,8 +673,7 @@ describe("createEditTool", () => {
     );
 
     const summary = typeof result === "string" ? result : (result as { content: string }).content;
-    expect(summary).toMatch(/Applied 1 of 2/);
-    expect(summary).toMatch(/identical[\s\S]*no-op/);
+    expect(summary).toMatch(/Successfully applied 2 edits/);
 
     const written = await fs.readFile(filePath, "utf-8");
     expect(written).toBe("ALPHA\nbeta\n");

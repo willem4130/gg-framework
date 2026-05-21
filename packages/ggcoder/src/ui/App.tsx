@@ -227,6 +227,28 @@ interface GoalItem {
   id: string;
 }
 
+export function routePromptCommandInput(
+  input: string,
+  promptCommands = PROMPT_COMMANDS,
+  customCommands: Pick<CustomCommand, "name" | "prompt">[] = [],
+): { cmdName: string; cmdArgs: string; promptText: string; fullPrompt: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const parts = trimmed.slice(1).split(" ");
+  const cmdName = parts[0];
+  const cmdArgs = parts.slice(1).join(" ").trim();
+  const builtinCmd = promptCommands.find((c) => c.name === cmdName || c.aliases.includes(cmdName));
+  const customCmd = !builtinCmd ? customCommands.find((c) => c.name === cmdName) : undefined;
+  const promptText = builtinCmd?.prompt ?? customCmd?.prompt;
+  if (!promptText) return null;
+  return {
+    cmdName,
+    cmdArgs,
+    promptText,
+    fullPrompt: cmdArgs ? `${promptText}\n\n## User Instructions\n\n${cmdArgs}` : promptText,
+  };
+}
+
 export interface GoalProgressItem {
   kind: "goal_progress";
   phase:
@@ -600,6 +622,16 @@ export function shouldStabilizeOverlayPaneRerender({
   isAgentRunning: boolean;
 }): boolean {
   return isAgentRunning && (overlayPane === "goal" || overlayPane === "plan");
+}
+
+export function shouldHideStaticItemsForOverlayView({
+  shouldHideHistoryForOverlay,
+  stabilizeOverlayPaneRerender,
+}: {
+  shouldHideHistoryForOverlay: boolean;
+  stabilizeOverlayPaneRerender: boolean;
+}): boolean {
+  return shouldHideHistoryForOverlay && !stabilizeOverlayPaneRerender;
 }
 
 export interface ScrollStabilizationDecision {
@@ -2833,56 +2865,46 @@ export function App(props: AppProps) {
       }
 
       // Handle prompt-template commands (built-in + custom from .gg/commands/)
-      if (trimmed.startsWith("/")) {
-        const parts = trimmed.slice(1).split(" ");
-        const cmdName = parts[0];
-        const cmdArgs = parts.slice(1).join(" ").trim();
-        const builtinCmd = getPromptCommand(cmdName);
-        const customCmd = !builtinCmd ? customCommands.find((c) => c.name === cmdName) : undefined;
-        const promptText = builtinCmd?.prompt ?? customCmd?.prompt;
+      const promptCommandRoute = routePromptCommandInput(trimmed, PROMPT_COMMANDS, customCommands);
+      if (promptCommandRoute) {
+        const { cmdName, cmdArgs, fullPrompt } = promptCommandRoute;
+        log(
+          "INFO",
+          "command",
+          `Prompt command: /${cmdName}${cmdArgs ? ` (args: ${cmdArgs})` : ""}`,
+        );
 
-        if (promptText) {
-          log(
-            "INFO",
-            "command",
-            `Prompt command: /${cmdName}${cmdArgs ? ` (args: ${cmdArgs})` : ""}`,
-          );
-
-          // Move live items into history before starting
-          setLiveItems((prev) => {
-            if (prev.length > 0) {
-              pendingFlushRef.current = [...pendingFlushRef.current, ...prev];
-            }
-            return [];
-          });
-
-          // Show the command name as the user message
-          const userItem: UserItem = { kind: "user", text: trimmed, id: getId() };
-          setLastUserMessage(trimmed);
-          setDoneStatus(null);
-          setLiveItems([userItem]);
-
-          // Send the full prompt to the agent, with user args appended if provided
-          const fullPrompt = cmdArgs
-            ? `${promptText}\n\n## User Instructions\n\n${cmdArgs}`
-            : promptText;
-          try {
-            await agentLoop.run(fullPrompt);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log("ERROR", "error", msg);
-            const isAbort = msg.includes("aborted") || msg.includes("abort");
-            setLiveItems((prev) => [
-              ...prev,
-              isAbort
-                ? { kind: "stopped", text: "Request was stopped.", id: getId() }
-                : toErrorItem(err, getId()),
-            ]);
+        // Move live items into history before starting
+        setLiveItems((prev) => {
+          if (prev.length > 0) {
+            pendingFlushRef.current = [...pendingFlushRef.current, ...prev];
           }
-          // Reload custom commands in case a setup command created new ones
-          reloadCustomCommands();
-          return;
+          return [];
+        });
+
+        // Show the command name as the user message
+        const userItem: UserItem = { kind: "user", text: trimmed, id: getId() };
+        setLastUserMessage(trimmed);
+        setDoneStatus(null);
+        setLiveItems([userItem]);
+
+        // Send the full prompt to the agent, with user args appended if provided
+        try {
+          await agentLoop.run(fullPrompt);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log("ERROR", "error", msg);
+          const isAbort = msg.includes("aborted") || msg.includes("abort");
+          setLiveItems((prev) => [
+            ...prev,
+            isAbort
+              ? { kind: "stopped", text: "Request was stopped.", id: getId() }
+              : toErrorItem(err, getId()),
+          ]);
         }
+        // Reload custom commands in case a setup command created new ones
+        reloadCustomCommands();
+        return;
       }
 
       // Check slash commands
@@ -3729,7 +3751,9 @@ export function App(props: AppProps) {
         if (props.sessionStore) {
           props.sessionStore.overlay = kind;
           if (kind !== "plan") props.sessionStore.planAutoExpand = false;
-          if (agentLoop.isRunning) props.sessionStore.pendingResetUI = true;
+          if (agentLoop.isRunning && kind !== "goal" && kind !== "plan") {
+            props.sessionStore.pendingResetUI = true;
+          }
         }
         if (kind !== "plan") setPlanAutoExpand(false);
         setOverlay(kind);
@@ -3745,7 +3769,6 @@ export function App(props: AppProps) {
     } else {
       if (props.sessionStore) {
         props.sessionStore.overlay = null;
-        if (agentLoop.isRunning) props.sessionStore.pendingResetUI = true;
       }
       setOverlay(null);
     }
@@ -4498,8 +4521,15 @@ export function App(props: AppProps) {
     <Box flexDirection="column" width={columns}>
       {/* History — scrolled up, managed by Ink Static. */}
       <Static
-        key={stabilizeOverlayPaneRerender ? "overlay-stable-static" : `${resizeKey}-${staticKey}`}
-        items={stabilizeOverlayPaneRerender || shouldHideHistoryForOverlay ? [] : history}
+        key={`${resizeKey}-${staticKey}`}
+        items={
+          shouldHideStaticItemsForOverlayView({
+            shouldHideHistoryForOverlay,
+            stabilizeOverlayPaneRerender,
+          })
+            ? []
+            : history
+        }
         style={{ width: "100%" }}
       >
         {(item) => (

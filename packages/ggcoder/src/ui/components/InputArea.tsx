@@ -1418,13 +1418,76 @@ export function InputArea({
                     </Text>
                   </>
                 )}
-                <Text color={theme.text}>{displayStr.slice(0, cursorInDisplay)}</Text>
-                <Text color={theme.text} inverse={cursorVisible}>
-                  {cursorInDisplay < displayStr.length ? displayStr[cursorInDisplay] : " "}
-                </Text>
-                {cursorInDisplay + 1 < displayStr.length && (
-                  <Text color={theme.text}>{displayStr.slice(cursorInDisplay + 1)}</Text>
-                )}
+                {(() => {
+                  const beforeCursor = displayStr.slice(0, cursorInDisplay);
+                  const renderDisplaySegment = (text: string, displayOffset: number) => {
+                    if (!text) return null;
+                    const inCmd = isCommand && displayOffset < commandEndIndex;
+                    const cmdChars = inCmd
+                      ? Math.min(text.length, commandEndIndex - displayOffset)
+                      : 0;
+                    if (cmdChars >= text.length) {
+                      return (
+                        <Text color={theme.commandColor} bold>
+                          {text}
+                        </Text>
+                      );
+                    }
+                    if (cmdChars > 0) {
+                      return (
+                        <>
+                          <Text color={theme.commandColor} bold>
+                            {text.slice(0, cmdChars)}
+                          </Text>
+                          <Text color={theme.text}>{text.slice(cmdChars)}</Text>
+                        </>
+                      );
+                    }
+                    return <Text color={theme.text}>{text}</Text>;
+                  };
+                  return renderDisplaySegment(beforeCursor, 0);
+                })()}
+                {(() => {
+                  const cursorChar =
+                    cursorInDisplay < displayStr.length ? displayStr[cursorInDisplay] : " ";
+                  const cursorInCmd = isCommand && cursorInDisplay < commandEndIndex;
+                  return (
+                    <Text
+                      color={cursorInCmd ? theme.commandColor : theme.text}
+                      bold={cursorInCmd || undefined}
+                      inverse={cursorVisible}
+                    >
+                      {cursorChar}
+                    </Text>
+                  );
+                })()}
+                {cursorInDisplay + 1 < displayStr.length &&
+                  (() => {
+                    const afterCursor = displayStr.slice(cursorInDisplay + 1);
+                    const afterOffset = cursorInDisplay + 1;
+                    const inCmd = isCommand && afterOffset < commandEndIndex;
+                    const cmdChars = inCmd
+                      ? Math.min(afterCursor.length, commandEndIndex - afterOffset)
+                      : 0;
+                    if (cmdChars >= afterCursor.length) {
+                      return (
+                        <Text color={theme.commandColor} bold>
+                          {afterCursor}
+                        </Text>
+                      );
+                    }
+                    if (cmdChars > 0) {
+                      return (
+                        <>
+                          <Text color={theme.commandColor} bold>
+                            {afterCursor.slice(0, cmdChars)}
+                          </Text>
+                          <Text color={theme.text}>{afterCursor.slice(cmdChars)}</Text>
+                        </>
+                      );
+                    }
+                    return <Text color={theme.text}>{afterCursor}</Text>;
+                  })()}
               </Box>
             );
           }

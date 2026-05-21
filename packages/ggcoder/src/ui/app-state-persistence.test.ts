@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   formatGoalTerminalProgress,
+  routePromptCommandInput,
   shouldHideHistoryForOverlayView,
+  shouldHideStaticItemsForOverlayView,
+  shouldStabilizeOverlayPaneRerender,
   type CompletedItem,
   type GoalProgressItem,
 } from "./App.js";
@@ -34,6 +37,23 @@ describe("App TUI state persistence helpers", () => {
     expect(shouldHideHistoryForOverlayView(false, false)).toBe(false);
   });
 
+  it("keeps active Goal pane switches from blanking Static history", () => {
+    const hideHistory = shouldHideHistoryForOverlayView(true, true);
+    const stabilizeStatic = shouldStabilizeOverlayPaneRerender({
+      overlayPane: "goal",
+      isAgentRunning: true,
+    });
+
+    expect(hideHistory).toBe(false);
+    expect(stabilizeStatic).toBe(true);
+    expect(
+      shouldHideStaticItemsForOverlayView({
+        shouldHideHistoryForOverlay: hideHistory,
+        stabilizeOverlayPaneRerender: stabilizeStatic,
+      }),
+    ).toBe(false);
+  });
+
   it("models the regression: goal progress history remains persisted even when hidden behind a pane", () => {
     const goalProgress: GoalProgressItem = {
       kind: "goal_progress",
@@ -53,6 +73,15 @@ describe("App TUI state persistence helpers", () => {
 
     expect(itemsRenderedDuringGoalPane).toEqual([]);
     expect(history).toContain(goalProgress);
+  });
+
+  it("routes slash prompt commands with pasted multi-line args into the command path", () => {
+    const pastedArgs = "explain this snippet:\nconst a = 1;\nconsole.log(a);";
+    const route = routePromptCommandInput(`/scan ${pastedArgs}`);
+
+    expect(route).toMatchObject({ cmdName: "scan", cmdArgs: pastedArgs });
+    expect(route?.fullPrompt).toContain("# Scan: Confirmed Dead Code Review");
+    expect(route?.fullPrompt).toContain(`## User Instructions\n\n${pastedArgs}`);
   });
 
   it("formats terminal goal progress as durable history-safe rows", () => {

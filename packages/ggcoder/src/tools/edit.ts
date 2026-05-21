@@ -150,10 +150,11 @@ export function createEditTool(
         const normalizedNew = hasCRLF ? new_text.replace(/\r\n/g, "\n") : new_text;
         const replaceAll = replace_all ?? false;
 
-        // Reject no-op edits before they consume a write or silently "succeed"
-        // — usually the model paraphrased the new_text to be identical to old.
+        // Identical replacements are explicit no-op successes. They should not
+        // block atomic batches that contain real edits, and all-no-op batches
+        // should report success without writing.
         if (normalizedOld === normalizedNew) {
-          outcomes[i] = { ok: false, failure: { reason: "noop" } };
+          outcomes[i] = { ok: true };
           continue;
         }
 
@@ -295,19 +296,29 @@ export function createEditTool(
         throw new Error(header + formatFailures());
       }
 
-      const finalContent = hasCRLF ? working.replace(/\n/g, "\r\n") : working;
-      await ops.writeFile(resolved, finalContent);
-      await recordWrite(readFiles, resolved, finalContent, ops);
-      await onFileMutated?.(resolved);
-      // Partial-apply with a not_found in the mix: recordWrite just refreshed
-      // the tracker, but we still want to force a re-read for the next batch
-      // because the model's view of at least one region is wrong.
-      if (hasNotFound) readFiles?.delete(resolved);
-
       const relPath = path.relative(cwd, resolved);
       const diff = generateDiff(originalNormalized, working, relPath);
+      const changed = working !== originalNormalized;
+
+      if (changed) {
+        const finalContent = hasCRLF ? working.replace(/\n/g, "\r\n") : working;
+        await ops.writeFile(resolved, finalContent);
+        await recordWrite(readFiles, resolved, finalContent, ops);
+        await onFileMutated?.(resolved);
+        // Partial-apply with a not_found in the mix: recordWrite just refreshed
+        // the tracker, but we still want to force a re-read for the next batch
+        // because the model's view of at least one region is wrong.
+        if (hasNotFound) readFiles?.delete(resolved);
+      }
 
       if (failures.length === 0) {
+        if (!changed) {
+          const summary =
+            edits.length > 1
+              ? `No changes needed in ${relPath}; ${edits.length} edits were no-ops.`
+              : `No changes needed in ${relPath}; edit was a no-op.`;
+          return { content: summary, details: { diff } };
+        }
         const summary =
           edits.length > 1
             ? `Successfully applied ${edits.length} edits to ${relPath}.`

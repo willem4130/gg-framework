@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import {
-  createGoalRun,
   formatGoalPrerequisiteInstruction,
   goalHasBlockingPrerequisites,
   isBlockingGoalPrerequisite,
@@ -120,7 +118,7 @@ export function clampGoalScrollOffset(
   return Math.min(Math.max(0, Math.floor(offset)), maxOffset);
 }
 
-export function getGoalOverlayViewportRows(terminalRows: number, reservedRows = 10): number {
+export function getGoalOverlayViewportRows(terminalRows: number, reservedRows = 8): number {
   if (!Number.isFinite(terminalRows)) return 8;
   return Math.max(4, Math.floor(terminalRows) - reservedRows);
 }
@@ -181,6 +179,108 @@ export function getGoalCardExtraRowCount(run: GoalRun): number {
   else if (run.status === "running" || run.status === "verifying") count += 1;
   if (run.blockers.length > 0) count += 1;
   return count;
+}
+
+export function getGoalListCardRowCount({ run }: { run: GoalRun }): number {
+  const compactCardRows =
+    1 + // title/status row
+    2 + // compact summary rows
+    getGoalCardExtraRowCount(run);
+  const marginRows = 1;
+  return compactCardRows + marginRows;
+}
+
+export interface GoalListWindow {
+  start: number;
+  end: number;
+  hiddenBefore: number;
+  hiddenAfter: number;
+  rowsUsed: number;
+}
+
+function compareGoalListWindows({
+  candidate,
+  current,
+  selectedIndex,
+}: {
+  candidate: GoalListWindow;
+  current: GoalListWindow | null;
+  selectedIndex: number;
+}): GoalListWindow {
+  if (!current) return candidate;
+  const candidateCount = candidate.end - candidate.start;
+  const currentCount = current.end - current.start;
+  if (candidateCount !== currentCount) return candidateCount > currentCount ? candidate : current;
+  if (candidate.rowsUsed !== current.rowsUsed)
+    return candidate.rowsUsed > current.rowsUsed ? candidate : current;
+  const candidateBalance = Math.abs(
+    selectedIndex - candidate.start - (candidate.end - selectedIndex - 1),
+  );
+  const currentBalance = Math.abs(
+    selectedIndex - current.start - (current.end - selectedIndex - 1),
+  );
+  if (candidateBalance !== currentBalance)
+    return candidateBalance < currentBalance ? candidate : current;
+  return candidate.start > current.start ? candidate : current;
+}
+
+export function getGoalListWindow({
+  runs,
+  selectedIndex,
+  viewportRows,
+}: {
+  runs: readonly GoalRun[];
+  selectedIndex: number;
+  viewportRows: number;
+}): GoalListWindow {
+  const rows = Number.isFinite(viewportRows) ? Math.max(1, Math.floor(viewportRows)) : 8;
+  const fixedRows = 1;
+  if (runs.length === 0) {
+    return { start: 0, end: 0, hiddenBefore: 0, hiddenAfter: 0, rowsUsed: fixedRows };
+  }
+
+  const selected = clampGoalSelectedIndex(selectedIndex, runs.length);
+  let best: GoalListWindow | null = null;
+
+  for (let start = 0; start <= selected; start++) {
+    let cardRows = 0;
+    for (let end = start + 1; end <= runs.length; end++) {
+      const index = end - 1;
+      const run = runs[index];
+      if (!run) continue;
+      cardRows += getGoalListCardRowCount({ run });
+      if (end <= selected) continue;
+
+      const hiddenBefore = start;
+      const hiddenAfter = runs.length - end;
+      const indicatorRows = (hiddenBefore > 0 ? 1 : 0) + (hiddenAfter > 0 ? 1 : 0);
+      const rowsUsed = fixedRows + indicatorRows + cardRows;
+      if (rowsUsed > rows) continue;
+
+      best = compareGoalListWindows({
+        candidate: { start, end, hiddenBefore, hiddenAfter, rowsUsed },
+        current: best,
+        selectedIndex: selected,
+      });
+    }
+  }
+
+  if (best) return best;
+
+  const start = selected;
+  const end = selected + 1;
+  const hiddenBefore = start;
+  const hiddenAfter = runs.length - end;
+  const indicatorRows = (hiddenBefore > 0 ? 1 : 0) + (hiddenAfter > 0 ? 1 : 0);
+  const run = runs[selected];
+  const cardRows = run ? getGoalListCardRowCount({ run }) : 0;
+  return {
+    start,
+    end,
+    hiddenBefore,
+    hiddenAfter,
+    rowsUsed: fixedRows + indicatorRows + cardRows,
+  };
 }
 
 export function getGoalExpandedDetailViewportRows({
@@ -299,6 +399,39 @@ function statusColor(status: GoalRunStatus): string {
     case "ready":
       return "";
   }
+}
+
+export function getGoalCardStatusColor({
+  status,
+  selected,
+  primaryColor,
+  textColor,
+}: {
+  status: GoalRunStatus;
+  selected: boolean;
+  primaryColor: string;
+  textColor: string;
+}): string {
+  return statusColor(status) || (selected ? primaryColor : textColor);
+}
+
+export function getGoalCardTitleColor({
+  selected,
+  primaryColor,
+  textColor,
+}: {
+  selected: boolean;
+  primaryColor: string;
+  textColor: string;
+}): string {
+  return selected ? primaryColor : textColor;
+}
+
+function verifierSummaryColor(run: GoalRun, fallbackColor: string): string {
+  if (run.verifier?.lastResult) return verifierStatusColor(run.verifier.lastResult.status);
+  if (run.verifier?.command) return "cyan";
+  if (run.verifier?.description) return "magenta";
+  return fallbackColor;
 }
 
 function taskStatusColor(status: GoalTask["status"]): string {
@@ -708,8 +841,7 @@ export function GoalOverlay({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"normal" | "adding" | "confirmDelete">("normal");
-  const [inputText, setInputText] = useState("");
+  const [mode, setMode] = useState<"normal" | "confirmDelete">("normal");
   const [status, setStatus] = useState("");
   const [detailScrollOffset, setDetailScrollOffset] = useState(0);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -771,29 +903,27 @@ export function GoalOverlay({
   const viewportRows = getGoalOverlayViewportRows(rows);
   const selectedRun = runs[selectedIndex];
   const expandedRun = selectedRun && selectedRun.id === expandedRunId ? selectedRun : null;
-  const expandedCardExtraRows = expandedRun ? getGoalCardExtraRowCount(expandedRun) : 0;
+  const selectedCardExtraRows = selectedRun ? getGoalCardExtraRowCount(selectedRun) : 0;
+  const expandedCardExtraRows = expandedRun ? selectedCardExtraRows : 0;
   const detailViewportRows = expandedRun
     ? getGoalExpandedDetailViewportRows({
         viewportRows,
         cardExtraRows: expandedCardExtraRows,
       })
     : 0;
-  const listViewportGoalCount = expandedRun ? 1 : Math.max(1, Math.floor(viewportRows / 4));
-  const scrollOffset = expandedRun
-    ? selectedIndex
-    : getGoalScrollOffsetForSelection({
+  const listWindow = expandedRun
+    ? null
+    : getGoalListWindow({
+        runs,
         selectedIndex,
-        currentOffset: 0,
-        itemCount: runs.length,
-        viewportRows: listViewportGoalCount,
+        viewportRows,
       });
+  const scrollOffset = expandedRun ? selectedIndex : (listWindow?.start ?? 0);
   const visibleRuns = expandedRun
     ? [expandedRun]
-    : runs.slice(scrollOffset, scrollOffset + listViewportGoalCount);
-  const hiddenBefore = expandedRun ? 0 : scrollOffset;
-  const hiddenAfter = expandedRun
-    ? 0
-    : Math.max(0, runs.length - scrollOffset - visibleRuns.length);
+    : runs.slice(listWindow?.start ?? 0, listWindow?.end ?? 0);
+  const hiddenBefore = expandedRun ? 0 : (listWindow?.hiddenBefore ?? 0);
+  const hiddenAfter = expandedRun ? 0 : (listWindow?.hiddenAfter ?? 0);
   const detailRowCount = expandedRun ? getGoalDetailRowCount(expandedRun) : 0;
 
   useEffect(() => {
@@ -807,43 +937,6 @@ export function GoalOverlay({
   }, [detailRowCount, detailViewportRows]);
 
   useInput((input, key) => {
-    if (mode === "adding") {
-      if (key.escape) {
-        setMode("normal");
-        setInputText("");
-        return;
-      }
-      if (key.return) {
-        const text = inputText.trim();
-        if (text) {
-          const run = createGoalRun(cwd, {
-            id: randomUUID(),
-            title: text.slice(0, 80),
-            goal: text,
-            status: "draft",
-            successCriteria: [],
-            prerequisites: [],
-            harness: [],
-            tasks: [],
-            evidence: [],
-            blockers: [],
-          });
-          setRuns((previousRuns) => sortGoalRunsForOverlay([run, ...previousRuns]));
-          setSelectedIndex(0);
-          showStatus("Draft goal added");
-        }
-        setMode("normal");
-        setInputText("");
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setInputText((previous) => previous.slice(0, -1));
-        return;
-      }
-      if (input && !key.ctrl && !key.meta) setInputText((previous) => previous + input);
-      return;
-    }
-
     if (mode === "confirmDelete") {
       if (key.escape || input === "n") {
         setMode("normal");
@@ -929,11 +1022,6 @@ export function GoalOverlay({
       onPauseGoal(selectedRun);
       return;
     }
-    if (input === "a") {
-      setMode("adding");
-      setInputText("");
-      return;
-    }
     if (input === "x" && selectedRun) {
       setMode("confirmDelete");
       showStatus("Archive goal? y/n");
@@ -968,13 +1056,10 @@ export function GoalOverlay({
           <Text color={theme.primary} bold>
             Start a durable Goal run
           </Text>
-          <Text color={theme.textDim}>
-            No goals yet. Run /goal &lt;objective&gt; or press a to draft one here.
-          </Text>
+          <Text color={theme.textDim}>No goals yet. Ask the agent to start a durable Goal.</Text>
           <Text color={theme.textDim}>
             Prerequisites, worker tasks, evidence, and verifier results will appear in this pane.
           </Text>
-          {mode === "adding" ? <Text color={theme.primary}>New goal › {inputText}</Text> : null}
         </Box>
       ) : (
         <Box flexDirection="column" height={viewportRows} overflowY="hidden">
@@ -995,19 +1080,31 @@ export function GoalOverlay({
                 key={run.id}
                 flexDirection="column"
                 marginBottom={1}
-                borderStyle={selected ? "round" : undefined}
-                borderColor={selected ? theme.primary : undefined}
-                paddingX={selected ? 1 : 0}
+                borderStyle={expandedRun?.id === run.id ? "round" : undefined}
+                borderColor={expandedRun?.id === run.id ? theme.primary : undefined}
+                paddingX={expandedRun?.id === run.id ? 1 : 0}
               >
-                <Text>
+                <Text wrap="truncate">
                   <Text color={selected ? theme.primary : theme.textDim}>
                     {selected ? "❯ " : "  "}
                   </Text>
                   <StatusChip
                     label={run.status}
-                    color={statusColor(run.status) || (selected ? theme.primary : theme.textDim)}
+                    color={getGoalCardStatusColor({
+                      status: run.status,
+                      selected,
+                      primaryColor: theme.primary,
+                      textColor: theme.text,
+                    })}
                   />
-                  <Text color={selected ? theme.primary : theme.text} bold={selected}>
+                  <Text
+                    color={getGoalCardTitleColor({
+                      selected,
+                      primaryColor: theme.primary,
+                      textColor: theme.text,
+                    })}
+                    bold={selected}
+                  >
                     {" "}
                     {run.title}
                   </Text>
@@ -1015,28 +1112,43 @@ export function GoalOverlay({
                 </Text>
                 {expandedRun?.id === run.id ? null : (
                   <>
-                    <Text color={theme.textDim}>
-                      {selected ? "  " : "    "}
-                      {getGoalReadinessText(run)} · {formatGoalProgressText(run)} ·{" "}
-                      {formatGoalVerifierSummary(run)}
+                    <Text wrap="truncate">
+                      <Text color={theme.textDim}>{selected ? "  " : "    "}</Text>
+                      <Text color={statusColor(run.status) || theme.secondary}>
+                        {getGoalReadinessText(run)}
+                      </Text>
+                      <Text color={theme.textDim}> · </Text>
+                      <Text color={theme.text}>{formatGoalProgressText(run)}</Text>
+                      <Text color={theme.textDim}> · </Text>
+                      <Text color={verifierSummaryColor(run, theme.textDim)}>
+                        {formatGoalVerifierSummary(run)}
+                      </Text>
                     </Text>
-                    <Text color={theme.textDim}>
-                      {selected ? "  " : "    "}
-                      {formatGoalPrerequisiteSummary(run)} · {formatGoalTaskSummary(run)}
+                    <Text wrap="truncate">
+                      <Text color={theme.textDim}>{selected ? "  " : "    "}</Text>
+                      <Text
+                        color={goalHasBlockingPrerequisites(run) ? theme.warning : GOAL_SUCCESS}
+                      >
+                        {formatGoalPrerequisiteSummary(run)}
+                      </Text>
+                      <Text color={theme.textDim}> · </Text>
+                      <Text color={run.tasks.length > 0 ? GOAL_SUCCESS : theme.text}>
+                        {formatGoalTaskSummary(run)}
+                      </Text>
                     </Text>
                   </>
                 )}
                 {blocked ? (
-                  <Text color={theme.warning}>
+                  <Text color={theme.warning} wrap="truncate">
                     {selected ? "  " : "    "}⚠ prerequisite needed before workers continue
                   </Text>
                 ) : run.status === "running" || run.status === "verifying" ? (
-                  <Text color={GOAL_ACTIVE}>
+                  <Text color={GOAL_ACTIVE} wrap="truncate">
                     {selected ? "  " : "    "}● active — watching worker/verifier progress
                   </Text>
                 ) : null}
                 {run.blockers.length > 0 ? (
-                  <Text color={theme.warning}>
+                  <Text color={theme.warning} wrap="truncate">
                     {selected ? "  " : "    "}blocker: {run.blockers[0]}
                   </Text>
                 ) : null}
@@ -1055,20 +1167,12 @@ export function GoalOverlay({
               ↓ {hiddenAfter} later goal{hiddenAfter === 1 ? "" : "s"}
             </Text>
           ) : null}
-          {mode === "adding" ? <Text color={theme.primary}>New goal › {inputText}</Text> : null}
         </Box>
       )}
 
       <Box marginTop={1}>
         {mode === "confirmDelete" ? (
           <Text color={theme.warning}>Confirm archive selected goal: y/n</Text>
-        ) : mode === "adding" ? (
-          <Text color={theme.textDim}>
-            <Text color={theme.primary}>Enter</Text>
-            {" add · "}
-            <Text color={theme.primary}>ESC</Text>
-            {" cancel"}
-          </Text>
         ) : (
           <Text color={theme.textDim}>
             <Text color={theme.primary}>↑↓/jk</Text>
@@ -1087,8 +1191,6 @@ export function GoalOverlay({
             {" verify · "}
             <Text color={theme.primary}>p</Text>
             {" pause · "}
-            <Text color={theme.primary}>a</Text>
-            {" add · "}
             <Text color={theme.primary}>x</Text>
             {" archive · "}
             <Text color={theme.primary}>Esc</Text>

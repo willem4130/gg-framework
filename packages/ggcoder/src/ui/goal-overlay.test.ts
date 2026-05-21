@@ -8,6 +8,8 @@ import {
   getGoalDetailRowCount,
   getGoalDetailScrollWindow,
   getGoalExpandedDetailViewportRows,
+  getGoalListCardRowCount,
+  getGoalListWindow,
   getGoalOverlayViewportRows,
   getGoalScrollOffsetForSelection,
   formatGoalPrerequisiteSummary,
@@ -16,6 +18,8 @@ import {
   formatGoalTaskSummary,
   formatGoalVerifierSummary,
   getGoalReadinessText,
+  getGoalCardStatusColor,
+  getGoalCardTitleColor,
   getGoalDetailTaskHeading,
   getGoalStatusCountsText,
   getGoalUserPrerequisiteHeading,
@@ -67,9 +71,37 @@ describe("goal overlay helpers", () => {
   });
 
   it("derives conservative internal viewport limits from terminal rows", () => {
-    expect(getGoalOverlayViewportRows(30)).toBe(20);
+    expect(getGoalOverlayViewportRows(30)).toBe(22);
     expect(getGoalOverlayViewportRows(8)).toBe(4);
     expect(getGoalOverlayViewportRows(Number.NaN)).toBe(8);
+  });
+
+  it("budgets complete cards by actual rows before showing another goal", () => {
+    const runs = [
+      goalRun({ id: "a" }),
+      goalRun({ id: "b" }),
+      goalRun({ id: "c" }),
+      goalRun({ id: "d" }),
+    ];
+
+    expect(getGoalListWindow({ runs: [], selectedIndex: 0, viewportRows: 8 })).toMatchObject({
+      rowsUsed: 1,
+    });
+    expect(getGoalListCardRowCount({ run: runs[0] })).toBe(4);
+    expect(getGoalListWindow({ runs, selectedIndex: 0, viewportRows: 13 })).toEqual({
+      start: 0,
+      end: 2,
+      hiddenBefore: 0,
+      hiddenAfter: 2,
+      rowsUsed: 10,
+    });
+    expect(getGoalListWindow({ runs, selectedIndex: 3, viewportRows: 13 })).toEqual({
+      start: 2,
+      end: 4,
+      hiddenBefore: 2,
+      hiddenAfter: 0,
+      rowsUsed: 10,
+    });
   });
 
   it("keeps expanded selection visible without growing terminal scrollback", () => {
@@ -292,6 +324,31 @@ describe("goal overlay helpers", () => {
     ];
 
     expect(getGoalStatusCountsText(runs)).toBe("1 passed · 1 running · 1 pending · 1 blocked");
+  });
+
+  it("keeps unselected goal cards readable when multiple goals are listed", () => {
+    expect(
+      getGoalCardStatusColor({
+        status: "ready",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("text");
+    expect(
+      getGoalCardStatusColor({
+        status: "passed",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("#4ade80");
+    expect(
+      getGoalCardTitleColor({ selected: false, primaryColor: "primary", textColor: "text" }),
+    ).toBe("text");
+    expect(
+      getGoalCardTitleColor({ selected: true, primaryColor: "primary", textColor: "text" }),
+    ).toBe("primary");
   });
 
   it("refuses to persist a transient empty overlay state while active Goal work exists", () => {

@@ -69,16 +69,40 @@ describe("goal controller", () => {
     ).toMatchObject({ kind: "wait", workerId: "worker-a" });
   });
 
-  it("treats durable verifier output as satisfying matching evidence-plan items", () => {
+  it("treats closure evidence and ready evidence-plan items as satisfied after verifier pass", () => {
     const run = goalRun({
       evidencePlan: [
         {
-          id: "proof",
-          label: "Exact proof",
+          id: "ready-proof",
+          label: "Ready proof",
           mechanism: "test",
-          description: "prove",
+          description: "Ready proof was produced by the harness.",
+          status: "ready",
+          evidence: "Regression harness artifact was recorded.",
+        },
+        {
+          id: "closure-proof",
+          label: "Closure proof",
+          mechanism: "browser",
+          description: "Browser closure evidence proves the flow works.",
           status: "planned",
-          command: "pnpm test",
+        },
+        {
+          id: "verifier-output-proof",
+          label: "Verifier output proof",
+          mechanism: "screenshot",
+          description: "Capture final verifier artifact.",
+          status: "planned",
+          path: "artifacts/final-verifier.log",
+        },
+      ],
+      evidence: [
+        {
+          id: "evidence-closure-proof",
+          createdAt: "2024-01-01T00:00:00.000Z",
+          kind: "summary",
+          label: "Closure proof",
+          content: "Closure evidence recorded after the worker finished.",
         },
       ],
       verifier: {
@@ -86,14 +110,19 @@ describe("goal controller", () => {
         command: "pnpm test",
         lastResult: {
           status: "pass",
-          summary: "Exact proof passed",
+          summary: "Verifier passed and wrote final artifact.",
           command: "pnpm test",
+          outputPath: "artifacts/final-verifier.log",
           checkedAt: "2024-01-01T00:00:00.000Z",
         },
       },
     });
     expect(canCompleteGoalRun(run)).toEqual({
       ok: true,
+      reason: "All tasks are done and verifier evidence passed.",
+    });
+    expect(decideGoalNextAction(run)).toEqual({
+      kind: "complete",
       reason: "All tasks are done and verifier evidence passed.",
     });
   });
@@ -158,17 +187,20 @@ describe("goal controller", () => {
     });
   });
 
-  it("creates an evidence-path task before verifier execution when proof is only planned", () => {
+  it("creates a mobile/UI evidence-path task before verifier execution when proof is only planned", () => {
     const decision = decideGoalNextAction(
       goalRun({
+        goal: "Make the mobile checkout screen render correctly on small viewports",
         tasks: [{ id: "task-a", title: "Done", prompt: "Done", status: "done", attempts: 1 }],
         evidencePlan: [
           {
-            id: "playwright-proof",
-            label: "Browser checkout proof",
-            mechanism: "browser",
-            description: "Run a browser flow and capture screenshot evidence.",
+            id: "mobile-ui-proof",
+            label: "iOS simulator screenshot comparison",
+            mechanism: "screenshot",
+            description:
+              "Capture the mobile checkout screen in a local simulator or browser viewport and compare the image/frame output.",
             status: "planned",
+            path: "artifacts/mobile-checkout-diff.png",
           },
         ],
         verifier: { description: "Full check", command: "pnpm test:e2e" },
@@ -181,9 +213,18 @@ describe("goal controller", () => {
       reason:
         "Goal evidence plan requires local instrumentation or exact prerequisite handling before verification.",
     });
-    expect(decision.kind === "create_task" ? decision.prompt : "").toContain(
-      "Browser checkout proof (browser)",
-    );
+    const prompt = decision.kind === "create_task" ? decision.prompt : "";
+    expect(prompt).toContain("iOS simulator screenshot comparison (screenshot)");
+    expect(prompt).toContain("what would prove this goal actually worked end-to-end");
+    expect(prompt).toContain("observable proof paths");
+    expect(prompt).toContain("not narrative-only verification or human visual inspection");
+    expect(prompt).toContain("dev servers");
+    expect(prompt).toContain("browser automation");
+    expect(prompt).toContain("logs");
+    expect(prompt).toContain("generated fixtures");
+    expect(prompt).toContain("source/docs/code-search comparison");
+    expect(prompt).toContain("iOS Simulator screenshots when available");
+    expect(prompt).toContain("image/frame checks");
   });
 
   it("blocks when an evidence plan item requires a true external prerequisite", () => {

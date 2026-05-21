@@ -72,9 +72,9 @@ function buildHarnessTaskPrompt(run: GoalRun): string {
     .join("\n");
   return (
     `Goal: ${run.goal}\n\n` +
-    `Build the missing local/free harness instrumentation needed before verification.\n` +
+    `Build the missing local/free harness instrumentation needed before verification. Translate the user's requested outcome into observable proof: ask what artifact would prove this actually worked end-to-end, then build the simplest reliable local/free path to observe it.\n` +
     `${harnessItems}\n\n` +
-    `Create any scripts, fixtures, or test helpers in the repository, update the Goal harness/verifier metadata with the goals tool, and record command/file evidence. Do not require paid services or signups; block with exact user instructions if a real prerequisite is missing.`
+    `Inventory domain-appropriate local capabilities before blocking: existing tests and CLIs, fixtures or seeded data, dev servers, browser automation, simulator/device screenshots, video/frame inspection, logs, generated assets, protocol traces, database assertions, API probes, contract tests, performance measurements, source/docs/code-search comparison, or other artifacts that directly measure the outcome. For mobile/UI goals, prefer local simulator/browser screenshots (for example iOS Simulator tooling when available) before requiring a physical phone. Create any scripts, fixtures, or test helpers in the repository, update the Goal harness/verifier metadata with the goals tool, and record command/file/screenshot/log evidence. Do not require paid services or signups; block only with exact user instructions if a true external prerequisite is missing.`
   );
 }
 
@@ -93,18 +93,18 @@ function evidencePlanItemSatisfiedByDurableEvidence(
   item: GoalRun["evidencePlan"][number],
 ): boolean {
   if (item.status === "ready") return true;
+  if (item.evidence?.trim()) return true;
+
   const verifier = run.verifier?.lastResult;
   if (verifier?.status === "pass") {
     if (item.command && verifier.command === item.command) return true;
     if (item.path && verifier.outputPath === item.path) return true;
-    if (item.mechanism === "command" || item.mechanism === "test" || item.mechanism === "script") {
-      const haystack =
-        `${verifier.command ?? ""}\n${verifier.outputPath ?? ""}\n${verifier.summary}`.toLowerCase();
-      const needles = [item.label, item.description, item.command, item.path]
-        .filter((value): value is string => !!value?.trim())
-        .map((value) => value.toLowerCase());
-      if (needles.some((needle) => haystack.includes(needle))) return true;
-    }
+    const haystack =
+      `${verifier.command ?? ""}\n${verifier.outputPath ?? ""}\n${verifier.summary}`.toLowerCase();
+    const needles = [item.label, item.description, item.command, item.path]
+      .filter((value): value is string => !!value?.trim())
+      .map((value) => value.toLowerCase());
+    if (needles.some((needle) => haystack.includes(needle))) return true;
   }
   return run.evidence.some((evidence) => {
     if (item.path && evidence.path === item.path) return true;
@@ -143,16 +143,16 @@ function buildEvidencePlanTaskPrompt(run: GoalRun): string {
     .join("\n");
   return (
     `Goal: ${run.goal}\n\n` +
-    `Turn the planned proof paths below into real local/free verification capability before the Goal verifier runs.\n` +
+    `Turn the planned proof paths below into real local/free verification capability before the Goal verifier runs. Translate success criteria and outcome requirements into observable proof paths: ask what would prove this goal actually worked end-to-end, then build the simplest reliable local/free way to capture that proof.\n` +
     `${plannedItems}\n\n` +
-    `Prefer the simplest reliable proof: existing tests/CLIs, generated fixtures, scripts, browser automation, logs, screenshots, video/frame checks, source/docs/code-search comparison, or other local artifacts as appropriate. Build what is missing, update the Goal evidence_plan/harness/verifier metadata with the goals tool, and persist command/file/screenshot/log evidence. Only block with exact user instructions for inputs that cannot be generated or checked locally, such as credentials, paid services, physical devices, or unavailable source assets.`
+    `Inventory domain-appropriate capabilities deeply enough for this task before blocking: existing tests/CLIs, generated fixtures, seeded data, scripts, dev servers, browser automation, simulator/browser/device screenshots, video/frame inspection, logs, generated assets, protocol traces, database assertions, API probes, contract tests, performance measurements, source/docs/code-search comparison, or other artifacts that directly measure the requested outcome. For mobile/UI goals, screenshots are examples rather than the whole solution: prefer local simulator/browser tooling (for example iOS Simulator screenshots when available) before requiring a physical phone, and add image/frame checks when visual correctness matters. Build what is missing, update the Goal evidence_plan/harness/verifier metadata with the goals tool, and persist command/file/screenshot/log evidence, not narrative-only verification or human visual inspection. Only block with exact user instructions for inputs that cannot be generated or checked locally, such as credentials, paid services, physical devices, or unavailable source assets.`
   );
 }
 
 function buildVerifierTaskPrompt(run: GoalRun): string {
   return (
     `Goal: ${run.goal}\n\n` +
-    `Define and build a real end-to-end verifier for this Goal. Create any local scripts, fixtures, harnesses, or test commands needed, then update the Goal with a verifier_command and verifier_description using the goals tool. The verifier must be runnable locally/free and produce command or file evidence, not narrative. If an external prerequisite is missing, mark it missing with exact user instructions.`
+    `Define and build a real end-to-end verifier for this Goal. Translate the objective into observable proof: what command, artifact, trace, screenshot, log, fixture, database assertion, API probe, contract test, performance measurement, source/docs comparison, or other domain-appropriate signal would prove the requested outcome with near-100% confidence? Create the simplest reliable local/free scripts, fixtures, harnesses, or test commands needed, then update the Goal with a verifier_command and verifier_description using the goals tool. For mobile/UI goals, prefer local simulator/browser evidence such as iOS Simulator screenshots when available before requiring a physical phone. The verifier must be runnable locally/free and produce command or file evidence, not narrative or human visual inspection. If an external prerequisite is missing, mark it missing with exact user instructions.`
   );
 }
 
