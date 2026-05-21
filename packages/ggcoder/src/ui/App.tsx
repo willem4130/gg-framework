@@ -250,6 +250,49 @@ export function routePromptCommandInput(
   };
 }
 
+export function buildUserContentWithAttachments(
+  text: string,
+  inputImages: ImageAttachment[],
+  modelSupportsImages: boolean,
+): string | (TextContent | ImageContent)[] {
+  if (inputImages.length === 0) return text;
+
+  const parts: (TextContent | ImageContent)[] = [];
+  if (text) {
+    parts.push({ type: "text", text });
+  }
+
+  for (const img of inputImages) {
+    if (img.kind === "text") {
+      parts.push({
+        type: "text",
+        text: `<file name="${img.fileName}">\n${img.data}\n</file>`,
+      });
+    } else if (modelSupportsImages) {
+      parts.push({ type: "image", mediaType: img.mediaType, data: img.data });
+    } else {
+      // GLM models: save image to temp file and instruct model to use vision MCP tool
+      const ext = img.mediaType.split("/")[1] ?? "png";
+      const tmpPath = `/tmp/ggcoder-img-${Date.now()}.${ext}`;
+      try {
+        writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+        parts.push({
+          type: "text",
+          text: `[User attached an image saved at: ${tmpPath} — use the image_analysis tool to view and analyze it]`,
+        });
+      } catch {
+        parts.push({
+          type: "text",
+          text: `[User attached an image but it could not be saved for analysis]`,
+        });
+      }
+    }
+  }
+
+  // If only text parts remain after stripping images, simplify to plain string
+  return parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts;
+}
+
 export interface GoalSummaryRow {
   label: string;
   value: string;
@@ -2986,15 +3029,29 @@ export function App(props: AppProps) {
           return [];
         });
 
-        // Show the command name as the user message
-        const userItem: UserItem = { kind: "user", text: trimmed, id: getId() };
+        const hasImages = inputImages.length > 0;
+        const modelInfo = getModel(currentModel);
+        const modelSupportsImages = modelInfo?.supportsImages ?? true;
+        const userContent = buildUserContentWithAttachments(
+          fullPrompt,
+          inputImages,
+          modelSupportsImages,
+        );
+
+        // Show the typed command as the user message
+        const userItem: UserItem = {
+          kind: "user",
+          text: trimmed,
+          imageCount: hasImages ? inputImages.length : undefined,
+          id: getId(),
+        };
         setLastUserMessage(trimmed);
         setDoneStatus(null);
         setLiveItems([userItem]);
 
         // Send the full prompt to the agent, with user args appended if provided
         try {
-          await agentLoop.run(fullPrompt);
+          await agentLoop.run(userContent);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log("ERROR", "error", msg);
@@ -3024,43 +3081,7 @@ export function App(props: AppProps) {
       const hasImages = inputImages.length > 0;
       const modelInfo = getModel(currentModel);
       const modelSupportsImages = modelInfo?.supportsImages ?? true;
-      let userContent: string | (TextContent | ImageContent)[];
-      if (hasImages) {
-        const parts: (TextContent | ImageContent)[] = [];
-        if (trimmed) {
-          parts.push({ type: "text", text: trimmed });
-        }
-        for (const img of inputImages) {
-          if (img.kind === "text") {
-            parts.push({
-              type: "text",
-              text: `<file name="${img.fileName}">\n${img.data}\n</file>`,
-            });
-          } else if (modelSupportsImages) {
-            parts.push({ type: "image", mediaType: img.mediaType, data: img.data });
-          } else {
-            // GLM models: save image to temp file and instruct model to use vision MCP tool
-            const ext = img.mediaType.split("/")[1] ?? "png";
-            const tmpPath = `/tmp/ggcoder-img-${Date.now()}.${ext}`;
-            try {
-              writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
-              parts.push({
-                type: "text",
-                text: `[User attached an image saved at: ${tmpPath} — use the image_analysis tool to view and analyze it]`,
-              });
-            } catch {
-              parts.push({
-                type: "text",
-                text: `[User attached an image but it could not be saved for analysis]`,
-              });
-            }
-          }
-        }
-        // If only text parts remain after stripping images, simplify to plain string
-        userContent = parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts;
-      } else {
-        userContent = input;
-      }
+      const userContent = buildUserContentWithAttachments(input, inputImages, modelSupportsImages);
 
       // ── Queue message if agent is already running ──
       if (agentLoop.isRunning) {
