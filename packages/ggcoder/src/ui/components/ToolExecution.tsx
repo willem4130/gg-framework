@@ -151,7 +151,6 @@ export function ToolExecution(props: ToolExecutionProps) {
           <Text color={theme.toolName} bold>
             {summary}
           </Text>
-          <Text color={theme.textDim}>{" (ctrl+o to expand)"}</Text>
         </Box>
       );
     }
@@ -363,7 +362,7 @@ export function ToolExecution(props: ToolExecutionProps) {
             <Text color={theme.textDim} wrap="wrap">
               {"… +"}
               {hiddenCount}
-              {" lines (ctrl+o to expand)"}
+              {" lines"}
             </Text>
           )}
         </Box>

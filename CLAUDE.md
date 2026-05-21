@@ -129,6 +129,8 @@ After editing ANY file, run:
 pnpm check && pnpm lint && pnpm format:check
 ```
 
+After code changes, also run `pnpm build`; otherwise compiled outputs won't take effect.
+
 Fix ALL errors before continuing. Quick fixes:
 - `pnpm lint:fix` — auto-fix ESLint issues
 - `pnpm format` — auto-fix Prettier formatting
