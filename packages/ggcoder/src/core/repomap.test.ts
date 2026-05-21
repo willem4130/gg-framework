@@ -51,6 +51,41 @@ function localFn() {}
     expect(facts.signatures).toEqual(["export function real()"]);
   });
 
+  it("handles unterminated escaped template literals without catastrophic backtracking", () => {
+    const content = `const prompt = \`${"\\".repeat(28)}\nexport function real() {}\n`;
+    const start = performance.now();
+    const facts = extractFileFacts("src/prompts.ts", content);
+    const elapsed = performance.now() - start;
+
+    expect(facts.signatures).toEqual(["export function real()"]);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it("skips repo map enumeration when launched from home", async () => {
+    const previousHome = process.env.HOME;
+    const cwd = await makeFixture({
+      "src/keep.ts": "export const keep = true;\n",
+    });
+
+    process.env.HOME = cwd;
+    try {
+      const { snapshot, markdown } = await buildRepoMap({
+        cwd,
+        now: new Date("2026-01-01T00:00:00.000Z"),
+      });
+
+      expect(snapshot.files).toEqual([]);
+      expect(snapshot.stats.indexedFiles).toBe(0);
+      expect(markdown).not.toContain("src/keep.ts");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
+  });
+
   it("respects gitignore, build directories, and file size cap", async () => {
     const cwd = await makeFixture({
       ".gitignore": "ignored.ts\n",

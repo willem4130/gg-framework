@@ -59,7 +59,7 @@ export const COLORS = {
   error: "#f87171",
 } as const;
 
-/** Clear the entire scrollback + visible screen and reset cursor to home. */
+/** Clear the visible screen and reset cursor to home without erasing scrollback. */
 export function clearScreen(): void {
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  process.stdout.write("\x1b[2J\x1b[H");
 }

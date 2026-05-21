@@ -65,8 +65,8 @@ describe("getScrollStabilizationDecision", () => {
     expect(before.preserveStatic).toBe(false);
     expect(duringTallPrompt.preserveStatic).toBe(true);
     expect(after.preserveStatic).toBe(false);
-    expect(getStaticHistoryKey({ resizeKey: 10, staticKey: 4 })).toBe("10-4");
-    expect(getStaticHistoryKey({ resizeKey: 10, staticKey: 4 })).toBe("10-4");
+    expect(getStaticHistoryKey({ resizeKey: 10 })).toBe("10");
+    expect(getStaticHistoryKey({ resizeKey: 10 })).toBe("10");
   });
 
   it("classifies only multi-line prompts tall enough to occupy most of the terminal", () => {

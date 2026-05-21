@@ -542,7 +542,7 @@ export async function runBossServeMode(options: BossServeOptions): Promise<void>
 
   // ── Boot banner ─────────────────────────────────────────────
 
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  process.stdout.write("\x1b[2J\x1b[H");
   printBanner({
     bossModel: options.bossModel,
     workerModel: options.workerModel,

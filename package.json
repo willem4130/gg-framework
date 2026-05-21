@@ -28,6 +28,9 @@
     "overrides": {
       "global-agent": "^4.1.3",
       "ip-address": "^10.1.1"
+    },
+    "patchedDependencies": {
+      "ink@7.0.2": "patches/ink@7.0.2.patch"
     }
   }
 }

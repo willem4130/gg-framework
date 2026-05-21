@@ -536,6 +536,8 @@ function unquoteGitPath(filePath: string): string {
 }
 
 async function listCandidateFiles(cwd: string): Promise<string[]> {
+  if (isUnboundedRepoMapRoot(cwd)) return [];
+
   const ignorePatterns = await loadGitignore(cwd);
   const ig = ignore().add(ignorePatterns);
   const entries = await fg("**/*", {
@@ -550,6 +552,14 @@ async function listCandidateFiles(cwd: string): Promise<string[]> {
     .filter((entry) => !BINARY_EXTENSIONS.has(path.extname(entry).toLowerCase()))
     .filter((entry) => !ig.ignores(entry))
     .sort((a, b) => a.localeCompare(b));
+}
+
+function isUnboundedRepoMapRoot(cwd: string): boolean {
+  const resolvedCwd = path.resolve(cwd);
+  const home = process.env.HOME;
+  return (
+    resolvedCwd === path.parse(resolvedCwd).root || (!!home && resolvedCwd === path.resolve(home))
+  );
 }
 
 async function loadGitignore(cwd: string): Promise<string[]> {
@@ -617,7 +627,7 @@ function extractSignatures(content: string, maxSignatures: number): string[] {
 }
 
 function stripTemplateLiterals(content: string): string {
-  return content.replace(/`(?:\\.|[^`])*`/gs, "``");
+  return content.replace(/`(?:\\.|[^`\\])*`/gs, "``");
 }
 
 function unique(values: readonly string[]): string[] {

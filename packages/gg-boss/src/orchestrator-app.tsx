@@ -1121,9 +1121,8 @@ export function renderBossApp(opts: RenderBossAppOptions): {
   const resetUI = (): void => {
     const old = ref.instance;
     if (!old) return;
-    // Wipe the terminal first so the scrollback that the old instance wrote
-    // doesn't linger above the new instance's banner.
-    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+    // Clear the visible viewport first without erasing saved scrollback.
+    process.stdout.write("\x1b[2J\x1b[H");
     // Unmount unsubscribes Ink's stdin handlers + tears down the React tree.
     old.unmount();
     // Build a fresh Ink instance with totally clean log-update state and

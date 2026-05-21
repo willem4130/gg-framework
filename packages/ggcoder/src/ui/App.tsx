@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Box, Text, Static, useStdout } from "ink";
+import { Box, Text, Static } from "ink";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useDoublePress } from "./hooks/useDoublePress.js";
 import {
@@ -726,14 +726,13 @@ export type OverlayPaneKind =
   | "pixel";
 
 export function shouldHideHistoryForOverlayView(
-  isOverlayView: boolean,
-  isAgentRunning: boolean,
+  _isOverlayView: boolean,
+  _isAgentRunning: boolean,
 ): boolean {
-  // Overlay panes should be clean, full-screen views like Tasks/Plans/Skills.
-  // When the agent is idle, pane open/close goes through resetUI(), so history
-  // remains in sessionStore and is reprinted after the pane closes. While the
-  // agent is running we keep Static mounted because resetUI would abort the run.
-  return isOverlayView && !isAgentRunning;
+  // Ink Static is append-only. Passing [] for overlay panes rewrites the Static
+  // accumulator and can destroy scrollback when the pane closes. Keep history
+  // mounted and let overlays render below it.
+  return false;
 }
 
 export function shouldStabilizeOverlayPaneRerender({
@@ -789,14 +788,8 @@ export function isTallLiveUserMessage(text: string, rows: number): boolean {
   return text.split("\n").length > Math.max(8, Math.floor(rows * 0.6));
 }
 
-export function getStaticHistoryKey({
-  resizeKey,
-  staticKey,
-}: {
-  resizeKey: number;
-  staticKey: number;
-}): string {
-  return `${resizeKey}-${staticKey}`;
+export function getStaticHistoryKey({ resizeKey }: { resizeKey: number }): string {
+  return `${resizeKey}`;
 }
 
 // flushOnTurnText, flushOnTurnEnd are imported from ./live-item-flush.ts
@@ -1073,7 +1066,6 @@ export interface AppProps {
 export function App(props: AppProps) {
   const theme = useTheme();
   const switchTheme = useSetTheme();
-  const { stdout } = useStdout();
   const { columns, resizeKey } = useTerminalSize();
 
   // Hoisted before terminal title hook so it can reference them
@@ -1149,7 +1141,6 @@ export function App(props: AppProps) {
   const startPixelFixRef = useRef<(errorId: string) => void>(() => {});
   const cwdRef = useRef(props.cwd);
   const [displayedCwd, setDisplayedCwd] = useState(props.cwd);
-  const [staticKey, setStaticKey] = useState(0);
   const [doneStatus, setDoneStatus] = useState<DoneStatus | null>(
     props.sessionStore?.doneStatus ?? null,
   );
@@ -1569,14 +1560,6 @@ export function App(props: AppProps) {
         // premature "done" status that fires when the agent loop finishes
         planOverlayPendingRef.current = true;
         setTimeout(() => {
-          // NOTE: this is the one open-overlay path that does NOT remount via
-          // resetUI. It runs while the agent is still mid-turn (after the
-          // exit_plan tool returned but before onDone fires), and unmounting
-          // here would kill the in-flight agent stream. Keep the bare ANSI
-          // clear; the drift bug is tolerable across just the agent's
-          // wrap-up turn, and onApprove/onReject both remount cleanly via
-          // resetUI when the user resolves the plan.
-          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
           setPlanAutoExpand(true);
           setOverlay("plan");
           // Don't clear planOverlayPendingRef here — keep it true until
@@ -1593,7 +1576,7 @@ export function App(props: AppProps) {
         );
       };
     }
-  }, [props.onExitPlanRef, replaceSystemPrompt, stdout]);
+  }, [props.onExitPlanRef, replaceSystemPrompt]);
 
   const appendMessagesToSession = useCallback(
     async (sessionPath: string, messages: readonly Message[], startIndex: number) => {
@@ -2825,14 +2808,10 @@ export function App(props: AppProps) {
       }
 
       // Handle /clear — tear down the entire Ink instance and rebuild fresh.
-      // Patching Ink's internal frame tracking in place (log-update reset,
-      // lastOutput cleared, fullStaticOutput dropped, staticKey bump) all
-      // looked correct for one frame but left the live area drifting on
-      // subsequent streaming responses — Ink's cursor math depends on
-      // terminal-state assumptions that ANSI clearing breaks. The reliable
-      // fix is unmount + render again. Runtime state (model, provider,
-      // thinking) survives via renderApp's closure-held `runtimeState`,
-      // mirrored from React state via the useEffects above.
+      // Avoid direct ANSI terminal clears here; they can erase scrollback.
+      // Runtime state (model, provider, thinking) survives via renderApp's
+      // closure-held `runtimeState`, mirrored from React state via the
+      // useEffects above.
       if (trimmed === "/clear") {
         if (props.resetUI) {
           void (async () => {
@@ -2845,8 +2824,7 @@ export function App(props: AppProps) {
           return;
         }
         // Fallback path (resetUI not wired — e.g. tests). Best-effort: clear
-        // React state in place. The Ink-internal drift bug remains here.
-        stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+        // React state in place without touching terminal scrollback.
         pendingFlushRef.current = [];
         setHistory([{ kind: "banner", id: "banner" }]);
         setLiveItems([]);
@@ -2862,7 +2840,6 @@ export function App(props: AppProps) {
         agentLoop.reset();
         setSessionTitle(undefined);
         sessionTitleGeneratedRef.current = false;
-        setStaticKey((k) => k + 1);
         setLiveItems([{ kind: "info", text: "Session cleared.", id: getId() }]);
         return;
       }
@@ -2980,8 +2957,6 @@ export function App(props: AppProps) {
           props.sessionStore.planAutoExpand = false;
           props.resetUI();
         } else {
-          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
-          setStaticKey((key) => key + 1);
           if (props.sessionStore) {
             props.sessionStore.overlay = "goal";
             props.sessionStore.planAutoExpand = false;
@@ -3832,7 +3807,6 @@ export function App(props: AppProps) {
       }
 
       // Fallback path (resetUI not wired — tests).
-      stdout?.write("\x1b[2J\x1b[3J\x1b[H");
       setHistory([{ kind: "banner", id: "banner" }]);
       setLiveItems([]);
       messagesRef.current = messagesRef.current.slice(0, 1);
@@ -3866,15 +3840,7 @@ export function App(props: AppProps) {
         }
       })();
     },
-    [
-      props.cwd,
-      props.resetUI,
-      props.sessionStore,
-      stdout,
-      agentLoop,
-      currentProvider,
-      currentModel,
-    ],
+    [props.cwd, props.resetUI, props.sessionStore, agentLoop, currentProvider, currentModel],
   );
 
   const openOverlay = useCallback(
@@ -3895,7 +3861,7 @@ export function App(props: AppProps) {
         setOverlay(kind);
       }
     },
-    [agentLoop.isRunning, props, stdout],
+    [agentLoop.isRunning, props],
   );
 
   const closeOverlay = useCallback(() => {
@@ -3908,7 +3874,7 @@ export function App(props: AppProps) {
       }
       setOverlay(null);
     }
-  }, [agentLoop.isRunning, overlay, props, stdout]);
+  }, [agentLoop.isRunning, overlay, props]);
 
   const runGoalSyntheticEvent = useCallback(
     (eventText: string) => {
@@ -4578,14 +4544,10 @@ export function App(props: AppProps) {
             tools: toolsForPixelFix,
           });
 
-          // Now that the cwd swap is committed, reset chat. Doing this BEFORE
-          // the chdir would print a banner with the old cwd, then bumping
-          // staticKey would print a second banner with the new cwd — leaving
-          // two banners stacked in the scrollback.
-          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+          // Now that the cwd swap is committed, reset chat. Do not clear the
+          // terminal here; terminal clear sequences can erase saved scrollback.
           setHistory([{ kind: "banner", id: "banner" }]);
           setLiveItems([]);
-          setStaticKey((k) => k + 1);
           messagesRef.current = messagesRef.current.slice(0, 1);
           agentLoop.reset();
           persistedIndexRef.current = messagesRef.current.length;
@@ -4619,7 +4581,7 @@ export function App(props: AppProps) {
         }
       })();
     },
-    [props.cwd, stdout, agentLoop, currentProvider, currentModel],
+    [props.cwd, agentLoop, currentProvider, currentModel],
   );
   startPixelFixRef.current = startPixelFix;
 
@@ -4653,20 +4615,19 @@ export function App(props: AppProps) {
     overlayPane: overlay,
     isAgentRunning: agentLoop.isRunning,
   });
+  const staticItems = shouldHideStaticItemsForOverlayView({
+    shouldHideHistoryForOverlay,
+    stabilizeOverlayPaneRerender,
+  })
+    ? []
+    : history;
 
   return (
     <Box flexDirection="column" width={columns}>
       {/* History — scrolled up, managed by Ink Static. */}
       <Static
-        key={getStaticHistoryKey({ resizeKey, staticKey })}
-        items={
-          shouldHideStaticItemsForOverlayView({
-            shouldHideHistoryForOverlay,
-            stabilizeOverlayPaneRerender,
-          })
-            ? []
-            : history
-        }
+        key={getStaticHistoryKey({ resizeKey })}
+        items={staticItems}
         style={{ width: "100%" }}
       >
         {(item) => (
@@ -4866,10 +4827,8 @@ export function App(props: AppProps) {
                 approvedPlanPathRef.current = planPath;
                 planStepsRef.current = steps;
                 setPlanSteps(steps);
-                stdout?.write("\x1b[2J\x1b[3J\x1b[H");
                 setHistory([{ kind: "banner", id: "banner" }]);
                 setLiveItems([]);
-                setStaticKey((k) => k + 1);
                 setPlanAutoExpand(false);
                 setOverlay(null);
                 messagesRef.current = [{ role: "system" as const, content: newPrompt }];
@@ -4912,8 +4871,6 @@ export function App(props: AppProps) {
               });
               return;
             }
-            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
-            setStaticKey((k) => k + 1);
             setPlanAutoExpand(false);
             setOverlay(null);
             setDoneStatus(null);
@@ -5016,8 +4973,6 @@ export function App(props: AppProps) {
             onDownAtEnd={handleFocusTaskBar}
             onShiftTab={handleToggleThinking}
             onToggleTasks={() => {
-              // While the agent is running, skip the screen-clear + staticKey
-              // bump that would otherwise wipe the chat history from scrollback.
               // Just flip the overlay state — Ink's log-update handles the
               // live-area transition (chat input → TaskOverlay) natively, and
               // the chat history above stays in scrollback. When the overlay

@@ -133,9 +133,13 @@ function gradientLine(text: string): string {
   return result;
 }
 
+function clearVisibleScreen(): void {
+  process.stdout.write("\x1b[2J\x1b[H");
+}
+
 function printHelp(): void {
-  // Clear screen for a clean look, consistent with the TUI startup
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  // Clear the visible viewport for a clean look without erasing scrollback.
+  clearVisibleScreen();
 
   const dim = chalk.dim;
   const primary = chalk.hex("#60a5fa");
@@ -843,7 +847,7 @@ async function runInkTUI(opts: {
 
 async function runLogin(): Promise<void> {
   requireInteractiveTTY();
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  clearVisibleScreen();
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "auth", "Login flow started");
@@ -939,7 +943,7 @@ async function runLogin(): Promise<void> {
 // ── Doctor ─────────────────────────────────────────────────
 
 async function runDoctor(): Promise<void> {
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  clearVisibleScreen();
 
   const os = await import("node:os");
   const fsP = await import("node:fs/promises");
@@ -1213,7 +1217,7 @@ async function runLogout(): Promise<void> {
 
 async function runSessions(): Promise<void> {
   requireInteractiveTTY();
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  clearVisibleScreen();
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "session", "Sessions selector started");
@@ -1285,7 +1289,7 @@ async function saveTelegramConfig(config: TelegramConfig): Promise<void> {
 }
 
 async function runTelegramSetup(): Promise<void> {
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  clearVisibleScreen();
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "telegram", "Telegram setup started");
@@ -1535,7 +1539,7 @@ async function saveAgentHomeConfig(config: AgentHomeConfig): Promise<void> {
 }
 
 async function runAgentHomeLogin(): Promise<void> {
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  clearVisibleScreen();
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "agent-home", "Agent Home login started");

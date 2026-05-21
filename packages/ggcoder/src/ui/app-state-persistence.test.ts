@@ -32,8 +32,8 @@ function goalRun(overrides: Partial<GoalRun> = {}): GoalRun {
 }
 
 describe("App TUI state persistence helpers", () => {
-  it("hides Static history for clean idle overlay panes but keeps it mounted during active agent runs", () => {
-    expect(shouldHideHistoryForOverlayView(true, false)).toBe(true);
+  it("keeps Static history mounted for overlay panes so scrollback is not rewritten", () => {
+    expect(shouldHideHistoryForOverlayView(true, false)).toBe(false);
     expect(shouldHideHistoryForOverlayView(true, true)).toBe(false);
     expect(shouldHideHistoryForOverlayView(false, false)).toBe(false);
   });
@@ -64,7 +64,7 @@ describe("App TUI state persistence helpers", () => {
     expect(sessionStore.doneStatus).toEqual(doneStatus);
   });
 
-  it("models the regression: goal progress history remains persisted even when hidden behind a pane", () => {
+  it("models the regression: goal progress history remains rendered while a pane is open", () => {
     const goalProgress: GoalProgressItem = {
       kind: "goal_progress",
       phase: "terminal",
@@ -81,7 +81,7 @@ describe("App TUI state persistence helpers", () => {
 
     const itemsRenderedDuringGoalPane = shouldHideHistoryForOverlayView(true, false) ? [] : history;
 
-    expect(itemsRenderedDuringGoalPane).toEqual([]);
+    expect(itemsRenderedDuringGoalPane).toEqual(history);
     expect(history).toContain(goalProgress);
   });
 

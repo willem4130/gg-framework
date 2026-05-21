@@ -13,7 +13,7 @@ import {
  * (distinct from ggcoder's coding bot).
  */
 export async function runBossTelegramSetup(): Promise<void> {
-  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  process.stdout.write("\x1b[2J\x1b[H");
   printSetupBanner();
 
   const existing = await loadBossTelegramConfig();
