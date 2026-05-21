@@ -4,8 +4,10 @@ import {
   clampGoalDetailScrollOffset,
   clampGoalScrollOffset,
   clampGoalSelectedIndex,
+  getGoalCardExtraRowCount,
   getGoalDetailRowCount,
   getGoalDetailScrollWindow,
+  getGoalExpandedDetailViewportRows,
   getGoalOverlayViewportRows,
   getGoalScrollOffsetForSelection,
   formatGoalPrerequisiteSummary,
@@ -117,10 +119,51 @@ describe("goal overlay helpers", () => {
       verifier: { description: "Run tests", command: "pnpm test" },
     });
 
-    expect(getGoalDetailRowCount(run)).toBe(12);
-    expect(clampGoalDetailScrollOffset(-1, 12, 5)).toBe(0);
-    expect(clampGoalDetailScrollOffset(99, 12, 5)).toBe(8);
-    expect(clampGoalDetailScrollOffset(Number.NaN, 12, 5)).toBe(0);
+    expect(getGoalDetailRowCount(run)).toBe(15);
+    expect(clampGoalDetailScrollOffset(-1, 15, 5)).toBe(0);
+    expect(clampGoalDetailScrollOffset(99, 15, 5)).toBe(11);
+    expect(clampGoalDetailScrollOffset(Number.NaN, 15, 5)).toBe(0);
+  });
+
+  it("counts full Goal metadata in expanded details", () => {
+    const run = goalRun({
+      goal: "Long objective",
+      successCriteria: ["criterion one", "criterion two"],
+      harness: [{ id: "harness", label: "Harness", command: "pnpm test" }],
+      evidencePlan: [
+        {
+          id: "proof",
+          label: "Proof path",
+          mechanism: "test",
+          description: "Run proof",
+          status: "planned",
+          command: "pnpm test",
+        },
+      ],
+      blockers: ["Needs user input"],
+      evidence: [
+        {
+          id: "evidence",
+          kind: "command",
+          label: "Verifier result",
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(getGoalDetailRowCount(run)).toBe(15);
+  });
+
+  it("reserves expanded detail space without showing other goals", () => {
+    expect(getGoalCardExtraRowCount(goalRun({}))).toBe(0);
+    expect(
+      getGoalCardExtraRowCount(
+        goalRun({ prerequisites: [{ id: "token", label: "Token", status: "missing" }] }),
+      ),
+    ).toBe(1);
+    expect(getGoalCardExtraRowCount(goalRun({ blockers: ["Blocked"] }))).toBe(1);
+    expect(getGoalExpandedDetailViewportRows({ viewportRows: 20, cardExtraRows: 0 })).toBe(14);
+    expect(getGoalExpandedDetailViewportRows({ viewportRows: 20, cardExtraRows: 2 })).toBe(12);
   });
 
   it("reserves fixed rows for detail scroll indicators instead of growing terminal scrollback", () => {

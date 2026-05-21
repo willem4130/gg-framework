@@ -145,7 +145,9 @@ export function getGoalScrollOffsetForSelection({
 }
 
 export function getGoalDetailRowCount(run: GoalRun): number {
-  let count = 1;
+  let count = 2;
+
+  count += 1 + Math.max(1, run.successCriteria.length);
 
   if (run.prerequisites.length > 0) {
     count += 1;
@@ -165,8 +167,38 @@ export function getGoalDetailRowCount(run: GoalRun): number {
     }
   }
 
+  if (run.harness.length > 0) count += 1 + run.harness.length;
+  if (run.evidencePlan.length > 0) count += 1 + run.evidencePlan.length;
   if (run.verifier) count += 2;
+  if (run.blockers.length > 0) count += 1 + run.blockers.length;
+  if (run.evidence.length > 0) count += 1 + Math.min(5, run.evidence.length);
   return count;
+}
+
+export function getGoalCardExtraRowCount(run: GoalRun): number {
+  let count = 0;
+  if (goalHasBlockingPrerequisites(run)) count += 1;
+  else if (run.status === "running" || run.status === "verifying") count += 1;
+  if (run.blockers.length > 0) count += 1;
+  return count;
+}
+
+export function getGoalExpandedDetailViewportRows({
+  viewportRows,
+  cardExtraRows,
+}: {
+  viewportRows: number;
+  cardExtraRows: number;
+}): number {
+  const rows = Number.isFinite(viewportRows) ? Math.max(1, Math.floor(viewportRows)) : 8;
+  const selectedCardRows = 1 + Math.max(0, Math.floor(cardExtraRows));
+  const fixedRows =
+    1 + // Goals heading
+    selectedCardRows +
+    2 + // selected card border
+    1 + // detail top margin
+    1; // selected card bottom margin
+  return Math.max(1, rows - fixedRows);
 }
 
 export function clampGoalDetailScrollOffset(
@@ -296,6 +328,45 @@ function prerequisiteStatusColor(status: GoalPrerequisite["status"]): string {
   }
 }
 
+function evidencePlanStatusColor(status: GoalRun["evidencePlan"][number]["status"]): string {
+  switch (status) {
+    case "ready":
+      return "green";
+    case "blocked":
+      return "yellow";
+    case "planned":
+      return "cyan";
+  }
+}
+
+function verifierStatusColor(
+  status: NonNullable<NonNullable<GoalRun["verifier"]>["lastResult"]>["status"],
+): string {
+  switch (status) {
+    case "pass":
+      return "green";
+    case "fail":
+      return "red";
+    case "unknown":
+      return "yellow";
+  }
+}
+
+function evidenceKindColor(kind: GoalRun["evidence"][number]["kind"]): string {
+  switch (kind) {
+    case "command":
+      return "cyan";
+    case "file":
+      return "blue";
+    case "log":
+      return "yellow";
+    case "screenshot":
+      return "magenta";
+    case "summary":
+      return "green";
+  }
+}
+
 export function getGoalDetailTaskHeading(run: GoalRun): string {
   return run.prerequisites.length > 0 ? "2. Worker tasks" : "Worker tasks";
 }
@@ -311,6 +382,11 @@ export function formatGoalTaskDetailSummary(summary: string): string {
     .find((line) => line.length > 0);
   if (!firstLine) return "";
   return firstLine.length > 180 ? `${firstLine.slice(0, 177)}…` : firstLine;
+}
+
+function truncateGoalDetailText(text: string, maxLength = 220): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 1)}…` : collapsed;
 }
 
 function GoalHeader({
@@ -409,10 +485,38 @@ function GoalDetail({
 }) {
   const theme = useTheme();
   const rows: React.ReactNode[] = [
-    <Text key="summary" color={theme.textDim}>
-      Detail · {getGoalReadinessText(run)} · {formatGoalProgressText(run)}
+    <Text key="goal-heading">
+      <Text color={theme.primary} bold>
+        Goal
+      </Text>
+      <Text color={theme.textDim}> · </Text>
+      <Text color={statusColor(run.status) || theme.secondary}>{getGoalReadinessText(run)}</Text>
+      <Text color={theme.textDim}> · {formatGoalProgressText(run)}</Text>
+    </Text>,
+    <Text key="goal-text" color={theme.text}>
+      {truncateGoalDetailText(run.goal || run.title)}
+    </Text>,
+    <Text key="success-heading" color={theme.primary} bold>
+      Success criteria
     </Text>,
   ];
+
+  if (run.successCriteria.length === 0) {
+    rows.push(
+      <Text key="success-none" color={theme.textDim}>
+        - none recorded
+      </Text>,
+    );
+  } else {
+    for (const [index, criterion] of run.successCriteria.entries()) {
+      rows.push(
+        <Text key={`success-${index}`}>
+          <Text color="green">✓ </Text>
+          <Text color={theme.text}>{truncateGoalDetailText(criterion)}</Text>
+        </Text>,
+      );
+    }
+  }
 
   if (run.prerequisites.length > 0) {
     rows.push(
@@ -482,16 +586,94 @@ function GoalDetail({
     }
   }
 
+  if (run.harness.length > 0) {
+    rows.push(
+      <Text key="harness-heading" color={theme.primary} bold>
+        Harness
+      </Text>,
+    );
+    for (const item of run.harness) {
+      rows.push(
+        <Text key={`harness-${item.id}`}>
+          <Text color="cyan">◦ </Text>
+          <Text color={theme.text}>{item.label}</Text>
+          {item.command ? <Text color={theme.secondary}> · {item.command}</Text> : null}
+          {!item.command && item.path ? <Text color={theme.secondary}> · {item.path}</Text> : null}
+        </Text>,
+      );
+    }
+  }
+
+  if (run.evidencePlan.length > 0) {
+    rows.push(
+      <Text key="evidence-plan-heading" color={theme.primary} bold>
+        Evidence plan
+      </Text>,
+    );
+    for (const item of run.evidencePlan) {
+      rows.push(
+        <Text key={`evidence-plan-${item.id}`}>
+          <Text color={evidencePlanStatusColor(item.status)}>● {item.status}</Text>
+          <Text color={theme.text}> · {item.label}</Text>
+          {item.command ? <Text color={theme.secondary}> · {item.command}</Text> : null}
+          {!item.command && item.path ? <Text color={theme.secondary}> · {item.path}</Text> : null}
+        </Text>,
+      );
+    }
+  }
+
   if (run.verifier) {
     rows.push(
       <Text key="verifier-heading" color={theme.primary} bold>
         Verifier
       </Text>,
-      <Text key="verifier-summary" color={theme.textDim} wrap="truncate">
-        {formatGoalVerifierSummary(run)}
-        {run.verifier.command ? ` · ${run.verifier.command}` : ""}
+      <Text key="verifier-summary" wrap="truncate">
+        {run.verifier.lastResult ? (
+          <Text color={verifierStatusColor(run.verifier.lastResult.status)}>
+            ● {formatGoalVerifierSummary(run)}
+          </Text>
+        ) : (
+          <Text color={run.verifier.command ? "cyan" : theme.textDim}>
+            ● {formatGoalVerifierSummary(run)}
+          </Text>
+        )}
+        {run.verifier.command ? (
+          <Text color={theme.secondary}> · {run.verifier.command}</Text>
+        ) : null}
       </Text>,
     );
+  }
+
+  if (run.blockers.length > 0) {
+    rows.push(
+      <Text key="blockers-heading" color={theme.warning} bold>
+        Blockers
+      </Text>,
+    );
+    for (const [index, blocker] of run.blockers.entries()) {
+      rows.push(
+        <Text key={`blocker-${index}`} color={theme.warning}>
+          - {truncateGoalDetailText(blocker)}
+        </Text>,
+      );
+    }
+  }
+
+  if (run.evidence.length > 0) {
+    rows.push(
+      <Text key="evidence-heading" color={theme.primary} bold>
+        Recent evidence
+      </Text>,
+    );
+    for (const item of run.evidence.slice(-5)) {
+      rows.push(
+        <Text key={`evidence-${item.id}`}>
+          <Text color={evidenceKindColor(item.kind)}>[{item.kind}]</Text>
+          <Text color={theme.text}> {item.label}</Text>
+          {item.path ? <Text color={theme.secondary}> · {item.path}</Text> : null}
+        </Text>,
+      );
+    }
   }
 
   const window = getGoalDetailScrollWindow({
@@ -501,22 +683,13 @@ function GoalDetail({
   });
 
   return (
-    <Box
-      flexDirection="column"
-      marginTop={1}
-      paddingLeft={3}
-      borderStyle="round"
-      borderColor={theme.textDim}
-      paddingX={1}
-      height={Math.max(3, maxRows + 2)}
-      overflowY="hidden"
-    >
+    <Box flexDirection="column" marginTop={1} paddingLeft={2} height={maxRows} overflowY="hidden">
       {window.hiddenBefore > 0 ? (
-        <Text color={theme.textDim}>↑ {window.hiddenBefore} detail row(s) above · PgUp</Text>
+        <Text color={theme.secondary}>↑ {window.hiddenBefore} detail row(s) above · PgUp</Text>
       ) : null}
       {rows.slice(window.start, window.end)}
       {window.hiddenAfter > 0 ? (
-        <Text color={theme.textDim}>↓ {window.hiddenAfter} more detail row(s) · PgDn</Text>
+        <Text color={theme.secondary}>↓ {window.hiddenAfter} more detail row(s) · PgDn</Text>
       ) : null}
     </Box>
   );
@@ -598,7 +771,14 @@ export function GoalOverlay({
   const viewportRows = getGoalOverlayViewportRows(rows);
   const selectedRun = runs[selectedIndex];
   const expandedRun = selectedRun && selectedRun.id === expandedRunId ? selectedRun : null;
-  const listViewportGoalCount = Math.max(1, Math.floor(viewportRows / 4));
+  const expandedCardExtraRows = expandedRun ? getGoalCardExtraRowCount(expandedRun) : 0;
+  const detailViewportRows = expandedRun
+    ? getGoalExpandedDetailViewportRows({
+        viewportRows,
+        cardExtraRows: expandedCardExtraRows,
+      })
+    : 0;
+  const listViewportGoalCount = expandedRun ? 1 : Math.max(1, Math.floor(viewportRows / 4));
   const scrollOffset = expandedRun
     ? selectedIndex
     : getGoalScrollOffsetForSelection({
@@ -610,9 +790,10 @@ export function GoalOverlay({
   const visibleRuns = expandedRun
     ? [expandedRun]
     : runs.slice(scrollOffset, scrollOffset + listViewportGoalCount);
-  const hiddenBefore = scrollOffset;
-  const hiddenAfter = Math.max(0, runs.length - scrollOffset - visibleRuns.length);
-  const detailViewportRows = Math.max(1, viewportRows - 8);
+  const hiddenBefore = expandedRun ? 0 : scrollOffset;
+  const hiddenAfter = expandedRun
+    ? 0
+    : Math.max(0, runs.length - scrollOffset - visibleRuns.length);
   const detailRowCount = expandedRun ? getGoalDetailRowCount(expandedRun) : 0;
 
   useEffect(() => {
@@ -709,6 +890,18 @@ export function GoalOverlay({
     if (expandedRun && key.end) {
       setDetailScrollOffset(
         clampGoalDetailScrollOffset(detailRowCount, detailRowCount, detailViewportRows),
+      );
+      return;
+    }
+    if (expandedRun && (key.upArrow || input === "k")) {
+      setDetailScrollOffset((offset) =>
+        clampGoalDetailScrollOffset(offset - 1, detailRowCount, detailViewportRows),
+      );
+      return;
+    }
+    if (expandedRun && (key.downArrow || input === "j")) {
+      setDetailScrollOffset((offset) =>
+        clampGoalDetailScrollOffset(offset + 1, detailRowCount, detailViewportRows),
       );
       return;
     }
@@ -820,15 +1013,19 @@ export function GoalOverlay({
                   </Text>
                   <Text color={theme.textDim}> · {run.id.slice(0, 8)}</Text>
                 </Text>
-                <Text color={theme.textDim}>
-                  {selected ? "  " : "    "}
-                  {getGoalReadinessText(run)} · {formatGoalProgressText(run)} ·{" "}
-                  {formatGoalVerifierSummary(run)}
-                </Text>
-                <Text color={theme.textDim}>
-                  {selected ? "  " : "    "}
-                  {formatGoalPrerequisiteSummary(run)} · {formatGoalTaskSummary(run)}
-                </Text>
+                {expandedRun?.id === run.id ? null : (
+                  <>
+                    <Text color={theme.textDim}>
+                      {selected ? "  " : "    "}
+                      {getGoalReadinessText(run)} · {formatGoalProgressText(run)} ·{" "}
+                      {formatGoalVerifierSummary(run)}
+                    </Text>
+                    <Text color={theme.textDim}>
+                      {selected ? "  " : "    "}
+                      {formatGoalPrerequisiteSummary(run)} · {formatGoalTaskSummary(run)}
+                    </Text>
+                  </>
+                )}
                 {blocked ? (
                   <Text color={theme.warning}>
                     {selected ? "  " : "    "}⚠ prerequisite needed before workers continue
@@ -875,13 +1072,13 @@ export function GoalOverlay({
         ) : (
           <Text color={theme.textDim}>
             <Text color={theme.primary}>↑↓/jk</Text>
-            {" select · "}
+            {expandedRun ? " scroll detail · " : " select · "}
             <Text color={theme.primary}>Enter/d</Text>
-            {" detail · "}
+            {expandedRun ? " close detail · " : " detail · "}
             {expandedRun ? (
               <>
                 <Text color={theme.primary}>PgUp/PgDn</Text>
-                {" scroll detail · "}
+                {" page detail · "}
               </>
             ) : null}
             <Text color={theme.primary}>r</Text>
