@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,6 +47,47 @@ describe("ProcessManager dev-server lifecycle repro", () => {
 
   afterEach(() => {
     manager?.shutdownAll();
+  });
+
+  it("scrubs unsafe inherited environment for background commands", async () => {
+    const oldSecret = process.env.GG_TEST_SHOULD_NOT_LEAK;
+    process.env.GG_TEST_SHOULD_NOT_LEAK = "super-secret";
+    manager = new ProcessManager();
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "gg-bg-env-"));
+    try {
+      const started = await manager.start(
+        `${JSON.stringify(process.execPath)} -e "console.log(process.env.GG_TEST_SHOULD_NOT_LEAK || 'scrubbed')"`,
+        tmpDir,
+      );
+      const output = await waitForOutput(manager, started.id, (text) => text.includes("scrubbed"));
+      expect(output).toContain("scrubbed");
+      expect(output).not.toContain("super-secret");
+    } finally {
+      if (oldSecret === undefined) delete process.env.GG_TEST_SHOULD_NOT_LEAK;
+      else process.env.GG_TEST_SHOULD_NOT_LEAK = oldSecret;
+    }
+  });
+
+  it("uses taskkill for Windows process-tree shutdown fallback", async () => {
+    const taskkill = vi.fn();
+    manager = new ProcessManager({
+      platform: "win32",
+      kill: vi.fn(() => {
+        throw new Error("force fallback");
+      }) as typeof process.kill,
+      spawnSync: taskkill as never,
+    });
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "gg-win-taskkill-"));
+    const started = await manager.start(
+      `${JSON.stringify(process.execPath)} -e "setInterval(()=>{},1000)"`,
+      tmpDir,
+    );
+    const stopped = await manager.stop(started.id);
+    expect(stopped).toBe(`Process ${started.id} already exited`);
+    manager.shutdownAll();
+    expect(taskkill).toHaveBeenCalledWith("taskkill", ["/pid", String(started.pid), "/T", "/F"], {
+      stdio: "ignore",
+    });
   });
 
   it("starts, reads, and stops a long-running Node HTTP server through the worker background path", async () => {

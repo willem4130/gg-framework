@@ -142,7 +142,6 @@ import {
   goalHasBlockingPrerequisites,
   loadGoalRuns,
   reconcileActiveGoalRuns,
-  projectDir,
   summarizeGoalCounts,
   summarizeGoalCountsFromRuns,
   updateGoalTask,
@@ -155,6 +154,7 @@ import {
   decideGoalNextAction,
   shouldCreateVerifierFixTask,
 } from "../core/goal-controller.js";
+import { runGoalVerifierCommand } from "../core/goal-verifier.js";
 import {
   listGoalWorkers,
   startGoalWorker,
@@ -595,9 +595,7 @@ function formatGoalWorkerFinishedTitle(
   taskTitle: string,
   status: GoalWorkerCompletion["status"],
 ): string {
-  return status === "done"
-    ? `Worker finished: ${taskTitle}. Reporting back.`
-    : `Worker failed: ${taskTitle}. Reporting back.`;
+  return status === "done" ? `Done: ${taskTitle}` : `Failed: ${taskTitle}`;
 }
 
 function countGoalTasksByStatus(tasks: readonly GoalTask[], status: GoalTask["status"]): number {
@@ -3406,12 +3404,23 @@ export function App(props: AppProps) {
       case "goal_progress": {
         const isError =
           item.status === "failed" || item.status === "fail" || item.status === "blocked";
-        const color =
-          item.phase === "terminal" && !isError
+        const color = isError
+          ? theme.error
+          : item.phase === "worker_finished"
             ? theme.success
-            : isError
-              ? theme.warning
-              : theme.primary;
+            : item.phase === "verifier_finished"
+              ? theme.accent
+              : item.phase === "orchestrator_reviewing" || item.phase === "orchestrator_working"
+                ? theme.secondary
+                : item.phase === "continuing"
+                  ? theme.warning
+                  : item.phase === "verifier_started"
+                    ? theme.accent
+                    : item.phase === "worker_started"
+                      ? theme.primary
+                      : item.phase === "terminal"
+                        ? theme.success
+                        : theme.primary;
         const glyph =
           item.phase === "worker_finished" || item.phase === "verifier_finished"
             ? "✓ "
@@ -3979,8 +3988,9 @@ export function App(props: AppProps) {
         appendGoalProgress({
           kind: "goal_progress",
           phase: "continuing",
-          title: `Continuing Goal: ${latestRun.title}`,
-          detail: "Starting the next worker task or verifier step automatically.",
+          title: `Choosing next Goal step: ${latestRun.title}`,
+          detail:
+            "Latest result is recorded; starting the next worker task or verifier automatically.",
           status: latestRun.status,
         });
         upsertGoalStatusEntry({
@@ -4298,79 +4308,27 @@ export function App(props: AppProps) {
         detail: run.verifier.command,
         goalNumber: goalNumberForRun(run.id),
       });
-      const { spawn } = await import("node:child_process");
-      const { mkdir, writeFile } = await import("node:fs/promises");
-      const { join } = await import("node:path");
-      const logDir = join(projectDir(props.cwd), "verifiers");
-      await mkdir(logDir, { recursive: true });
-      const outputPath = join(logDir, `${run.id}-${startedAt}.log`);
-      const child = spawn(run.verifier.command, {
+      void runGoalVerifierCommand({
         cwd: props.cwd,
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env },
-      });
-      let output = "";
-      child.stdout?.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf-8");
-        if (output.length > 20_000) output = output.slice(output.length - 20_000);
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf-8");
-        if (output.length > 20_000) output = output.slice(output.length - 20_000);
-      });
-      let verifierSettled = false;
-      let timedOut = false;
-      const timeout =
-        verifierTimeoutMs > 0
-          ? setTimeout(() => {
-              timedOut = true;
-              if (child.pid) child.kill("SIGTERM");
-              const killTimer = setTimeout(() => {
-                if (!verifierSettled && child.pid) child.kill("SIGKILL");
-              }, 5000);
-              killTimer.unref?.();
-              finishVerifier(
-                124,
-                `Verifier timed out after ${verifierTimeoutMs}ms and was terminated.\n${output}`,
-              );
-            }, verifierTimeoutMs)
-          : undefined;
-      timeout?.unref?.();
-      const finishVerifier = (code: number | null, forcedOutput?: string) => {
-        if (verifierSettled) return;
-        verifierSettled = true;
-        if (timeout) clearTimeout(timeout);
-        activeVerifierRunIdsRef.current.delete(run.id);
-        void (async () => {
-          const status = code === 0 ? "pass" : "fail";
-          const failureClass = timedOut
-            ? "verifier_timeout"
-            : forcedOutput?.startsWith("Verifier process error:")
-              ? "verifier_spawn_error"
-              : status === "fail"
-                ? "verifier_failure"
-                : "verifier_pass";
-          const summary =
-            (forcedOutput ?? output).trim() ||
-            (code === 0 ? "Verifier passed." : "Verifier failed.");
+        runId: run.id,
+        command: run.verifier.command,
+        timeoutMs: verifierTimeoutMs,
+        now: () => startedAt,
+      })
+        .then(async ({ verification, failureClass, durationMs }) => {
+          activeVerifierRunIdsRef.current.delete(run.id);
+          const status = verification.status;
+          const summary = verification.summary;
+          const outputPath = verification.outputPath;
           const latestRun =
             (await loadGoalRuns(props.cwd)).find((item) => item.id === run.id) ?? run;
-          await writeFile(outputPath, summary + "\n", "utf-8");
           const runWithVerifier: GoalRun = {
             ...latestRun,
             verifier: {
               ...latestRun.verifier,
               description: latestRun.verifier?.description ?? "Goal verifier",
               command: run.verifier?.command,
-              lastResult: {
-                status,
-                summary,
-                command: run.verifier?.command,
-                exitCode: code ?? 1,
-                outputPath,
-                checkedAt: new Date().toISOString(),
-              },
+              lastResult: verification,
             },
           };
           const completionCheck = canCompleteGoalRun(runWithVerifier);
@@ -4392,14 +4350,14 @@ export function App(props: AppProps) {
           });
           await appendGoalDecision(props.cwd, run.id, {
             kind: `verifier_${status}`,
-            reason: `${failureClass}: verifier exited with code ${code ?? 1}.`,
-            content: `outputPath=${outputPath}; durationMs=${Date.now() - startedAt}`,
+            reason: `${failureClass}: verifier exited with code ${verification.exitCode ?? 1}.`,
+            content: `outputPath=${outputPath ?? ""}; durationMs=${durationMs}`,
           });
           if (status === "fail" && shouldCreateVerifierFixTask(latestRun)) {
             await updateGoalTask(props.cwd, run.id, `fix-${Date.now()}`, {
               title: "Fix verifier failure",
               prompt:
-                `Goal verifier failed after ${Date.now() - startedAt}ms. Original goal: ${run.goal}\n\n` +
+                `Goal verifier failed after ${durationMs}ms. Original goal: ${run.goal}\n\n` +
                 `Verifier command: ${run.verifier?.command}\n\n` +
                 `Failure output:\n${summary.slice(-6000)}\n\nFix the cause, record evidence with the goals tool, and rerun relevant verification.`,
               status: "pending",
@@ -4426,9 +4384,9 @@ export function App(props: AppProps) {
           });
           const eventText = formatGoalVerifierCompletionEvent(
             verifiedRun,
-            status,
+            status === "pass" ? "pass" : "fail",
             run.verifier?.command ?? "",
-            code ?? 1,
+            verification.exitCode ?? 1,
             summary,
           );
           runGoalSyntheticEvent(eventText);
@@ -4438,14 +4396,13 @@ export function App(props: AppProps) {
           if (continuationRun?.continueRequestedAt && status === "pass") {
             setTimeout(() => continueGoalRun(run.id), 500);
           }
-        })().catch((err: unknown) => {
+        })
+        .catch((err: unknown) => {
+          activeVerifierRunIdsRef.current.delete(run.id);
           clearGoalStatusEntry(run.id);
           log("ERROR", "goal", err instanceof Error ? err.message : String(err));
           setLiveItems((prev) => [...prev, toErrorItem(err, getId(), "Goal verifier")]);
         });
-      };
-      child.on("close", (code) => finishVerifier(code));
-      child.on("error", (err) => finishVerifier(1, `Verifier process error: ${err.message}`));
     },
     [
       props.cwd,

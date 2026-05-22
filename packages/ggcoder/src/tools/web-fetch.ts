@@ -5,7 +5,7 @@ import type { AgentTool } from "@kenkaiiii/gg-agent";
  * Block requests to private/internal network addresses to prevent SSRF.
  * Checks the hostname against known private IP ranges and reserved domains.
  */
-function isBlockedUrl(urlString: string): boolean {
+export function isBlockedUrl(urlString: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -179,8 +179,19 @@ export function createWebFetchTool(): AgentTool<typeof parameters> {
             "User-Agent": "Mozilla/5.0 (compatible; GGCoder/1.0)",
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           },
+          redirect: "manual",
           signal: AbortSignal.timeout(30000),
         });
+
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get("location");
+          if (!location) return `Error: HTTP ${response.status} redirect without Location header`;
+          const redirectUrl = new URL(location, args.url).toString();
+          if (isBlockedUrl(redirectUrl)) {
+            return "Error: Redirect blocked — target URL is private/internal or unsupported.";
+          }
+          return `Error: Redirects are not followed automatically. Safe redirect target: ${redirectUrl}`;
+        }
 
         if (!response.ok) {
           return `Error: HTTP ${response.status} ${response.statusText}`;

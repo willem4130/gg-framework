@@ -284,7 +284,17 @@ describe("goal overlay helpers", () => {
       ),
     ).toBe("needs user input");
     expect(getGoalReadinessText(goalRun({ status: "running" }))).toBe("work in progress");
+    expect(getGoalReadinessText(goalRun({ status: "verifying" }))).toBe("work in progress");
     expect(getGoalReadinessText(goalRun({ status: "passed" }))).toBe("verified");
+    expect(
+      getGoalReadinessText(
+        goalRun({
+          status: "ready",
+          tasks: [{ id: "t", title: "T", prompt: "Do it", status: "pending", attempts: 0 }],
+        }),
+      ),
+    ).toBe("ready to run");
+    expect(getGoalReadinessText(goalRun({ status: "draft" }))).toBe("drafting plan");
     expect(
       getGoalReadinessText(
         goalRun({ verifier: { description: "Run tests", command: "pnpm test" } }),
@@ -335,6 +345,38 @@ describe("goal overlay helpers", () => {
         textColor: "text",
       }),
     ).toBe("text");
+    expect(
+      getGoalCardStatusColor({
+        status: "running",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("#fbbf24");
+    expect(
+      getGoalCardStatusColor({
+        status: "blocked",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("#fbbf24");
+    expect(
+      getGoalCardStatusColor({
+        status: "paused",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("text");
+    expect(
+      getGoalCardStatusColor({
+        status: "failed",
+        selected: false,
+        primaryColor: "primary",
+        textColor: "text",
+      }),
+    ).toBe("red");
     expect(
       getGoalCardStatusColor({
         status: "passed",

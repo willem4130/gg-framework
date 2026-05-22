@@ -349,6 +349,36 @@ describe("goal event formatting", () => {
     expect(parseGoalSyntheticEvent("Please inspect the goal")).toBeNull();
   });
 
+  it("parses hidden synthetic events from payload while preserving markdown and fallback headers", () => {
+    const event = formatGoalWorkerCompletionEvent(
+      goalRun({ title: "Render **Goal** rows" }),
+      "Check `markdown` and wrapping",
+      workerCompletion({ summary: "Status: **done**\nChanged: `rows` stayed hidden" }),
+    );
+    const parsed = parseGoalSyntheticEvent(event);
+
+    expect(parsed).toMatchObject({
+      kind: "worker",
+      goal: "Render **Goal** rows",
+      task: "Check `markdown` and wrapping",
+      summary: "Status: **done**\nChanged: `rows` stayed hidden",
+    });
+    expect(parsed?.payload).toBeDefined();
+
+    expect(
+      parseGoalSyntheticEvent(
+        `${GOAL_WORKER_EVENT_PREFIX} run_id="run-legacy" goal="Legacy Goal" task_id="task-1" task="Legacy Task" worker="worker-1" status=done exit_code=0`,
+      ),
+    ).toMatchObject({
+      kind: "worker",
+      runId: "run-legacy",
+      goal: "Legacy Goal",
+      task: "Legacy Task",
+      status: "done",
+      exitCode: 0,
+    });
+  });
+
   it("continues non-terminal goals that have no active worker or running task", () => {
     expect(shouldContinueGoalRun(goalRun({ status: "ready" }))).toBe(true);
     expect(shouldContinueGoalRun(goalRun({ status: "running" }))).toBe(true);

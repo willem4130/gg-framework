@@ -1,6 +1,6 @@
 {
   "name": "@kenkaiiii/ggcoder",
-  "version": "4.3.207",
+  "version": "4.3.208",
   "type": "module",
   "description": "CLI coding agent with OAuth authentication for Anthropic, OpenAI, and Gemini",
   "license": "MIT",
@@ -66,6 +66,7 @@
     "build": "pnpm clean && tsc",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "verify:goal:e2e": "pnpm dlx tsx scripts/verify-goal-e2e.ts",
     "verify:repomap": "pnpm build && node scripts/verify-repomap-focus.js",
     "verify:repomap:cold-start": "pnpm build && node scripts/verify-repomap-cold-start.js"
   },

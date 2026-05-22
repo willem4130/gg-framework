@@ -1,10 +1,11 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { killProcessTree } from "../utils/process.js";
+import { getSafeToolEnv } from "../tools/safe-env.js";
 
 export interface BackgroundProcess {
   id: string;
@@ -31,9 +32,28 @@ export interface ReadOutputResult {
 
 const BG_DIR = path.join(os.homedir(), ".gg", "bg");
 
+export interface ProcessManagerOps {
+  platform?: NodeJS.Platform;
+  kill?: typeof process.kill;
+  killProcessTree?: (pid: number) => void;
+  spawnSync?: typeof spawnSync;
+}
+
+function stopProcessTree(pid: number, ops: ProcessManagerOps = {}): void {
+  if ((ops.platform ?? process.platform) === "win32") {
+    (ops.spawnSync ?? spawnSync)("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+    });
+    return;
+  }
+  (ops.killProcessTree ?? killProcessTree)(pid);
+}
+
 export class ProcessManager {
   private processes = new Map<string, BackgroundProcess>();
   private children = new Map<string, ChildProcess>();
+
+  constructor(private readonly ops: ProcessManagerOps = {}) {}
 
   async start(command: string, cwd: string): Promise<StartResult> {
     await fsp.mkdir(BG_DIR, { recursive: true });
@@ -46,7 +66,7 @@ export class ProcessManager {
       cwd,
       detached: true,
       stdio: ["ignore", fd, fd],
-      env: { ...process.env, TERM: "dumb" },
+      env: getSafeToolEnv(),
     });
 
     fs.closeSync(fd);
@@ -118,10 +138,10 @@ export class ProcessManager {
 
     // SIGTERM first
     try {
-      process.kill(-proc.pid, "SIGTERM");
+      (this.ops.kill ?? process.kill)(-proc.pid, "SIGTERM");
     } catch {
       try {
-        process.kill(proc.pid, "SIGTERM");
+        (this.ops.kill ?? process.kill)(proc.pid, "SIGTERM");
       } catch {
         return `Process ${id} already exited`;
       }
@@ -137,7 +157,7 @@ export class ProcessManager {
     });
 
     if (!exited) {
-      killProcessTree(proc.pid);
+      stopProcessTree(proc.pid, this.ops);
     }
 
     return `Process ${id} stopped`;
@@ -157,7 +177,7 @@ export class ProcessManager {
   shutdownAll(): void {
     for (const [id, proc] of this.processes) {
       if (this.children.has(id)) {
-        killProcessTree(proc.pid);
+        stopProcessTree(proc.pid, this.ops);
         proc.exitCode = proc.exitCode ?? 1;
         this.children.delete(id);
       }

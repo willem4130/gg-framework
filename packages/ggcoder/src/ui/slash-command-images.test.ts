@@ -12,6 +12,20 @@ describe("prompt-template slash commands with attachments", () => {
     expect(route?.fullPrompt).toContain(route?.promptText);
     expect(route?.fullPrompt).toContain("## User Instructions");
     expect(route?.fullPrompt).toContain("do X");
+    expect(route?.fullPrompt).toContain("concrete success criteria that can be verified");
+    expect(route?.fullPrompt).toContain(
+      "Completion means verifier evidence satisfies the original success criteria",
+    );
+  });
+
+  it("routes /goal markdown and multiline text without losing rendered edge cases", () => {
+    const args = "prove **bold** UI renders\n- keep `code` text\n- wrap very long labels";
+    const route = routePromptCommandInput(`/goal ${args}`);
+
+    expect(route).toMatchObject({ cmdName: "goal", cmdArgs: args });
+    expect(route?.fullPrompt).toContain(`## User Instructions\n\n${args}`);
+    expect(route?.fullPrompt).toContain("**bold** UI renders");
+    expect(route?.fullPrompt).toContain("`code` text");
   });
 
   it("builds multimodal user content with the full prompt text and image block", () => {

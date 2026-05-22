@@ -97,6 +97,27 @@ describe("createWebFetchTool", () => {
     expect(result).not.toContain("Terms Privacy");
   });
 
+  it("blocks redirects to private/internal URLs without following them", async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "http://127.0.0.1:3000/secret" },
+        }),
+    ) as typeof fetch;
+
+    const result = await createWebFetchTool().execute(
+      { url: "https://example.com/redirect" },
+      context(),
+    );
+
+    expect(result).toContain("Redirect blocked");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://example.com/redirect",
+      expect.objectContaining({ redirect: "manual" }),
+    );
+  });
+
   it("blocks private/internal URLs before fetching", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock as typeof fetch;

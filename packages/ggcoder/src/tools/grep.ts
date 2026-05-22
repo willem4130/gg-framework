@@ -23,6 +23,7 @@ const DEFAULT_MAX_RESULTS = 50;
 const MAX_LINE_LENGTH = 500;
 /** Skip files larger than 10 MB — single-line files (minified JS, data blobs) can OOM readline */
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_CANDIDATE_FILES = 10_000;
 
 export function createGrepTool(
   cwd: string,
@@ -63,12 +64,22 @@ export function createGrepTool(
         ignore: ["**/node_modules/**", "**/.git/**"],
         suppressErrors: true,
         followSymbolicLinks: false,
+        objectMode: true,
+        stats: false,
       });
 
       const results: string[] = [];
-      for (const entry of entries) {
+      let scannedCandidates = 0;
+      let candidateLimitHit = false;
+      for (const item of entries) {
         if (results.length >= maxResults) break;
+        if (scannedCandidates >= MAX_CANDIDATE_FILES) {
+          candidateLimitHit = true;
+          break;
+        }
+        scannedCandidates += 1;
 
+        const entry = typeof item === "string" ? item : item.path;
         const ext = path.extname(entry).toLowerCase();
         if (BINARY_EXTENSIONS.has(ext)) continue;
 
@@ -83,7 +94,7 @@ export function createGrepTool(
         results.push(...fileResults);
       }
 
-      return formatResults(results, maxResults);
+      return formatResults(results, maxResults, candidateLimitHit);
     },
   };
 }
@@ -148,14 +159,21 @@ async function searchFile(
   return results;
 }
 
-function formatResults(results: string[], maxResults: number): string {
-  if (results.length === 0) return "No matches found.";
+function formatResults(results: string[], maxResults: number, candidateLimitHit = false): string {
+  if (results.length === 0) {
+    return candidateLimitHit
+      ? `No matches found. [Stopped after scanning ${MAX_CANDIDATE_FILES} candidate files]`
+      : "No matches found.";
+  }
 
   let output = results.join("\n");
   if (results.length >= maxResults) {
     output += `\n\n[Truncated at ${maxResults} matches]`;
   } else {
     output += `\n\n${results.length} match(es) found`;
+  }
+  if (candidateLimitHit) {
+    output += `\n[Stopped after scanning ${MAX_CANDIDATE_FILES} candidate files]`;
   }
   return output;
 }
