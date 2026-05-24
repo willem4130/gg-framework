@@ -120,8 +120,8 @@ export function trimFlushedItems<T extends FlushableItem>(items: T[]): T[] {
  * All previous items are guaranteed complete — tool calls from this turn
  * finished before `turn_end` fired, and `onTurnText` fires inside `turn_end`.
  *
- * Returns the items to flush to history. The caller should then set liveItems
- * to contain only the new text item.
+ * Returns the items to flush to history. Callers should keep the live area
+ * bounded and avoid re-rendering finalized long text through Ink.
  */
 export function flushOnTurnText<T extends FlushableItem>(liveItems: T[]): T[] {
   return liveItems;

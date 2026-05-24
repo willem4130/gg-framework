@@ -15,6 +15,7 @@ interface AssistantMessageProps {
   renderMarkdown?: boolean;
   availableTerminalHeight?: number;
   marginTop?: number;
+  continuation?: boolean;
 }
 
 const RESPONSE_LEFT_PADDING = 1;
@@ -31,6 +32,7 @@ export const AssistantMessage = React.memo(function AssistantMessage({
   renderMarkdown = true,
   availableTerminalHeight,
   marginTop = 0,
+  continuation = false,
 }: AssistantMessageProps) {
   const theme = useTheme();
   const { columns } = useTerminalSize();
@@ -47,15 +49,24 @@ export const AssistantMessage = React.memo(function AssistantMessage({
   const hasThinking = showThinking && !!thinking;
   if (!trimmedText && !hasThinking) return null;
 
+  const constrainedHeight = availableTerminalHeight
+    ? Math.max(1, availableTerminalHeight - marginTop)
+    : undefined;
+
   return (
-    <Box flexDirection="column" marginTop={marginTop}>
+    <Box
+      flexDirection="column"
+      marginTop={marginTop}
+      maxHeight={constrainedHeight}
+      overflowY={constrainedHeight ? "hidden" : undefined}
+    >
       {hasThinking && (
         <ThinkingBlock text={thinking!} streaming={streaming} durationMs={thinkingMs} />
       )}
       {trimmedText && (
         <Box flexDirection="row" paddingLeft={RESPONSE_LEFT_PADDING} flexShrink={1}>
           <Box width={PREFIX_WIDTH} flexShrink={0}>
-            <Text color={theme.primary}>{BLACK_CIRCLE + " "}</Text>
+            <Text color={theme.primary}>{continuation ? "  " : BLACK_CIRCLE + " "}</Text>
           </Box>
           <Box flexDirection="column" width={contentWidth} flexShrink={1}>
             <Markdown

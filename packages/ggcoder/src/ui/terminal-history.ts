@@ -8,10 +8,9 @@ import type { CompletedItem } from "./App.js";
 import type { PasteInfo } from "./components/InputArea.js";
 import { BLACK_CIRCLE, RETURN_SYMBOL } from "./constants/figures.js";
 import type { Theme } from "./theme/theme.js";
-import { highlightCode } from "./utils/highlight.js";
 import { getUserMessageDisplayParts } from "./utils/user-message-display.js";
 import { buildToolGroupSummary, segmentsToPlainText } from "./tool-group-summary.js";
-import { stripUnsafeCharacters } from "./utils/text-utils.js";
+import { renderMarkdownToAnsiLines } from "./utils/markdown-renderer.js";
 
 const LOGO_LINES = [" ▄▀▀▀ ▄▀▀▀", " █ ▀█ █ ▀█", " ▀▄▄▀ ▀▄▄▀"];
 const GRADIENT = [
@@ -70,6 +69,8 @@ export interface TerminalHistoryContext {
 function isAgentSpacingKind(kind: CompletedItem["kind"]): boolean {
   return [
     "assistant",
+    "queued",
+    "goal_progress",
     "tool_start",
     "tool_done",
     "tool_group",
@@ -140,7 +141,7 @@ export function serializeCompletedItemToTerminalHistory(
     case "queued":
       return renderQueued(item.text, item.imageCount, context);
     case "assistant":
-      return renderAssistant(item.text, item.thinking, item.thinkingMs, context);
+      return renderAssistant(item.text, item.thinking, item.thinkingMs, context, item.continuation);
     case "tool_start":
       return renderToolStart(item.name, item.args, item.progressOutput, context);
     case "tool_done":
@@ -362,11 +363,15 @@ function renderQueued(
   imageCount: number | undefined,
   context: TerminalHistoryContext,
 ): string {
-  const suffix = imageCount ? ` · ${imageCount} image${imageCount > 1 ? "s" : ""}` : "";
-  return block([
-    `${color(context.theme.warning, "↳ Queued", true)}${dim(context, suffix)}`,
-    indent(wrapPlain(text || "(empty)", context.columns - 2), "  "),
-  ]);
+  const suffix = imageCount ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
+  return prefixFirstLine(
+    wrapPlain(
+      `${dim(context, "Queued: ")}${color(context.theme.text, text || "(empty)")}${color(context.theme.text, suffix)}`,
+      context.columns - 4,
+    ),
+    ` ${color(context.theme.warning, "•", true)} `,
+    "   ",
+  );
 }
 
 function renderAssistant(
@@ -374,6 +379,7 @@ function renderAssistant(
   thinking: string | undefined,
   thinkingMs: number | undefined,
   context: TerminalHistoryContext,
+  continuation = false,
 ): string {
   const lines: string[] = [];
   if (thinking?.trim()) {
@@ -381,12 +387,19 @@ function renderAssistant(
     lines.push(color(context.theme.textMuted, label));
     lines.push(dim(context, indent(wrapPlain(thinking.trim(), context.columns - 2), "  ")));
   }
-  const body = markdownToAnsi(text, {
-    ...context,
-    columns: Math.max(10, context.columns - 4),
-  }).replace(/^\n+|\n+$/g, "");
+  const body = renderMarkdownToAnsiLines({
+    text,
+    theme: context.theme,
+    width: Math.max(10, context.columns - 4),
+  })
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
   if (body.length > 0) {
-    lines.push(prefixFirstLine(body, ` ${color(context.theme.primary, BLACK_CIRCLE)} `, "   "));
+    lines.push(
+      continuation
+        ? indent(body, "   ")
+        : prefixFirstLine(body, ` ${color(context.theme.primary, BLACK_CIRCLE)} `, "   "),
+    );
   }
   return block(lines);
 }
@@ -415,7 +428,10 @@ function renderToolStart(
   }
 
   const { label, detail } = getToolHeaderParts(name, args);
-  const header = toolHeader("running", label, detail, context);
+  const header =
+    name === "bash" && progressOutput?.trim()
+      ? toolHeader("running", `· ${label}`, detail, context)
+      : toolHeader("running", label, detail, context);
   if (name !== "bash" || !progressOutput?.trim()) return header;
   return block([
     header,
@@ -539,7 +555,10 @@ function renderSubAgentGroup(
       ? `${agents.length} agent${agents.length !== 1 ? "s" : ""} completed`
       : `${agents.length} agent${agents.length !== 1 ? "s" : ""} launched`;
   const lines = [
-    toolHeader(aborted ? "error" : allDone ? "done" : "running", headerText, "", context),
+    toolHeader(aborted ? "error" : allDone ? "done" : "running", headerText, "", context).replace(
+      /^ /,
+      "",
+    ),
   ];
   agents.forEach((agent, index) => {
     lines.push(
@@ -562,7 +581,14 @@ function renderGoalProgress(
   context: TerminalHistoryContext,
 ): string {
   const isError = item.status === "failed" || item.status === "fail" || item.status === "blocked";
-  const colorHex = isError
+  const status = isError
+    ? "error"
+    : item.phase === "worker_finished" ||
+        item.phase === "verifier_finished" ||
+        item.phase === "terminal"
+      ? "done"
+      : "running";
+  const labelColor = isError
     ? context.theme.error
     : item.phase === "worker_finished" || item.phase === "terminal"
       ? context.theme.success
@@ -573,32 +599,23 @@ function renderGoalProgress(
           : item.phase === "continuing"
             ? context.theme.warning
             : context.theme.primary;
-  const glyph =
-    item.phase === "worker_finished" || item.phase === "verifier_finished"
-      ? "✓"
-      : item.phase === "terminal"
-        ? item.status === "passed"
-          ? "◆"
-          : "!"
-        : "↻";
-  const lines = [
-    `${color(colorHex, glyph, true)} ${color(colorHex, item.title, true)}${item.workerId ? dim(context, ` · worker ${item.workerId}`) : ""}`,
-  ];
+  const header = `${toolHeader(status, color(labelColor, item.title, true), "", context)}${item.workerId ? dim(context, ` · worker ${item.workerId}`) : ""}`;
+  const bodyLines: string[] = [];
   if (item.detail) {
-    lines.push(dim(context, indent(wrapPlain(item.detail, context.columns - 2), "  ")));
+    bodyLines.push(dim(context, wrapPlain(item.detail, context.columns - 8)));
   }
   for (const row of item.summaryRows ?? []) {
-    lines.push(
+    bodyLines.push(
       `${dim(context, row.label.padEnd(12))}${color(context.theme.text, row.value)}${row.detail ? dim(context, ` · ${row.detail}`) : ""}`,
     );
   }
   for (const section of item.summarySections ?? []) {
-    lines.push(dim(context, `  ${section.title}`));
+    bodyLines.push(dim(context, section.title));
     for (const sectionLine of section.lines) {
-      lines.push(`${color(context.theme.text, "• ")}${color(context.theme.text, sectionLine)}`);
+      bodyLines.push(`${color(context.theme.text, "• ")}${color(context.theme.text, sectionLine)}`);
     }
   }
-  return block(lines);
+  return block([header, ...messageResponse(bodyLines, context)]);
 }
 
 function renderError(
@@ -673,7 +690,7 @@ function renderPlanEvent(
     rejected: "Plan rejected",
     dismissed: "Plan dismissed",
   } satisfies Record<typeof event, string>;
-  const lines = [color(context.theme.commandColor, `○ ${labels[event]}`, true)];
+  const lines = [color(context.theme.commandColor, ` ○ ${labels[event]}`, true)];
   if (detail) lines[0] += dim(context, ` — "${detail}"`);
   return block(lines);
 }
@@ -727,7 +744,7 @@ function renderSubAgentRows(
       : agent.status === "error"
         ? color(context.theme.error, "✗ ", true)
         : "";
-  const taskLine = `${dim(context, branch.padEnd(3))}${taskPrefix}${color(agent.status === "done" ? context.theme.success : context.theme.text, taskDisplay, isRunning)}`;
+  const taskLine = `${dim(context, `  ${branch.padEnd(3)}`)}${taskPrefix}${color(agent.status === "done" ? context.theme.success : context.theme.text, taskDisplay, isRunning)}`;
 
   const totalTokens = agent.tokenUsage ? agent.tokenUsage.input + agent.tokenUsage.output : 0;
   let detail: string;
@@ -745,7 +762,7 @@ function renderSubAgentRows(
     );
   }
 
-  return [taskLine, `${dim(context, `${continuation}${RETURN_SYMBOL} `)}${detail}`];
+  return [taskLine, `${dim(context, `  ${continuation}${RETURN_SYMBOL} `)}${detail}`];
 }
 
 function toolResultPreview(
@@ -846,266 +863,6 @@ function prefixFirstLine(text: string, firstPrefix: string, nextPrefix: string):
       return `${index === 0 ? firstPrefix : nextPrefix}${lineText}`;
     })
     .join("\n");
-}
-
-function markdownToAnsi(text: string, context: TerminalHistoryContext): string {
-  const safeText = stripUnsafeCharacters(text);
-  if (!safeText.trim()) return "";
-
-  const lines = safeText.split(/\r?\n/);
-  const headerRegex = /^ *(#{1,4}) +(.*)/;
-  const codeFenceRegex = /^ *(`{3,}|~{3,}) *([\w-]*?) *$/;
-  const ulItemRegex = /^([ \t]*)([-*+]) +(.*)/;
-  const olItemRegex = /^([ \t]*)(\d+)\. +(.*)/;
-  const hrRegex = /^ *([-*_] *){3,} *$/;
-  const tableRowRegex = /^\s*\|(.+)\|\s*$/;
-  const tableSeparatorRegex = /^\s*\|?\s*(:?-+:?)\s*(\|\s*(:?-+:?)\s*)+\|?\s*$/;
-
-  const blocks: string[] = [];
-  let inCodeBlock = false;
-  let codeBlockContent: string[] = [];
-  let codeBlockLang: string | null = null;
-  let codeBlockFence = "";
-  let inTable = false;
-  let tableHeaders: string[] = [];
-  let tableRows: string[][] = [];
-  let lastLineEmpty = true;
-
-  const addBlock = (block: string): void => {
-    if (!block) return;
-    blocks.push(block);
-    lastLineEmpty = false;
-  };
-
-  const addInlineBlock = (rawLine: string, defaultColor = context.theme.text): void => {
-    addBlock(wrapPlain(renderInlineMarkdown(rawLine, context, defaultColor), context.columns));
-  };
-
-  const flushTable = (): void => {
-    if (tableHeaders.length > 0 && tableRows.length > 0) {
-      addBlock(renderMarkdownTable(tableHeaders, tableRows, context));
-    }
-    inTable = false;
-    tableHeaders = [];
-    tableRows = [];
-  };
-
-  lines.forEach((line, index) => {
-    if (inCodeBlock) {
-      const fenceMatch = line.match(codeFenceRegex);
-      if (
-        fenceMatch &&
-        fenceMatch[1]?.startsWith(codeBlockFence[0] ?? "") &&
-        fenceMatch[1].length >= codeBlockFence.length
-      ) {
-        addBlock(renderMarkdownCodeBlock(codeBlockContent, codeBlockLang, context));
-        inCodeBlock = false;
-        codeBlockContent = [];
-        codeBlockLang = null;
-        codeBlockFence = "";
-      } else {
-        codeBlockContent.push(line);
-      }
-      return;
-    }
-
-    const codeFenceMatch = line.match(codeFenceRegex);
-    const headerMatch = line.match(headerRegex);
-    const ulMatch = line.match(ulItemRegex);
-    const olMatch = line.match(olItemRegex);
-    const tableRowMatch = line.match(tableRowRegex);
-    const tableSeparatorMatch = line.match(tableSeparatorRegex);
-
-    if (codeFenceMatch) {
-      inCodeBlock = true;
-      codeBlockFence = codeFenceMatch[1] ?? "```";
-      codeBlockLang = codeFenceMatch[2] || null;
-    } else if (tableRowMatch && !inTable) {
-      if (index + 1 < lines.length && tableSeparatorRegex.test(lines[index + 1] ?? "")) {
-        inTable = true;
-        tableHeaders = tableRowMatch[1]?.split("|").map((cell) => cell.trim()) ?? [];
-        tableRows = [];
-      } else {
-        addInlineBlock(line);
-      }
-    } else if (inTable && tableSeparatorMatch) {
-      // Separator belongs to current table.
-    } else if (inTable && tableRowMatch) {
-      const cells = tableRowMatch[1]?.split("|").map((cell) => cell.trim()) ?? [];
-      while (cells.length < tableHeaders.length) cells.push("");
-      if (cells.length > tableHeaders.length) cells.length = tableHeaders.length;
-      tableRows.push(cells);
-    } else if (inTable) {
-      flushTable();
-      if (line.trim()) addInlineBlock(line);
-    } else if (hrRegex.test(line)) {
-      addBlock(chalk.dim("---"));
-    } else if (headerMatch) {
-      const level = headerMatch[1]?.length ?? 1;
-      const headerText = headerMatch[2] ?? "";
-      const headerColor = level <= 2 ? context.theme.link : context.theme.text;
-      const rendered = renderInlineMarkdown(headerText, context, headerColor);
-      const styled =
-        level <= 3 ? chalk.bold(rendered) : chalk.italic(color(context.theme.textMuted, rendered));
-      addBlock(wrapPlain(styled, context.columns));
-    } else if (ulMatch) {
-      const indentSize = (ulMatch[1] ?? "").length + 1;
-      addBlock(
-        wrapPlain(
-          `${" ".repeat(indentSize)}${ulMatch[2] ?? "-"} ${renderInlineMarkdown(ulMatch[3] ?? "", context, context.theme.text)}`,
-          context.columns,
-        ),
-      );
-    } else if (olMatch) {
-      const indentSize = (olMatch[1] ?? "").length + 1;
-      addBlock(
-        wrapPlain(
-          `${" ".repeat(indentSize)}${olMatch[2] ?? "1"}. ${renderInlineMarkdown(olMatch[3] ?? "", context, context.theme.text)}`,
-          context.columns,
-        ),
-      );
-    } else if (!line.trim()) {
-      if (!lastLineEmpty) {
-        blocks.push("");
-        lastLineEmpty = true;
-      }
-    } else {
-      addInlineBlock(line);
-    }
-  });
-
-  if (inCodeBlock) addBlock(renderMarkdownCodeBlock(codeBlockContent, codeBlockLang, context));
-  if (inTable) flushTable();
-  return blocks.join("\n");
-}
-
-function renderInlineMarkdown(
-  rawText: string,
-  context: TerminalHistoryContext,
-  defaultColor: string,
-): string {
-  const text = rawText;
-  if (!/[*_~`<[]|https?:\/\//.test(text)) return color(defaultColor, text);
-
-  const inlineRegex =
-    /(\*\*\*.*?\*\*\*|\*\*.*?\*\*|\*.*?\*|_.*?_|~~.*?~~|\[.*?\]\(.*?\)|`+.+?`+|<u>.*?<\/u>|https?:\/\/\S+)/g;
-  let result = "";
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = inlineRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) result += color(defaultColor, text.slice(lastIndex, match.index));
-    const fullMatch = match[0];
-    let styledPart = "";
-
-    if (fullMatch.endsWith("***") && fullMatch.startsWith("***") && fullMatch.length > 6) {
-      styledPart = chalk.bold(
-        chalk.italic(renderInlineMarkdown(fullMatch.slice(3, -3), context, defaultColor)),
-      );
-    } else if (fullMatch.endsWith("**") && fullMatch.startsWith("**") && fullMatch.length > 4) {
-      styledPart = chalk.bold(renderInlineMarkdown(fullMatch.slice(2, -2), context, defaultColor));
-    } else if (
-      fullMatch.length > 2 &&
-      ((fullMatch.startsWith("*") && fullMatch.endsWith("*")) ||
-        (fullMatch.startsWith("_") && fullMatch.endsWith("_"))) &&
-      !/\w/.test(text.substring(match.index - 1, match.index)) &&
-      !/\w/.test(text.substring(inlineRegex.lastIndex, inlineRegex.lastIndex + 1)) &&
-      !/\S[./\\]/.test(text.substring(match.index - 2, match.index)) &&
-      !/[./\\]\S/.test(text.substring(inlineRegex.lastIndex, inlineRegex.lastIndex + 2))
-    ) {
-      styledPart = chalk.italic(
-        renderInlineMarkdown(fullMatch.slice(1, -1), context, defaultColor),
-      );
-    } else if (fullMatch.startsWith("~~") && fullMatch.endsWith("~~") && fullMatch.length > 4) {
-      styledPart = chalk.strikethrough(
-        renderInlineMarkdown(fullMatch.slice(2, -2), context, defaultColor),
-      );
-    } else if (fullMatch.startsWith("`") && fullMatch.endsWith("`") && fullMatch.length > 1) {
-      const codeMatch = fullMatch.match(/^(`+)(.+?)\1$/s);
-      if (codeMatch?.[2]) styledPart = color(context.theme.accent, codeMatch[2]);
-    } else if (fullMatch.startsWith("[") && fullMatch.includes("](") && fullMatch.endsWith(")")) {
-      const linkMatch = fullMatch.match(/\[(.*?)\]\((.*?)\)/);
-      if (linkMatch) {
-        const linkText = linkMatch[1] ?? "";
-        const url = linkMatch[2] ?? "";
-        styledPart = `${renderInlineMarkdown(linkText, context, defaultColor)}${color(defaultColor, " (")}${color(context.theme.link, url)}${color(defaultColor, ")")}`;
-      }
-    } else if (fullMatch.startsWith("<u>") && fullMatch.endsWith("</u>") && fullMatch.length > 7) {
-      styledPart = chalk.underline(
-        renderInlineMarkdown(fullMatch.slice(3, -4), context, defaultColor),
-      );
-    } else if (fullMatch.match(/^https?:\/\//)) {
-      styledPart = color(context.theme.link, fullMatch);
-    }
-
-    result += styledPart || color(defaultColor, fullMatch);
-    lastIndex = inlineRegex.lastIndex;
-  }
-
-  if (lastIndex < text.length) result += color(defaultColor, text.slice(lastIndex));
-  return result;
-}
-
-function renderMarkdownCodeBlock(
-  content: string[],
-  lang: string | null,
-  context: TerminalHistoryContext,
-): string {
-  const code = content.join("\n");
-  const lines = code.replace(/\n$/u, "").split(/\r?\n/);
-  const padWidth = String(lines.length).length;
-  return lines
-    .map((line, index) => {
-      const lineNumber = color(context.theme.textDim, String(index + 1).padStart(padWidth, " "));
-      const highlighted = lang ? highlightCode(line, lang) : line;
-      return `${lineNumber} ${highlighted}`;
-    })
-    .join("\n");
-}
-
-function renderMarkdownTable(
-  headers: string[],
-  rows: string[][],
-  context: TerminalHistoryContext,
-): string {
-  const allRows = [headers, ...rows];
-  const columnCount = Math.max(headers.length, ...rows.map((row) => row.length), 1);
-  const widths = Array.from({ length: columnCount }, (_, index) => {
-    return Math.max(
-      3,
-      ...allRows.map((row) =>
-        stringWidth(stripAnsi(renderInlineMarkdown(row[index] ?? "", context, context.theme.text))),
-      ),
-    );
-  });
-  const border = (left: string, middle: string, right: string) =>
-    color(
-      context.theme.border,
-      left + widths.map((width) => "─".repeat(width + 2)).join(middle) + right,
-    );
-  const rowLine = (row: string[], header = false) => {
-    const cells = widths.map((width, index) => {
-      const rendered = renderInlineMarkdown(
-        row[index] ?? "",
-        context,
-        header ? context.theme.link : context.theme.text,
-      );
-      const padded = rendered + " ".repeat(Math.max(0, width - stringWidth(stripAnsi(rendered))));
-      return ` ${header ? chalk.bold(padded) : padded} `;
-    });
-    return (
-      color(context.theme.border, "│") +
-      cells.join(color(context.theme.border, "│")) +
-      color(context.theme.border, "│")
-    );
-  };
-  return [
-    border("┌", "┬", "┐"),
-    rowLine(headers, true),
-    border("├", "┼", "┤"),
-    ...rows.map((row) => rowLine(row)),
-    border("└", "┴", "┘"),
-  ].join("\n");
 }
 
 function formatDuration(ms: number): string {

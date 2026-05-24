@@ -33,8 +33,10 @@ import { UserMessage } from "./components/UserMessage.js";
 import type { PasteInfo } from "./components/InputArea.js";
 import { AssistantMessage } from "./components/AssistantMessage.js";
 import { ToolExecution } from "./components/ToolExecution.js";
+import { ToolUseLoader } from "./components/ToolUseLoader.js";
 import { ToolGroupExecution } from "./components/ToolGroupExecution.js";
 import { ServerToolExecution } from "./components/ServerToolExecution.js";
+import { MessageResponse } from "./components/MessageResponse.js";
 import { SubAgentPanel, type SubAgentInfo } from "./components/SubAgentPanel.js";
 import { CompactionSpinner, CompactionDone } from "./components/CompactionNotice.js";
 import type { SubAgentUpdate, SubAgentDetails } from "../tools/subagent.js";
@@ -141,6 +143,7 @@ import {
   flushOnTurnEnd,
   flushOverflow,
 } from "./live-item-flush.js";
+import { splitAssistantStreamingText } from "./utils/assistant-stream-split.js";
 import {
   appendGoalDecision,
   appendGoalEvidence,
@@ -311,7 +314,7 @@ export async function runGoalPromptSetupSequence({
   runAgent: (content: UserContent) => Promise<void>;
   onStage?: (text: string) => void;
 }): Promise<void> {
-  onStage?.("GOAL PLANNER STARTED");
+  onStage?.("Planning Goal setup");
   await setGoalModeAndPrompt("planner");
   const plannerStartIndex = messagesRef.current.length;
   await runAgent(userContent);
@@ -320,11 +323,9 @@ export async function runGoalPromptSetupSequence({
     originalGoalPrompt: fullPrompt,
     plannerOutput,
   });
-  onStage?.("GOAL PLAN CREATED -> PASSING TO SETUP AGENT");
   await setGoalModeAndPrompt("setup");
-  onStage?.("GOAL SETUP AGENT STARTED");
+  onStage?.("Creating Goal run");
   await runAgent(setupPrompt);
-  onStage?.("GOAL SETUP COMPLETE -> OPENING GOAL PANE");
 }
 
 function buildGoalTaskPromptWithReferences(run: GoalRun, taskPrompt: string): string {
@@ -403,6 +404,7 @@ interface AssistantItem {
   text: string;
   thinking?: string;
   thinkingMs?: number;
+  continuation?: boolean;
   id: string;
 }
 
@@ -680,6 +682,31 @@ function formatGoalWorkerFinishedTitle(
   return status === "done" ? `Done: ${taskTitle}` : `Failed: ${taskTitle}`;
 }
 
+function goalProgressLoaderStatus(item: GoalProgressItem): "running" | "done" | "error" {
+  if (item.status === "failed" || item.status === "fail" || item.status === "blocked")
+    return "error";
+  if (
+    item.phase === "worker_finished" ||
+    item.phase === "verifier_finished" ||
+    item.phase === "terminal"
+  ) {
+    return "done";
+  }
+  return "running";
+}
+
+function goalProgressColor(item: GoalProgressItem, theme: ReturnType<typeof useTheme>): string {
+  const isError = item.status === "failed" || item.status === "fail" || item.status === "blocked";
+  if (isError) return theme.error;
+  if (item.phase === "worker_finished" || item.phase === "terminal") return theme.success;
+  if (item.phase === "verifier_finished" || item.phase === "verifier_started") return theme.accent;
+  if (item.phase === "orchestrator_reviewing" || item.phase === "orchestrator_working") {
+    return theme.secondary;
+  }
+  if (item.phase === "continuing") return theme.warning;
+  return theme.primary;
+}
+
 function goalTerminalProgressId(run: GoalRun): string {
   return `goal-terminal-${run.id}`;
 }
@@ -692,12 +719,26 @@ function goalTerminalRunIdFromItem(item: CompletedItem): string | undefined {
 
 function goalProgressMatchesDraft(item: GoalProgressItem, draft: GoalProgressDraft): boolean {
   return (
+    item.phase === draft.phase &&
     item.title === draft.title &&
     item.detail === draft.detail &&
+    item.workerId === draft.workerId &&
     item.status === draft.status &&
     JSON.stringify(item.summaryRows ?? []) === JSON.stringify(draft.summaryRows ?? []) &&
     JSON.stringify(item.summarySections ?? []) === JSON.stringify(draft.summarySections ?? [])
   );
+}
+
+export function appendGoalProgressDraft(
+  items: readonly CompletedItem[],
+  draft: GoalProgressDraft,
+  makeId: () => string,
+): CompletedItem[] {
+  const previous = items.at(-1);
+  if (previous?.kind === "goal_progress" && goalProgressMatchesDraft(previous, draft)) {
+    return items as CompletedItem[];
+  }
+  return [...items, { ...draft, id: makeId() }];
 }
 
 /**
@@ -1005,6 +1046,8 @@ const MAX_EXPANDED_BACKGROUND_TASK_ROWS = 7;
 function isAgentSpacingKind(kind: CompletedItem["kind"]): boolean {
   return [
     "assistant",
+    "queued",
+    "goal_progress",
     "tool_start",
     "tool_done",
     "tool_group",
@@ -1016,6 +1059,7 @@ function isAgentSpacingKind(kind: CompletedItem["kind"]): boolean {
 
 function isToolBoundaryKind(kind: CompletedItem["kind"]): boolean {
   return [
+    "goal_progress",
     "tool_start",
     "tool_done",
     "tool_group",
@@ -1040,7 +1084,13 @@ export function shouldTopSpaceAfterPrintedAgentBoundary({
   lastPendingHistoryItem?: CompletedItem;
   lastHistoryItem?: CompletedItem;
 }): boolean {
-  const needsExternalSpacing = ["tool_start", "tool_group", "assistant"].includes(currentKind);
+  const needsExternalSpacing = [
+    "goal_progress",
+    "tool_start",
+    "tool_group",
+    "assistant",
+    "queued",
+  ].includes(currentKind);
   if (!needsExternalSpacing) return false;
   if (previousLiveItem !== undefined) return false;
   const previousKind = lastPendingHistoryItem?.kind ?? lastHistoryItem?.kind;
@@ -1543,7 +1593,7 @@ export function App(props: AppProps) {
     setLiveItems((prev) => [...prev, { kind: "goal_agent_transition", text, id: getId() }]);
   }, []);
   const appendGoalProgress = useCallback((item: GoalProgressDraft) => {
-    setLiveItems((prev) => [...prev, { ...item, id: getId() }]);
+    setLiveItems((prev) => appendGoalProgressDraft(prev, item, getId));
   }, []);
   const goalNumberForRun = useCallback(
     (runId: string) =>
@@ -1604,6 +1654,10 @@ export function App(props: AppProps) {
   );
 
   const pendingHistoryFlushRef = useRef<CompletedItem[]>([]);
+  const streamedAssistantFlushRef = useRef<{ flushedChars: number; text: string }>({
+    flushedChars: 0,
+    text: "",
+  });
   const [historyFlushGeneration, setHistoryFlushGeneration] = useState(0);
 
   const queueFlush = useCallback(
@@ -1624,6 +1678,7 @@ export function App(props: AppProps) {
 
   const finalizeSubmittedUserItem = useCallback(
     (item: UserItem) => {
+      streamedAssistantFlushRef.current = { flushedChars: 0, text: "" };
       setLiveItems((prev) => {
         if (prev.length > 0) queueFlush(prev);
         queueFlush([item]);
@@ -1657,6 +1712,8 @@ export function App(props: AppProps) {
     if (flushed.length === 0) return;
     pendingHistoryFlushRef.current = [];
     printHistoryItems(flushed);
+    const flushedIds = new Set(flushed.map((item) => item.id));
+    setLiveItems((prev) => prev.filter((item) => !flushedIds.has(item.id)));
     setHistory((prev) => {
       const existingIds = new Set(prev.map((item) => item.id));
       const nextItems = flushed.filter((item) => !existingIds.has(item.id));
@@ -2373,6 +2430,9 @@ export function App(props: AppProps) {
             return;
           }
 
+          const hadStreamedAssistantFlush = streamedAssistantFlushRef.current.flushedChars > 0;
+          const unflushedAssistantText = text.slice(streamedAssistantFlushRef.current.flushedChars);
+
           // Track [DONE:n] markers for plan step progress
           if (planStepsRef.current.length > 0) {
             const completed = findCompletedMarkers(text);
@@ -2399,7 +2459,7 @@ export function App(props: AppProps) {
             // Split text on [DONE:N] markers so each marker renders inline as
             // a styled "✓ Step N: <description>" item at the position the
             // agent emitted it, instead of vanishing into stripped whitespace.
-            const segments = segmentDisplayText(text, planStepsRef.current);
+            const segments = segmentDisplayText(unflushedAssistantText, planStepsRef.current);
             const items: CompletedItem[] = [];
             let thinkingAttached = false;
             for (const seg of segments) {
@@ -2412,6 +2472,7 @@ export function App(props: AppProps) {
                   // contains multiple text chunks split by markers.
                   thinking: thinkingAttached ? undefined : thinking,
                   thinkingMs: thinkingAttached ? undefined : thinkingMs,
+                  continuation: hadStreamedAssistantFlush,
                   id: getId(),
                 });
                 thinkingAttached = true;
@@ -2437,7 +2498,7 @@ export function App(props: AppProps) {
               });
             }
             const assistantItems = prev.filter((item) => item.kind === "assistant");
-            const newAssistantText = normalizeAssistantText(text);
+            const newAssistantText = normalizeAssistantText(unflushedAssistantText);
             const duplicatePinnedText =
               newAssistantText.length > 0 &&
               [...assistantItems, ...pendingHistoryFlushRef.current, ...historyRef.current].some(
@@ -2448,6 +2509,7 @@ export function App(props: AppProps) {
               : items;
             const flushablePrev = prev.filter((item) => item.kind !== "assistant");
             if (flushablePrev.length > 0) queueFlush(flushablePrev);
+            streamedAssistantFlushRef.current = { flushedChars: 0, text: "" };
             return [...assistantItems, ...nextItems];
           });
         },
@@ -3857,77 +3919,63 @@ export function App(props: AppProps) {
           </Box>
         );
       case "goal_progress": {
-        const isError =
-          item.status === "failed" || item.status === "fail" || item.status === "blocked";
-        const color = isError
-          ? theme.error
-          : item.phase === "worker_finished"
-            ? theme.success
-            : item.phase === "verifier_finished"
-              ? theme.accent
-              : item.phase === "orchestrator_reviewing" || item.phase === "orchestrator_working"
-                ? theme.secondary
-                : item.phase === "continuing"
-                  ? theme.warning
-                  : item.phase === "verifier_started"
-                    ? theme.accent
-                    : item.phase === "worker_started"
-                      ? theme.primary
-                      : item.phase === "terminal"
-                        ? theme.success
-                        : theme.primary;
-        const glyph =
-          item.phase === "worker_finished" || item.phase === "verifier_finished"
-            ? "✓ "
-            : item.phase === "terminal"
-              ? item.status === "passed"
-                ? "◆ "
-                : "! "
-              : "↻ ";
-        return (
-          <Box key={item.id} marginTop={1} flexDirection="column" flexShrink={1}>
-            <Text wrap="wrap">
-              <Text color={color} bold>
-                {glyph}
-              </Text>
-              <Text color={color} bold>
-                {item.title}
-              </Text>
-              {item.workerId ? <Text color={theme.textDim}> · worker {item.workerId}</Text> : null}
-            </Text>
-            {item.detail ? (
-              <Text color={theme.textDim} wrap="wrap">
-                {`  ${item.detail}`}
-              </Text>
-            ) : null}
-            {item.summaryRows && item.summaryRows.length > 0 ? (
-              <Box flexDirection="column" marginTop={1} marginLeft={2} flexShrink={1}>
-                {item.summaryRows.map((row) => (
-                  <Text key={row.label} wrap="truncate">
-                    <Text color={theme.textDim}>{row.label.padEnd(10)}</Text>
-                    <Text color={theme.text}>{row.value}</Text>
-                    {row.detail ? <Text color={theme.textDim}> · {row.detail}</Text> : null}
+        const color = goalProgressColor(item, theme);
+        const loaderStatus = goalProgressLoaderStatus(item);
+        const hasBody =
+          !!item.detail ||
+          (item.summaryRows !== undefined && item.summaryRows.length > 0) ||
+          (item.summarySections !== undefined && item.summarySections.length > 0);
+        const headerContentWidth = Math.max(10, columns - 3);
+        return withPrintedBoundarySpacing(
+          <Box key={item.id} flexDirection="column" paddingLeft={1} marginTop={1} flexShrink={1}>
+            <Box flexDirection="row">
+              <ToolUseLoader status={loaderStatus} staticDisplay />
+              <Box flexGrow={1} width={headerContentWidth}>
+                <Text wrap="wrap">
+                  <Text color={color} bold>
+                    {item.title}
                   </Text>
-                ))}
+                  {item.workerId ? (
+                    <Text color={theme.textDim}> · worker {item.workerId}</Text>
+                  ) : null}
+                </Text>
               </Box>
-            ) : null}
-            {item.summarySections && item.summarySections.length > 0 ? (
-              <Box flexDirection="column" marginTop={1} marginLeft={2} flexShrink={1}>
-                {item.summarySections.map((section) => (
-                  <Box key={section.title} flexDirection="column" marginBottom={1} flexShrink={1}>
-                    <Text color={theme.textDim} bold>
-                      {section.title}
+            </Box>
+            {hasBody ? (
+              <MessageResponse>
+                <Box flexDirection="column" flexShrink={1}>
+                  {item.detail ? (
+                    <Text color={theme.textDim} wrap="wrap">
+                      {item.detail}
                     </Text>
-                    {section.lines.map((line, index) => (
-                      <Text key={`${section.title}-${index}`} color={theme.text} wrap="wrap">
-                        {`• ${line}`}
+                  ) : null}
+                  {item.summaryRows?.map((row) => (
+                    <Text key={row.label} wrap="truncate">
+                      <Text color={theme.textDim}>{row.label.padEnd(12)}</Text>
+                      <Text color={theme.text}>{row.value}</Text>
+                      {row.detail ? <Text color={theme.textDim}> · {row.detail}</Text> : null}
+                    </Text>
+                  ))}
+                  {item.summarySections?.map((section) => (
+                    <Box key={section.title} flexDirection="column" marginTop={1} flexShrink={1}>
+                      <Text color={theme.textDim} bold>
+                        {section.title}
                       </Text>
-                    ))}
-                  </Box>
-                ))}
-              </Box>
+                      {section.lines.map((line, sectionLineIndex) => (
+                        <Text
+                          key={`${section.title}-${sectionLineIndex}`}
+                          color={theme.text}
+                          wrap="wrap"
+                        >
+                          {`• ${line}`}
+                        </Text>
+                      ))}
+                    </Box>
+                  ))}
+                </Box>
+              </MessageResponse>
             ) : null}
-          </Box>
+          </Box>,
         );
       }
       case "style_pack": {
@@ -4013,6 +4061,7 @@ export function App(props: AppProps) {
             thinking={item.thinking}
             thinkingMs={item.thinkingMs}
             renderMarkdown={renderMarkdown}
+            availableTerminalHeight={measuredLiveAreaRows}
             marginTop={assistantMarginTop}
           />
         );
@@ -4203,21 +4252,27 @@ export function App(props: AppProps) {
             </Text>
           </Box>
         );
-      case "queued":
-        return (
-          <Box key={item.id} marginTop={1}>
-            <Text color={theme.warning} bold>
-              {"• "}
-            </Text>
-            <Text color={theme.textDim}>Queued: </Text>
-            <Text color={theme.text} wrap="wrap">
-              {item.text}
-              {item.imageCount
-                ? ` (+${item.imageCount} image${item.imageCount > 1 ? "s" : ""})`
-                : ""}
-            </Text>
-          </Box>
+      case "queued": {
+        const suffix = item.imageCount
+          ? ` (+${item.imageCount} image${item.imageCount > 1 ? "s" : ""})`
+          : "";
+        return withPrintedBoundarySpacing(
+          <Box key={item.id} flexDirection="row" paddingLeft={1} marginTop={1} flexShrink={1}>
+            <Box width={2} flexShrink={0}>
+              <Text color={theme.warning} bold>
+                {"• "}
+              </Text>
+            </Box>
+            <Box flexDirection="column" flexGrow={1}>
+              <Text color={theme.text} wrap="wrap">
+                <Text color={theme.textDim}>Queued: </Text>
+                {item.text || "(empty)"}
+                {suffix}
+              </Text>
+            </Box>
+          </Box>,
         );
+      }
       case "compacting":
         return <CompactionSpinner key={item.id} staticDisplay />;
       case "compacted":
@@ -4292,7 +4347,6 @@ export function App(props: AppProps) {
       if (agentRunningRef.current) {
         queuedGoalSyntheticEventsRef.current += 1;
         void setGoalModeAndPrompt("coordinator");
-        appendGoalAgentTransition("GOAL ORCHESTRATOR QUEUED");
         appendGoalProgress({
           kind: "goal_progress",
           phase: "orchestrator_reviewing",
@@ -4304,7 +4358,6 @@ export function App(props: AppProps) {
         agentLoop.queueMessage(eventText);
         return;
       }
-      appendGoalAgentTransition("GOAL ORCHESTRATOR REVIEWING UPDATE");
       appendGoalProgress({
         kind: "goal_progress",
         phase: "orchestrator_reviewing",
@@ -4324,13 +4377,7 @@ export function App(props: AppProps) {
         clearGoalModeIfIdle();
       });
     },
-    [
-      agentLoop,
-      appendGoalAgentTransition,
-      appendGoalProgress,
-      clearGoalModeIfIdle,
-      setGoalModeAndPrompt,
-    ],
+    [agentLoop, appendGoalProgress, clearGoalModeIfIdle, setGoalModeAndPrompt],
   );
 
   const continueGoalRun = useCallback(
@@ -4415,7 +4462,6 @@ export function App(props: AppProps) {
             continueRequestedAt: undefined,
           });
         }
-        appendGoalAgentTransition("GOAL ORCHESTRATOR CONTINUING");
         appendGoalProgress({
           kind: "goal_progress",
           phase: "continuing",
@@ -4445,7 +4491,6 @@ export function App(props: AppProps) {
         });
     },
     [
-      appendGoalAgentTransition,
       appendGoalProgress,
       clearGoalModeIfIdle,
       clearGoalStatusEntry,
@@ -4460,7 +4505,6 @@ export function App(props: AppProps) {
         run.tasks.find((task) => task.id === completion.worker.goalTaskId)?.title ??
         completion.worker.goalTaskId;
       const eventText = formatGoalWorkerCompletionEvent(run, taskTitle, completion);
-      appendGoalAgentTransition("GOAL WORKER COMPLETE -> PASSING TO ORCHESTRATOR");
       appendGoalProgress({
         kind: "goal_progress",
         phase: "worker_finished",
@@ -4493,7 +4537,6 @@ export function App(props: AppProps) {
       );
     },
     [
-      appendGoalAgentTransition,
       appendGoalProgress,
       continueGoalRun,
       goalNumberForRun,
@@ -4525,7 +4568,14 @@ export function App(props: AppProps) {
   const startGoalRun = useCallback(
     (run: GoalRun) => {
       runningGoalIdsRef.current.add(run.id);
-      appendGoalAgentTransition("GOAL ORCHESTRATOR STARTED");
+      upsertGoalStatusEntry({
+        runId: run.id,
+        label: run.title,
+        phase: "orchestrating",
+        startedAt: Date.now(),
+        detail: "choosing next step",
+        goalNumber: goalNumberForRun(run.id),
+      });
       void (async () => {
         await setGoalModeAndPrompt("coordinator");
         const currentRun =
@@ -4678,7 +4728,6 @@ export function App(props: AppProps) {
           (await updateGoalTask(props.cwd, checkedRun.id, decision.task.id, {
             attempts: decision.attempts,
           })) ?? checkedRun;
-        appendGoalAgentTransition("GOAL WORKER STARTED");
         const worker = await startGoalWorker({
           cwd: props.cwd,
           provider: currentProvider,
@@ -4730,7 +4779,6 @@ export function App(props: AppProps) {
       props.cwd,
       currentProvider,
       currentModel,
-      appendGoalAgentTransition,
       appendGoalProgress,
       clearGoalModeIfIdle,
       clearGoalStatusEntry,
@@ -4773,7 +4821,6 @@ export function App(props: AppProps) {
         status: "verifying",
         continueRequestedAt: undefined,
       });
-      appendGoalAgentTransition("GOAL VERIFIER STARTED");
       appendGoalProgress({
         kind: "goal_progress",
         phase: "verifier_started",
@@ -4842,7 +4889,6 @@ export function App(props: AppProps) {
             reason: `${failureClass}: verifier exited with code ${verification.exitCode ?? 1}.`,
             content: `outputPath=${outputPath ?? ""}; durationMs=${durationMs}`,
           });
-          appendGoalAgentTransition("GOAL VERIFIER COMPLETE -> PASSING TO ORCHESTRATOR");
           appendGoalProgress({
             kind: "goal_progress",
             phase: "verifier_finished",
@@ -4883,7 +4929,6 @@ export function App(props: AppProps) {
     },
     [
       props.cwd,
-      appendGoalAgentTransition,
       appendGoalProgress,
       clearGoalModeIfIdle,
       clearGoalStatusEntry,
@@ -4919,13 +4964,7 @@ export function App(props: AppProps) {
         setLiveItems((prev) => [...prev, toErrorItem(err, getId(), "Goal")]);
       });
     },
-    [
-      appendGoalAgentTransition,
-      appendGoalProgress,
-      clearGoalModeIfIdle,
-      clearGoalStatusEntry,
-      props.cwd,
-    ],
+    [appendGoalProgress, clearGoalModeIfIdle, clearGoalStatusEntry, props.cwd],
   );
 
   // Keep refs in sync for access from stale closures (onDone)
@@ -5092,14 +5131,44 @@ export function App(props: AppProps) {
     goalStatusEntryCount: goalStatusEntries.length,
     footerFitsOnOneLine,
   });
-  const measuredLiveAreaRows = Math.max(
-    MIN_LIVE_AREA_ROWS,
-    rows - (controlsHeight > 0 ? controlsHeight : chatControlsLayout.controlsRows) - 1,
-  );
+  const stableControlsRows = controlsHeight > 0 ? controlsHeight : chatControlsLayout.controlsRows;
+  const measuredLiveAreaRows = Math.max(MIN_LIVE_AREA_ROWS, rows - stableControlsRows - 1);
   const isPixelView = overlay === "pixel";
   const hasLiveAssistantItem = liveItems.some((item) => item.kind === "assistant");
-  const visibleStreamingText =
+  const rawVisibleStreamingText =
     goalModeStateRef.current === "planner" || hasLiveAssistantItem ? "" : agentLoop.streamingText;
+  useEffect(() => {
+    if (!rawVisibleStreamingText) {
+      streamedAssistantFlushRef.current = { flushedChars: 0, text: "" };
+      return;
+    }
+    if (rawVisibleStreamingText === streamedAssistantFlushRef.current.text) return;
+    const alreadyFlushed = streamedAssistantFlushRef.current.flushedChars;
+    const unflushedText = rawVisibleStreamingText.slice(alreadyFlushed);
+    const split = splitAssistantStreamingText(unflushedText);
+    if (split.flushedText.length > 0) {
+      queueFlush([
+        {
+          kind: "assistant",
+          text: split.flushedText,
+          continuation: streamedAssistantFlushRef.current.flushedChars > 0,
+          id: getId(),
+        },
+      ]);
+      streamedAssistantFlushRef.current = {
+        flushedChars: alreadyFlushed + split.flushedText.length,
+        text: rawVisibleStreamingText,
+      };
+      return;
+    }
+    streamedAssistantFlushRef.current = {
+      ...streamedAssistantFlushRef.current,
+      text: rawVisibleStreamingText,
+    };
+  }, [rawVisibleStreamingText, queueFlush]);
+  const visibleStreamingText = rawVisibleStreamingText.slice(
+    streamedAssistantFlushRef.current.flushedChars,
+  );
   const shouldReserveStreamingSpacing =
     agentLoop.isRunning &&
     !hasLiveAssistantItem &&
@@ -5367,14 +5436,14 @@ export function App(props: AppProps) {
           }}
         />
       ) : (
-        <>
+        <Box flexDirection="column" width={columns} flexShrink={0} flexGrow={0}>
           {/* MainContent */}
           <Box
             flexDirection="column"
             maxHeight={measuredLiveAreaRows}
             flexGrow={0}
             flexShrink={1}
-            overflowY={agentLoop.isRunning ? "hidden" : undefined}
+            overflowY="hidden"
           >
             {liveItems.map((item, index, items) => renderItem(item, index, items))}
             <StreamingArea
@@ -5386,6 +5455,7 @@ export function App(props: AppProps) {
               renderMarkdown={renderMarkdown}
               availableTerminalHeight={measuredLiveAreaRows}
               assistantMarginTop={shouldTopSpaceStreamingText ? 1 : 0}
+              continuation={streamedAssistantFlushRef.current.flushedChars > 0}
             />
           </Box>
 
@@ -5548,7 +5618,7 @@ export function App(props: AppProps) {
               </Box>
             )}
           </Box>
-        </>
+        </Box>
       )}
     </Box>
   );

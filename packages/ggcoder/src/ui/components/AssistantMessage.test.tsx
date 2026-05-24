@@ -34,6 +34,18 @@ const LONG_BASH_OUTPUT =
     "fourth output row to hit the maximum preview count",
     "fifth output row should be hidden behind the overflow summary",
   ].join("\n");
+const LONG_TABLE_TEXT =
+  "| Area | Details | Status |\n" +
+  "| --- | --- | --- |\n" +
+  "| Dashboard | Provides a centralized Next.js dashboard with live account statuses, automation activity, error logs, and engagement metrics. | Ready |\n" +
+  "| Recovery | Captures long verifier failure summaries without letting table borders overflow terminal width. | Needs review |";
+const MIXED_MARKDOWN_TEXT =
+  "# Heading **one**\n\n" +
+  "Regular *italic* and `code` with https://example.com/docs.\n" +
+  "- First **item**\n" +
+  "  1. Nested-ish item\n\n" +
+  LONG_TABLE_TEXT +
+  "\n\n```ts\nconst answer = 42;\nconsole.log(answer);\n```";
 
 function linesOf(text: string): string[] {
   return stripAnsi(text)
@@ -58,14 +70,14 @@ function renderWithTerminal(element: React.ReactElement): string[] {
   }
 }
 
-function renderAssistantFrame(streaming: boolean): string[] {
-  return renderWithTerminal(<AssistantMessage text={LONG_STREAMING_TEXT} streaming={streaming} />);
+function renderAssistantFrame(streaming: boolean, text = LONG_STREAMING_TEXT): string[] {
+  return renderWithTerminal(<AssistantMessage text={text} streaming={streaming} />);
 }
 
-function renderTerminalHistoryAssistantFrame(): string[] {
+function renderTerminalHistoryAssistantFrame(text = LONG_STREAMING_TEXT): string[] {
   return linesOf(
     serializeCompletedItemToTerminalHistory(
-      { kind: "assistant", text: LONG_STREAMING_TEXT, id: "assistant-1" },
+      { kind: "assistant", text, id: "assistant-1" },
       {
         theme: loadTheme("dark"),
         columns: TERMINAL_COLUMNS,
@@ -267,6 +279,23 @@ async function renderFlushedToolThenAssistantFrame({
 }
 
 describe("AssistantMessage live layout", () => {
+  it("renders continuation assistant rows without a response dot", () => {
+    const lines = renderWithTerminal(
+      <AssistantMessage text="continued line" streaming continuation />,
+    );
+
+    expect(lines[0]).toBe("   continued line");
+  });
+
+  it("caps rendered assistant rows to the available terminal height", () => {
+    const text = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+    const lines = renderWithTerminal(
+      <AssistantMessage text={text} streaming availableTerminalHeight={5} />,
+    );
+
+    expect(lines.length).toBeLessThanOrEqual(5);
+  });
+
   it("renders the streaming frame with the same line structure as finalized history", () => {
     const streamingLines = renderAssistantFrame(true);
     const finalLines = renderAssistantFrame(false);
@@ -280,11 +309,44 @@ describe("AssistantMessage live layout", () => {
     }
   });
 
+  it("keeps streaming, completed, and terminal-history markdown rendering aligned", () => {
+    const cases = [
+      LONG_STREAMING_TEXT,
+      LONG_TABLE_TEXT,
+      MIXED_MARKDOWN_TEXT,
+      "Inline **bold**, *italic*, ~~strike~~, <u>under</u>, [docs](https://example.com), and `code`.",
+      "## List check\n- alpha **one**\n- beta `two`\n1. first\n2. second",
+      "```ts\nconst answer = 42;\nconsole.log(answer);\n```",
+    ];
+
+    for (const text of cases) {
+      const streamingLines = renderAssistantFrame(true, text);
+      const completedLines = renderAssistantFrame(false, text);
+      const historyLines = renderTerminalHistoryAssistantFrame(text);
+
+      expect(streamingLines, text).toEqual(completedLines);
+      expect(completedLines, text).toEqual(historyLines);
+      for (const line of streamingLines) {
+        expect(stringWidth(line), `${text}\n${line}`).toBeLessThanOrEqual(TERMINAL_COLUMNS);
+      }
+    }
+  });
+
   it("keeps every streaming physical line within the terminal width", () => {
     const lines = renderAssistantFrame(true);
 
     expect(lines.length).toBeGreaterThan(1);
     for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(TERMINAL_COLUMNS);
+    }
+  });
+
+  it("keeps rendered markdown tables inside the terminal width", () => {
+    const lines = renderWithTerminal(<AssistantMessage text={LONG_TABLE_TEXT} streaming={false} />);
+    const tableLines = lines.filter((line) => /[┌┬┐│├┼┤└┴┘]/.test(line));
+
+    expect(tableLines.length).toBeGreaterThan(4);
+    for (const line of tableLines) {
       expect(stringWidth(line)).toBeLessThanOrEqual(TERMINAL_COLUMNS);
     }
   });

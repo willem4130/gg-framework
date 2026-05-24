@@ -33,6 +33,7 @@ interface StreamingAreaProps {
   renderMarkdown?: boolean;
   availableTerminalHeight?: number;
   assistantMarginTop?: number;
+  continuation?: boolean;
 }
 
 export const StreamingArea = memo(function StreamingArea({
@@ -45,6 +46,7 @@ export const StreamingArea = memo(function StreamingArea({
   renderMarkdown = true,
   availableTerminalHeight,
   assistantMarginTop = 0,
+  continuation = false,
 }: StreamingAreaProps) {
   const displayText = useMemo(
     () => (streamingText ? stripDoneMarkers(streamingText) : ""),
@@ -68,6 +70,7 @@ export const StreamingArea = memo(function StreamingArea({
       renderMarkdown={renderMarkdown}
       availableTerminalHeight={availableTerminalHeight}
       marginTop={assistantMarginTop}
+      continuation={continuation}
     />
   );
 });

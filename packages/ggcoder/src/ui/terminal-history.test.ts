@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import stringWidth from "string-width";
 import {
   createTerminalHistoryPrinter,
   serializeCompletedItemToTerminalHistory,
@@ -46,6 +47,34 @@ describe("terminal history", () => {
 
     expect(rendered.split("\n").length).toBeGreaterThan(1);
     expect(rendered).toContain("  x");
+  });
+
+  it("renders assistant continuation chunks without another response dot", () => {
+    const item: CompletedItem = {
+      kind: "assistant",
+      text: "continued poem line one\ncontinued poem line two",
+      continuation: true,
+      id: "assistant-continuation",
+    };
+
+    const rendered = stripAnsi(serializeCompletedItemToTerminalHistory(item, context));
+
+    expect(rendered).not.toMatch(/^ [⏺●] /);
+    expect(rendered).toContain("   continued poem line one");
+  });
+
+  it("renders final assistant tails after streamed chunks as continuations", () => {
+    const finalTail: CompletedItem = {
+      kind: "assistant",
+      text: "final poem line after streamed chunks",
+      continuation: true,
+      id: "assistant-final-tail",
+    };
+
+    const rendered = stripAnsi(serializeCompletedItemToTerminalHistory(finalTail, context));
+
+    expect(rendered).not.toContain("⏺");
+    expect(rendered).toContain("   final poem line after streamed chunks");
   });
 
   it("serializes user rows as the prompt chip without adding a You label", () => {
@@ -192,6 +221,61 @@ describe("terminal history", () => {
     expect(rendered).toContain("  ⎿  Did 1 search in 2s");
   });
 
+  it("keeps finalized markdown tables inside the terminal width", () => {
+    const narrowContext = { ...context, columns: 52 };
+    const item: CompletedItem = {
+      kind: "assistant",
+      id: "assistant-table-1",
+      text:
+        "| Area | Details | Status |\n" +
+        "| --- | --- | --- |\n" +
+        "| Dashboard | Provides a centralized Next.js dashboard with live account statuses, automation activity, error logs, and engagement metrics. | Ready |\n" +
+        "| Recovery | Captures long verifier failure summaries without letting table borders overflow terminal width. | Needs review |",
+    };
+
+    const rendered = stripAnsi(serializeCompletedItemToTerminalHistory(item, narrowContext));
+    const tableLines = rendered.split("\n").filter((line) => /[┌┬┐│├┼┤└┴┘]/.test(line));
+
+    expect(tableLines.length).toBeGreaterThan(4);
+    for (const line of tableLines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(narrowContext.columns);
+    }
+    expect(rendered).not.toContain("| --- | --- | --- |");
+  });
+
+  it("serializes goal progress rows with tool-style gutter and agent spacing", () => {
+    let output = "";
+    const stream = {
+      write(chunk: string) {
+        output += chunk;
+        return true;
+      },
+    } as NodeJS.WriteStream;
+    const printer = createTerminalHistoryPrinter({ stream });
+    const items: CompletedItem[] = [
+      { kind: "assistant", text: "Coordinator update", id: "assistant-before-goal" },
+      {
+        kind: "goal_progress",
+        phase: "worker_started",
+        title: "Worker started: Audit /goal role contracts",
+        detail: "Task is running in the background.",
+        workerId: "worker-1",
+        status: "running",
+        id: "goal-progress-worker",
+      },
+    ];
+
+    printer.print(items, context);
+    const rendered = stripAnsi(output);
+
+    expect(rendered).toMatch(
+      /Coordinator update\n\n [⏺●] Worker started: Audit \/goal role contracts/,
+    );
+    expect(rendered).toContain(" · worker worker-1");
+    expect(rendered).toContain("  ⎿  Task is running in the background.");
+    expect(rendered).not.toContain("↻ Worker started");
+  });
+
   it("serializes subagent groups as the live tree panel shape", () => {
     const item: CompletedItem = {
       kind: "subagent_group",
@@ -211,9 +295,9 @@ describe("terminal history", () => {
 
     const rendered = stripAnsi(serializeCompletedItemToTerminalHistory(item, context));
 
-    expect(rendered).toMatch(/^ [⏺●] 1 agent completed/);
-    expect(rendered).toContain("└─ ✓ Inspect widgets");
-    expect(rendered).toContain("   ⎿ 1.5k tokens · 2s");
+    expect(rendered).toMatch(/^[⏺●] 1 agent completed/);
+    expect(rendered).toContain("  └─ ✓ Inspect widgets");
+    expect(rendered).toContain("     ⎿ 1.5k tokens · 2s");
   });
 
   it("prints each finalized item id once across remount-style replays", () => {

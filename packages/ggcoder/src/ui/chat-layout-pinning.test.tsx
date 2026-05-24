@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text, render } from "ink";
+import { Box, Text, render, renderToString } from "ink";
 import { describe, expect, it } from "vitest";
 import {
   getChatControlsLayoutDecision,
@@ -8,6 +8,9 @@ import {
   shouldTopSpaceAssistantAfterToolBoundary,
   shouldTopSpaceStreamingAssistant,
 } from "./App.js";
+import { AssistantMessage } from "./components/AssistantMessage.js";
+import { StreamingArea } from "./components/StreamingArea.js";
+import { TerminalSizeProvider } from "./hooks/useTerminalSize.js";
 import type { FooterStatusLayoutDecision } from "./components/BackgroundTasksBar.js";
 
 function stripAnsi(value: string): string {
@@ -65,6 +68,72 @@ function PinnedChatHarness({ liveCount }: { liveCount: number }) {
         <Text>CONTROL_STATUS</Text>
         <Text>CHAT_INPUT</Text>
         <Text>FOOTER</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function UnlatchedChatHarness({ liveCount }: { liveCount: number }) {
+  return (
+    <Box flexDirection="column" width={40}>
+      <Box flexDirection="column" maxHeight={5} flexShrink={1} overflowY="hidden">
+        {Array.from({ length: liveCount }, (_, index) => (
+          <Text key={index}>LIVE_ROW_{String(index + 1).padStart(2, "0")}</Text>
+        ))}
+      </Box>
+      <Box flexDirection="column" flexShrink={0} flexGrow={0}>
+        <Text>CONTROL_STATUS</Text>
+        <Text>CHAT_INPUT</Text>
+        <Text>FOOTER</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function LatchedChatHarness({ liveCount }: { liveCount: number }) {
+  return (
+    <Box flexDirection="column" width={40} height={8}>
+      <Box flexDirection="column" height={5} flexShrink={1} overflowY="hidden">
+        {Array.from({ length: liveCount }, (_, index) => (
+          <Text key={index}>LIVE_ROW_{String(index + 1).padStart(2, "0")}</Text>
+        ))}
+      </Box>
+      <Box flexDirection="column" flexShrink={0} flexGrow={0}>
+        <Text>CONTROL_STATUS</Text>
+        <Text>CHAT_INPUT</Text>
+        <Text>FOOTER</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function AppMeasuredMaxHeightHarness({
+  liveCount,
+  controlsRows,
+}: {
+  liveCount: number;
+  controlsRows: number;
+}) {
+  const rows = 10;
+  const measuredLiveAreaRows = Math.max(3, rows - (controlsRows + 1) - 1);
+  return (
+    <Box flexDirection="column" width={40} flexShrink={0} flexGrow={0}>
+      <Box
+        flexDirection="column"
+        maxHeight={measuredLiveAreaRows}
+        flexGrow={0}
+        flexShrink={1}
+        overflowY="hidden"
+      >
+        {Array.from({ length: liveCount }, (_, index) => (
+          <Text key={index}>LIVE_ROW_{String(index + 1).padStart(2, "0")}</Text>
+        ))}
+      </Box>
+      <Box flexDirection="column" flexShrink={0} flexGrow={0}>
+        <Text>FRAME_MARKER_{controlsRows}</Text>
+        {Array.from({ length: controlsRows }, (_, index) => (
+          <Text key={index}>CONTROL_ROW_{String(index + 1).padStart(2, "0")}</Text>
+        ))}
       </Box>
     </Box>
   );
@@ -218,6 +287,39 @@ describe("streaming assistant spacing", () => {
 });
 
 describe("chat controls layout", () => {
+  it("caps finalized assistant rows the same way as streaming assistant rows", () => {
+    const text = Array.from({ length: 24 }, (_, index) => `final line ${index + 1}`).join("\n");
+    const streaming = stripAnsi(
+      renderToString(
+        <TerminalSizeProvider>
+          <StreamingArea
+            isRunning
+            streamingText={text}
+            streamingThinking=""
+            availableTerminalHeight={6}
+          />
+        </TerminalSizeProvider>,
+        { columns: 60 },
+      ),
+    )
+      .split("\n")
+      .filter(Boolean);
+    const finalized = stripAnsi(
+      renderToString(
+        <TerminalSizeProvider>
+          <AssistantMessage text={text} availableTerminalHeight={6} />
+        </TerminalSizeProvider>,
+        { columns: 60 },
+      ),
+    )
+      .split("\n")
+      .filter(Boolean);
+
+    expect(streaming.length).toBeLessThanOrEqual(6);
+    expect(finalized.length).toBeLessThanOrEqual(6);
+    expect(finalized.length).toBe(streaming.length);
+  });
+
   it("reserves stable controls rows while the agent is running", () => {
     const layout = getChatControlsLayoutDecision({
       rows: 24,
@@ -369,6 +471,108 @@ describe("compact chat layout", () => {
     rerender(<PinnedChatHarness liveCount={0} />);
 
     expect(getLastFrameLines(output)).toEqual(["CONTROL_STATUS", "CHAT_INPUT", "FOOTER"]);
+    unmount();
+  });
+
+  it("reproduces controls being pushed off the terminal bottom when long live output is not latched", () => {
+    let output = "";
+    const stdout = {
+      columns: 40,
+      rows: 8,
+      write(chunk: string) {
+        output += chunk;
+        return true;
+      },
+      on() {},
+      off() {},
+    } as unknown as NodeJS.WriteStream;
+
+    const { unmount } = render(<UnlatchedChatHarness liveCount={12} />, {
+      stdout,
+      columns: 40,
+      rows: 8,
+      debug: true,
+    });
+
+    const lines = getLastFrameLines(output);
+    expect(lines.at(-3)).toBe("CONTROL_STATUS");
+    expect(lines.at(-2)).toBe("CHAT_INPUT");
+    expect(lines.at(-1)).toBe("FOOTER");
+    expect(lines[0]).not.toBe("LIVE_ROW_01");
+    unmount();
+  });
+
+  it("keeps controls latched to the terminal bottom when long live output overflows", () => {
+    let output = "";
+    const stdout = {
+      columns: 40,
+      rows: 8,
+      write(chunk: string) {
+        output += chunk;
+        return true;
+      },
+      on() {},
+      off() {},
+    } as unknown as NodeJS.WriteStream;
+
+    const { unmount } = render(<LatchedChatHarness liveCount={12} />, {
+      stdout,
+      columns: 40,
+      rows: 8,
+      debug: true,
+    });
+
+    const lines = getLastFrameLines(output);
+    expect(lines.at(-3)).toBe("CONTROL_STATUS");
+    expect(lines.at(-2)).toBe("CHAT_INPUT");
+    expect(lines.at(-1)).toBe("FOOTER");
+    expect(lines).toHaveLength(8);
+    unmount();
+  });
+
+  it("keeps the App layout capped by measured controls during long live output", () => {
+    let output = "";
+    const stdout = {
+      columns: 40,
+      rows: 10,
+      write(chunk: string) {
+        output += chunk;
+        return true;
+      },
+      on() {},
+      off() {},
+    } as unknown as NodeJS.WriteStream;
+
+    const { rerender, unmount } = render(
+      <AppMeasuredMaxHeightHarness liveCount={14} controlsRows={5} />,
+      {
+        stdout,
+        columns: 40,
+        rows: 10,
+        debug: true,
+      },
+    );
+
+    rerender(<AppMeasuredMaxHeightHarness liveCount={14} controlsRows={5} />);
+
+    const text = stripAnsi(output);
+    const lastMarker = text.lastIndexOf("FRAME_MARKER_5");
+    const previousMarker = text.lastIndexOf("FRAME_MARKER_5", lastMarker - 1);
+    const frame = text
+      .slice(previousMarker === -1 ? 0 : previousMarker + "FRAME_MARKER_5".length, lastMarker)
+      .split("\n")
+      .filter(Boolean);
+    const finalRows = text.slice(lastMarker).split("\n").filter(Boolean);
+
+    expect(frame).not.toContain("CONTROL_ROW_03LIVE_ROW_03");
+    expect(finalRows).toEqual([
+      "FRAME_MARKER_5",
+      "CONTROL_ROW_01",
+      "CONTROL_ROW_02",
+      "CONTROL_ROW_03",
+      "CONTROL_ROW_04",
+      "CONTROL_ROW_05",
+    ]);
     unmount();
   });
 });
