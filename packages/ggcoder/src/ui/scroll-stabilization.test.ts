@@ -4,7 +4,7 @@ import {
   getStaticHistoryKey,
   isTallLiveUserMessage,
   shouldStabilizeOverlayPaneRerender,
-} from "./App.js";
+} from "./layout-decisions.js";
 
 describe("getScrollStabilizationDecision", () => {
   it("preserves Static and disables auto-follow when the user is intentionally scrolled and output arrives", () => {

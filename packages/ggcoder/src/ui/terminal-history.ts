@@ -3,7 +3,6 @@ import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
 import type { Provider } from "@kenkaiiii/gg-ai";
 import { getModel } from "../core/model-registry.js";
-import { LANGUAGE_DISPLAY_NAMES, type LanguageId } from "../core/language-detector.js";
 import type { CompletedItem } from "./App.js";
 import type { PasteInfo } from "./components/InputArea.js";
 import { BLACK_CIRCLE, RETURN_SYMBOL } from "./constants/figures.js";
@@ -12,6 +11,41 @@ import type { Theme } from "./theme/theme.js";
 import { getUserMessageDisplayParts } from "./utils/user-message-display.js";
 import { buildToolGroupSummary, segmentsToPlainText } from "./tool-group-summary.js";
 import { renderMarkdownToAnsiLines } from "./utils/markdown-renderer.js";
+import { isAgentSpacingKind } from "./terminal-history-spacing.js";
+import {
+  MAX_OUTPUT_LINES,
+  RESPONSE_LEFT_PADDING,
+  USER_MESSAGE_BACKGROUND,
+  USER_MESSAGE_BOTTOM_FILL,
+  USER_MESSAGE_HORIZONTAL_PADDING,
+  USER_MESSAGE_PREFIX,
+  USER_MESSAGE_TOP_FILL,
+  block,
+  color,
+  dim,
+  formatCompactTokens,
+  formatDuration,
+  formatHistoryWrite,
+  gradientLine,
+  indent,
+  stripAnsi,
+  truncatePlain,
+  userChipSegment,
+  wrapPlain,
+} from "./terminal-history-format.js";
+import {
+  normalizeStatusText,
+  renderCompacted,
+  renderCompacting,
+  renderError,
+  renderGoal,
+  renderPlanEvent,
+  renderSetupHint,
+  renderStatusLine,
+  renderStepDone,
+  renderStylePack,
+  renderUpdateNotice,
+} from "./terminal-history-status-renderers.js";
 
 const LOGO_LINES = [" ▄▀▀▀ ▄▀▀▀", " █ ▀█ █ ▀█", " ▀▄▄▀ ▀▄▄▀"];
 const GRADIENT = [
@@ -31,26 +65,9 @@ const GRADIENT = [
 const GAP = "   ";
 const LOGO_WIDTH = 9;
 const SIDE_BY_SIDE_MIN = LOGO_WIDTH + GAP.length + 20;
-const MAX_OUTPUT_LINES = 4;
-const RESPONSE_LEFT_PADDING = " ";
-const USER_MESSAGE_BACKGROUND = "#374151";
-const USER_MESSAGE_PREFIX = "> ";
-const USER_MESSAGE_TOP_FILL = "▄";
-const USER_MESSAGE_BOTTOM_FILL = "▀";
-const USER_MESSAGE_HORIZONTAL_PADDING = 2;
-const ANSI_ESCAPE_PATTERN = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "gu");
 const COMPACT_TOOLS = new Set(["read", "grep", "find", "ls", "source_path"]);
 const STATE_TOOLS = new Set(["tasks", "goals"]);
 const SERVER_STYLE_TOOLS = new Set(["web_search"]);
-const SINGLE_LEFT_BORDER = "│";
-const ROUND_BORDER = {
-  topLeft: "╭",
-  topRight: "╮",
-  bottomLeft: "╰",
-  bottomRight: "╯",
-  horizontal: "─",
-  vertical: "│",
-} as const;
 
 export interface TerminalHistoryPrinter {
   print(
@@ -74,34 +91,6 @@ export interface TerminalHistoryContext {
   model: string;
   provider: Provider;
   cwd: string;
-}
-
-function isAgentSpacingKind(kind: CompletedItem["kind"]): boolean {
-  return [
-    "assistant",
-    "queued",
-    "goal_progress",
-    "tool_start",
-    "tool_done",
-    "tool_group",
-    "server_tool_start",
-    "server_tool_done",
-    "subagent_group",
-    "info",
-    "error",
-    "stopped",
-    "plan_transition",
-    "goal_agent_transition",
-    "thinking_transition",
-    "model_transition",
-    "theme_transition",
-    "plan_event",
-    "update_notice",
-    "compacting",
-    "compacted",
-    "style_pack",
-    "setup_hint",
-  ].includes(kind);
 }
 
 export function createTerminalHistoryPrinter({
@@ -262,81 +251,13 @@ export function serializeCompletedItemToTerminalHistory(
   }
 }
 
-function normalizeStatusText(text: string): string {
-  return text.replace(/\\n/g, "\n").replace(/^\n+|\n+$/g, "");
-}
-
-function renderStatusLine(
-  glyph: string,
-  text: string,
-  context: TerminalHistoryContext,
-  glyphColor: string,
-  bold: boolean,
-  textAlreadyStyled = false,
-): string {
-  const prefix = ` ${color(glyphColor, glyph, true)} `;
-  const continuation = "   ";
-  const body = textAlreadyStyled
-    ? text
-    : color(bold ? glyphColor : context.theme.textDim, text, bold);
-  return prefixFirstLine(body, prefix, continuation);
-}
-
-function renderRoundBorderBox(
-  lines: readonly string[],
-  context: TerminalHistoryContext,
-  borderColor: string,
-): string {
-  const longestLineWidth = Math.max(
-    0,
-    ...lines.map((lineText) => stringWidth(stripAnsi(lineText))),
-  );
-  const maxFrameWidth = Math.max(4, context.columns - stringWidth(RESPONSE_LEFT_PADDING));
-  const frameWidth = Math.max(4, Math.min(maxFrameWidth, longestLineWidth + 4));
-  const contentWidth = Math.max(1, frameWidth - 4);
-  const horizontal = color(borderColor, ROUND_BORDER.horizontal.repeat(frameWidth - 2));
-  const top = `${color(borderColor, ROUND_BORDER.topLeft)}${horizontal}${color(borderColor, ROUND_BORDER.topRight)}`;
-  const bottom = `${color(borderColor, ROUND_BORDER.bottomLeft)}${horizontal}${color(borderColor, ROUND_BORDER.bottomRight)}`;
-  const rows = lines.flatMap((lineText) => wrapBoxLine(lineText, contentWidth));
-  const body = rows.map((lineText) => {
-    const fillWidth = Math.max(0, contentWidth - stringWidth(stripAnsi(lineText)));
-    return `${color(borderColor, ROUND_BORDER.vertical)} ${lineText}${" ".repeat(fillWidth)} ${color(borderColor, ROUND_BORDER.vertical)}`;
-  });
-  return indent([top, ...body, bottom].join("\n"), RESPONSE_LEFT_PADDING);
-}
-
-function renderLeftBorderBox(
-  lines: readonly string[],
-  borderColor: string,
-  options: { padding?: number } = {},
-): string {
-  const padding = " ".repeat(options.padding ?? 1);
-  return indent(
-    lines
-      .map((lineText) => `${color(borderColor, SINGLE_LEFT_BORDER)}${padding}${lineText}`)
-      .join("\n"),
-    RESPONSE_LEFT_PADDING,
-  );
-}
-
-function formatHistoryWrite(
-  output: string,
-  options: { leadingSeparator: boolean; trailingBlankLine: boolean },
-): string {
-  const trimmed = output.replace(/\n+$/u, "");
-  if (trimmed.length === 0) return "";
-  const leading = options.leadingSeparator ? "\n" : "";
-  const trailing = options.trailingBlankLine ? "\n\n" : "\n";
-  return `${leading}${trimmed}${trailing}`;
-}
-
 function renderBanner(context: TerminalHistoryContext): string {
   const modelInfo = getModel(context.model);
   const modelName = modelInfo?.name ?? context.model;
   const home = process.env.HOME ?? "";
   const displayPath =
     home && context.cwd.startsWith(home) ? `~${context.cwd.slice(home.length)}` : context.cwd;
-  const logo = LOGO_LINES.map((lineText) => gradientLine(lineText));
+  const logo = LOGO_LINES.map((lineText) => gradientLine(lineText, GRADIENT));
 
   if (context.columns < SIDE_BY_SIDE_MIN) {
     return block([
@@ -357,10 +278,6 @@ function renderBanner(context: TerminalHistoryContext): string {
     `${logo[2]}${GAP}${color(context.theme.primary, "/goal")} ${dim(context, "start goal · ")}${color(context.theme.primary, "Shift+Tab")} ${dim(context, "toggle thinking")}`,
     "",
   ]);
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(ANSI_ESCAPE_PATTERN, "");
 }
 
 function renderUser(
@@ -602,14 +519,6 @@ function renderSubAgentGroup(
   return block(lines);
 }
 
-function renderGoal(
-  title: string,
-  workerId: string | undefined,
-  context: TerminalHistoryContext,
-): string {
-  return `${RESPONSE_LEFT_PADDING}${color(context.theme.success, "▶", true)} ${dim(context, "Goal: ")}${color(context.theme.success, title)}${workerId ? dim(context, ` · worker ${workerId}`) : ""}`;
-}
-
 function renderGoalProgress(
   item: Extract<CompletedItem, { kind: "goal_progress" }>,
   context: TerminalHistoryContext,
@@ -653,114 +562,6 @@ function renderGoalProgress(
     }
   }
   return block([header, ...messageResponse(bodyLines, context)]);
-}
-
-function renderError(
-  headline: string,
-  message: string,
-  guidance: string,
-  context: TerminalHistoryContext,
-): string {
-  const lines = [color(context.theme.error, `✗ ${headline}`)];
-  if (message && message !== headline) {
-    lines.push(dim(context, indent(wrapPlain(message, context.columns - 4), "  ")));
-  }
-  lines.push(dim(context, indent(wrapPlain(`→ ${guidance}`, context.columns - 4), "  ")));
-  return indent(block(lines), RESPONSE_LEFT_PADDING);
-}
-
-function renderStylePack(
-  added: readonly LanguageId[],
-  showSetupHint: boolean,
-  context: TerminalHistoryContext,
-): string {
-  const names = added.map((id) => LANGUAGE_DISPLAY_NAMES[id] ?? id).join(", ");
-  const headerLabel = added.length > 1 ? "STYLE PACKS ACTIVE" : "STYLE PACK ACTIVE";
-  const lines = [
-    `${color(context.theme.language, "◆ ", true)}${color(context.theme.language, headerLabel, true)}`,
-    color(context.theme.text, names, true),
-  ];
-  if (showSetupHint) {
-    lines.push(
-      "",
-      `${dim(context, "Tip: run ")}${color(context.theme.language, "/setup", true)}${dim(context, " to audit this project against the active pack(s)")}`,
-    );
-  }
-  return renderRoundBorderBox(lines, context, context.theme.language);
-}
-
-function renderSetupHint(context: TerminalHistoryContext): string {
-  return renderRoundBorderBox(
-    [
-      `${color(context.theme.language, "◆ ", true)}${color(context.theme.language, "NO STYLE PACKS DETECTED", true)}`,
-      dim(context, "This directory has no recognized language manifest at its root."),
-      "",
-      `${dim(context, "Tip: run ")}${color(context.theme.language, "/setup", true)}${dim(context, " to audit project hygiene or bootstrap a new project from scratch")}`,
-    ],
-    context,
-    context.theme.language,
-  );
-}
-
-function renderUpdateNotice(text: string, context: TerminalHistoryContext): string {
-  return renderRoundBorderBox(
-    [color(context.theme.commandColor, `✨ ${text}`, true)],
-    context,
-    context.theme.commandColor,
-  );
-}
-
-function renderCompacting(context: TerminalHistoryContext): string {
-  return renderLeftBorderBox(
-    [
-      `${color(context.theme.warning, "· ")}${dim(context, "Compacting conversation")}${dim(context, "...")}`,
-    ],
-    context.theme.warning,
-    { padding: 2 },
-  );
-}
-
-function renderCompacted(
-  originalCount: number,
-  newCount: number,
-  tokensBefore: number,
-  tokensAfter: number,
-  context: TerminalHistoryContext,
-): string {
-  const reduction = tokensBefore > 0 ? Math.round((1 - tokensAfter / tokensBefore) * 100) : 0;
-  return renderLeftBorderBox(
-    [
-      `${color(context.theme.warning, "⟳ ")}${dim(context, "Conversation compacted")}`,
-      dim(
-        context,
-        `  ${originalCount} → ${newCount} messages · ${formatTokenCount(tokensBefore)} → ${formatTokenCount(tokensAfter)} tokens · ${reduction}% reduction`,
-      ),
-    ],
-    context.theme.warning,
-  );
-}
-
-function renderPlanEvent(
-  event: "approved" | "rejected" | "dismissed",
-  detail: string | undefined,
-  context: TerminalHistoryContext,
-): string {
-  const labels = {
-    approved: "Plan approved",
-    rejected: "Plan rejected",
-    dismissed: "Plan dismissed",
-  } satisfies Record<typeof event, string>;
-  const lines = [color(context.theme.commandColor, ` ○ ${labels[event]}`, true)];
-  if (detail) lines[0] += dim(context, ` — "${detail}"`);
-  return block(lines);
-}
-
-function renderStepDone(
-  stepNum: number,
-  description: string,
-  context: TerminalHistoryContext,
-): string {
-  return `${RESPONSE_LEFT_PADDING}${color(context.theme.success, "✓", true)} ${color(context.theme.success, `Step ${stepNum} done`, true)}${description ? dim(context, ` — ${description}`) : ""}`;
 }
 
 function renderServerStyleToolDone(
@@ -930,14 +731,6 @@ function prefixFirstLine(text: string, firstPrefix: string, nextPrefix: string):
       return `${index === 0 ? firstPrefix : nextPrefix}${lineText}`;
     })
     .join("\n");
-}
-
-function formatDuration(ms: number): string {
-  const totalSec = Math.round(ms / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
 }
 
 function getToolHeaderParts(
@@ -1264,79 +1057,4 @@ function colorCode(
 ): string {
   if (lang === "text") return color(context.theme.text, text);
   return color(context.theme.text, text);
-}
-
-function formatCompactTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-function formatTokenCount(n: number): string {
-  if (n >= 1000) {
-    const k = n / 1000;
-    return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
-  }
-  return String(n);
-}
-
-function block(lines: readonly string[]): string {
-  return lines.filter((lineText) => lineText.length > 0).join("\n");
-}
-
-function wrapPlain(text: string, width: number): string {
-  return wrapAnsi(text, Math.max(10, width), { hard: true, wordWrap: true });
-}
-
-function wrapBoxLine(text: string, width: number): string[] {
-  if (text.length === 0) return [""];
-  return wrapAnsi(text, Math.max(1, width), { hard: true, wordWrap: true, trim: false }).split(
-    "\n",
-  );
-}
-
-function indent(text: string, prefix: string): string {
-  return text
-    .split("\n")
-    .map((lineText) => `${prefix}${lineText}`)
-    .join("\n");
-}
-
-function truncatePlain(text: string, width: number): string {
-  const max = Math.max(1, width);
-  if (stringWidth(text) <= max) return text;
-  let result = "";
-  for (const char of text) {
-    if (stringWidth(`${result}${char}…`) > max) break;
-    result += char;
-  }
-  return `${result}…`;
-}
-
-function color(hex: string, text: string, bold = false): string {
-  const styled = chalk.hex(hex)(text);
-  return bold ? chalk.bold(styled) : styled;
-}
-
-function userChipSegment(text: string, foregroundHex: string, bold = false): string {
-  const styled = chalk.bgHex(USER_MESSAGE_BACKGROUND).hex(foregroundHex)(text);
-  return bold ? chalk.bold(styled) : styled;
-}
-
-function dim(context: TerminalHistoryContext, text: string): string {
-  return color(context.theme.textDim, text);
-}
-
-function gradientLine(text: string): string {
-  let colorIndex = 0;
-  let result = "";
-  for (const char of text) {
-    if (char === " ") {
-      result += char;
-      continue;
-    }
-    result += chalk.hex(GRADIENT[colorIndex % GRADIENT.length] ?? GRADIENT[0])(char);
-    colorIndex++;
-  }
-  return result;
 }

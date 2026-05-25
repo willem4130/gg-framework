@@ -494,11 +494,16 @@ async function resolveRun(cwd: string, id?: string): Promise<GoalRun | null> {
   return getActiveGoalRun(cwd);
 }
 
+function goalStorageCwd(cwd: string): string {
+  return process.env.GG_GOAL_PROJECT_PATH || cwd;
+}
+
 export function createGoalsTool(
   cwd: string,
   goalModeRef?: { current: GoalMode },
   getGoalReferences?: () => readonly GoalReference[] | undefined,
 ): AgentTool<typeof GoalsParams> {
+  const storageCwd = goalStorageCwd(cwd);
   return {
     name: "goals",
     description:
@@ -513,10 +518,10 @@ export function createGoalsTool(
         case "create": {
           if (!args.title) return "Error: title is required for create.";
           if (!args.goal) return "Error: goal is required for create.";
-          const existing = args.run_id ? await getGoalRun(cwd, args.run_id) : null;
+          const existing = args.run_id ? await getGoalRun(storageCwd, args.run_id) : null;
           const prerequisites = args.prerequisites
             ? await Promise.all(
-                args.prerequisites.map((item) => normalizePrerequisiteInput(cwd, item)),
+                args.prerequisites.map((item) => normalizePrerequisiteInput(storageCwd, item)),
               )
             : undefined;
           const harness = args.harness?.map((item) => ({
@@ -581,7 +586,7 @@ export function createGoalsTool(
               ...setupBlockers,
             ]),
           );
-          const run = await upsertGoalRun(cwd, {
+          const run = await upsertGoalRun(storageCwd, {
             ...(args.run_id ? { id: args.run_id } : {}),
             title: args.title,
             goal: args.goal,
@@ -600,7 +605,7 @@ export function createGoalsTool(
             ...(verifier ? { verifier } : {}),
             blockers,
           });
-          await appendGoalDecision(cwd, run.id, {
+          await appendGoalDecision(storageCwd, run.id, {
             kind: args.run_id ? "update" : "create",
             reason: `criteria=${run.successCriteria.length}; prerequisites=${run.prerequisites.length}; harness=${run.harness.length}; evidence_plan=${run.evidencePlan.length}; references=${run.references?.length ?? 0}; verifier=${run.verifier?.command ? "configured" : "missing"}`,
           });
@@ -614,16 +619,16 @@ export function createGoalsTool(
 
         case "status": {
           if (args.run_id) {
-            const run = await getGoalRun(cwd, args.run_id);
+            const run = await getGoalRun(storageCwd, args.run_id);
             return run ? formatRun(run) : `Error: no goal found matching id "${args.run_id}".`;
           }
-          const runs = await loadGoalRuns(cwd);
+          const runs = await loadGoalRuns(storageCwd);
           if (runs.length === 0) return "No goals.";
           return runs.map(formatRun).join("\n");
         }
 
         case "prerequisite": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           const prereqId = args.prerequisite_id;
           if (!prereqId && !args.prerequisite_label) {
@@ -672,12 +677,12 @@ export function createGoalsTool(
             blockers: goalHasBlockingPrerequisites({ ...run, prerequisites }) ? run.blockers : [],
           };
           const setupBlockers = setupBlockersForRun(prerequisiteRun);
-          const updated = await upsertGoalRun(cwd, {
+          const updated = await upsertGoalRun(storageCwd, {
             ...prerequisiteRun,
             status: statusAfterSetupCheck(prerequisiteRun, setupBlockers),
             blockers: blockersAfterSetupCheck(prerequisiteRun, setupBlockers),
           });
-          await appendGoalDecision(cwd, updated.id, {
+          await appendGoalDecision(storageCwd, updated.id, {
             kind: "prerequisites",
             reason: `Prerequisite ${patch.label} is ${patch.status}; run is ${updated.status}.`,
           });
@@ -687,7 +692,7 @@ export function createGoalsTool(
         }
 
         case "task": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           if (!args.task_id && (!args.task_title || !args.task_prompt)) {
             return "Error: task_title and task_prompt are required when adding a task.";
@@ -708,7 +713,7 @@ export function createGoalsTool(
           }
           const taskStatus = asTaskStatus(args.task_status);
           const mergeStrategy = asTaskMergeStrategy(args.merge_strategy);
-          const updated = await updateGoalTask(cwd, run.id, taskId, {
+          const updated = await updateGoalTask(storageCwd, run.id, taskId, {
             id: taskId,
             ...(args.task_title ? { title: args.task_title } : {}),
             ...(args.task_prompt ? { prompt: args.task_prompt } : {}),
@@ -746,11 +751,11 @@ export function createGoalsTool(
         }
 
         case "evidence": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           if (!args.evidence_label && !args.summary)
             return "Error: evidence_label or summary is required.";
-          const updated = await appendGoalEvidence(cwd, run.id, {
+          const updated = await appendGoalEvidence(storageCwd, run.id, {
             kind: asEvidenceKind(args.evidence_kind),
             label: args.evidence_label ?? "Evidence",
             ...(args.evidence_path ? { path: args.evidence_path } : {}),
@@ -763,7 +768,7 @@ export function createGoalsTool(
         }
 
         case "evidence_plan": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           const evidencePlanItemId = args.evidence_plan_item_id;
           if (!evidencePlanItemId) return "Error: evidence_plan_item_id is required.";
@@ -794,12 +799,12 @@ export function createGoalsTool(
             blockers: canRecoverBlockedRun ? [] : run.blockers,
           };
           const setupBlockers = setupBlockersForRun(evidencePlanRun);
-          const updated = await upsertGoalRun(cwd, {
+          const updated = await upsertGoalRun(storageCwd, {
             ...evidencePlanRun,
             status: statusAfterSetupCheck(evidencePlanRun, setupBlockers),
             blockers: blockersAfterSetupCheck(evidencePlanRun, setupBlockers),
           });
-          await appendGoalDecision(cwd, updated.id, {
+          await appendGoalDecision(storageCwd, updated.id, {
             kind: "evidence_plan",
             reason: `Evidence-plan item ${existing.label} is ${status}.`,
           });
@@ -807,7 +812,7 @@ export function createGoalsTool(
         }
 
         case "verify": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           const result = {
             status: asVerificationStatus(args.verification_status),
@@ -851,7 +856,7 @@ export function createGoalsTool(
             ],
           };
           const completion = canCompleteGoalRun(runWithVerifier);
-          const updated = await upsertGoalRun(cwd, {
+          const updated = await upsertGoalRun(storageCwd, {
             ...runWithVerifier,
             status:
               result.status === "pass" && completion.ok
@@ -872,7 +877,7 @@ export function createGoalsTool(
         }
 
         case "audit": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           const verifierResult = run.verifier?.lastResult;
           if (!verifierResult || verifierResult.status !== "pass") {
@@ -908,7 +913,7 @@ export function createGoalsTool(
           };
           const auditCheck = hasFreshGoalCompletionAudit(runWithAudit);
           const completion = canCompleteGoalRun(runWithAudit);
-          const updated = await upsertGoalRun(cwd, {
+          const updated = await upsertGoalRun(storageCwd, {
             ...runWithAudit,
             status:
               completionAudit.status === "pass" && auditCheck.ok && completion.ok
@@ -919,7 +924,7 @@ export function createGoalsTool(
             blockers: completionAudit.status === "pass" && auditCheck.ok ? [] : run.blockers,
             activeWorkerId: undefined,
           });
-          await appendGoalDecision(cwd, updated.id, {
+          await appendGoalDecision(storageCwd, updated.id, {
             kind: "completion_audit",
             reason: auditCheck.reason,
             content: `status=${completionAudit.status}; verifierCheckedAt=${completionAudit.verifierCheckedAt ?? ""}; outputPath=${completionAudit.outputPath ?? ""}`,
@@ -930,7 +935,7 @@ export function createGoalsTool(
         case "pause":
         case "resume":
         case "complete": {
-          const run = await resolveRun(cwd, args.run_id);
+          const run = await resolveRun(storageCwd, args.run_id);
           if (!run) return "Error: no active goal run found.";
           let status: GoalRunStatus;
           if (args.action === "pause") {
@@ -943,7 +948,7 @@ export function createGoalsTool(
               ? formatGoalBlockingPrerequisites(run)
               : "";
             if (missing) {
-              const updated = await upsertGoalRun(cwd, {
+              const updated = await upsertGoalRun(storageCwd, {
                 ...run,
                 status: "blocked",
                 blockers: appendGoalBlockers(run.blockers, missing),
@@ -976,7 +981,7 @@ export function createGoalsTool(
             };
             const decision = decideGoalNextAction(resumed);
             const blockedReason = decision.kind === "blocked" ? decision.reason : undefined;
-            const updated = await upsertGoalRun(cwd, {
+            const updated = await upsertGoalRun(storageCwd, {
               ...resumed,
               ...(blockedReason
                 ? {
@@ -994,7 +999,7 @@ export function createGoalsTool(
                   }
                 : {}),
             });
-            await appendGoalDecision(cwd, updated.id, {
+            await appendGoalDecision(storageCwd, updated.id, {
               kind: "resume",
               reason:
                 decision.kind === "wait" ||
@@ -1021,7 +1026,7 @@ export function createGoalsTool(
             if (!completion.ok) return `Error: cannot complete goal: ${completion.reason}`;
             status = "passed";
           }
-          const updated = await upsertGoalRun(cwd, { ...run, status });
+          const updated = await upsertGoalRun(storageCwd, { ...run, status });
           return `Goal "${updated.title}" is now ${updated.status}.`;
         }
       }

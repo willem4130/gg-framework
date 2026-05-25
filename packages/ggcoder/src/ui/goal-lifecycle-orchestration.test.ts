@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { GoalRun, GoalTask } from "../core/goal-store.js";
 import { canCompleteGoalRun, decideGoalNextAction } from "../core/goal-controller.js";
+import type { CompletedItem } from "./app-items.js";
 import {
   appendGoalProgressDraft,
   completedItemsWithDurableGoalTerminalProgress,
   formatGoalTerminalProgress,
-  nextGoalModeAfterAgentDone,
   routeGoalSyntheticEvent,
   truncateGoalProgressText,
-  type CompletedItem,
-} from "./App.js";
+} from "./goal-progress.js";
+import { nextGoalModeAfterAgentDone } from "./layout-decisions.js";
 
 function goalRun(overrides: Partial<GoalRun> = {}): GoalRun {
   return {

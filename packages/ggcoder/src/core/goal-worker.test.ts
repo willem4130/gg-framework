@@ -6,11 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { getGoalRun, updateGoalTask, upsertGoalRun } from "./goal-store.js";
+import type { GoalWorktreeCommandRunner } from "./goal-worktree.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const killProcessTreeMock = vi.hoisted(() => vi.fn());
 
-vi.mock("node:child_process", () => ({ spawn: spawnMock }));
+vi.mock("node:child_process", () => ({ spawn: spawnMock, execFile: vi.fn() }));
 vi.mock("../utils/process.js", () => ({ killProcessTree: killProcessTreeMock }));
 
 class FakeChild extends EventEmitter {
@@ -69,6 +70,7 @@ async function start(onComplete = vi.fn()) {
     goalRunId: "goal-a",
     goalTaskId: "task-a",
     prompt: "Do deterministic work",
+    isolateWorktree: false,
     onComplete,
   });
   return { mod, record, onComplete };
@@ -106,6 +108,7 @@ describe("goal worker failure propagation", () => {
       goalRunId: "goal-a",
       goalTaskId: "task-a",
       prompt: "Hang forever",
+      isolateWorktree: false,
       timeoutMs: 10,
       onComplete,
     });
@@ -152,7 +155,7 @@ describe("goal worker failure propagation", () => {
     );
     expect(prompt).toContain("command/file evidence");
     expect(prompt).toContain("isolated git worktree");
-    expect(prompt).toContain("Do not merge or touch the main checkout");
+    expect(prompt).toContain("do not merge or touch the main checkout");
     expect(prompt).toContain("candidate packet");
     expect(prompt).toContain("base SHA");
     expect(prompt).toContain("diffstat");
@@ -177,6 +180,7 @@ describe("goal worker failure propagation", () => {
       goalRunId: "goal-a",
       goalTaskId: "task-a",
       prompt: "Do deterministic work",
+      isolateWorktree: false,
     });
 
     const args = spawnMock.mock.calls[0]?.[1] as string[];
@@ -200,6 +204,97 @@ describe("goal worker failure propagation", () => {
       ]),
     );
     expect(args.at(-1)).toBe("Do deterministic work");
+  });
+
+  it("creates and launches implementation workers inside an isolated git worktree by default", async () => {
+    const worktreeCalls: Array<readonly string[]> = [];
+    const runner: GoalWorktreeCommandRunner = {
+      execFile: vi.fn(async (_file, args) => {
+        worktreeCalls.push(args);
+        return { stdout: "", stderr: "" };
+      }),
+    };
+    const mod = await import("./goal-worker.js");
+
+    const record = await mod.startGoalWorker({
+      cwd: tmpProject,
+      provider: "anthropic",
+      model: "claude-test",
+      goalRunId: "goal-a",
+      goalTaskId: "task-a",
+      prompt: "Do deterministic work",
+      worktreeBaseRef: "base-sha",
+      worktreesRoot: path.join(tmpProject, "worktrees"),
+      worktreeCommandRunner: runner,
+    });
+
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as {
+      cwd: string;
+      env: Record<string, string>;
+    };
+    const run = await getGoalRun(tmpProject, "goal-a");
+    expect(record.projectPath).toBe(tmpProject);
+    expect(record.cwd).toBe(path.join(tmpProject, "worktrees", `task-a-${record.id}`));
+    expect(record.worktree).toMatchObject({
+      baseRef: "base-sha",
+      branchName: `goal/goal-a/task-a-${record.id}`,
+      path: record.cwd,
+    });
+    expect(spawnOptions.cwd).toBe(record.cwd);
+    expect(spawnOptions.env.GG_GOAL_PROJECT_PATH).toBe(tmpProject);
+    expect(worktreeCalls).toEqual([
+      ["status", "--porcelain"],
+      ["worktree", "add", "-b", `goal/goal-a/task-a-${record.id}`, record.cwd, "base-sha"],
+    ]);
+    expect(run?.tasks[0]?.worktree).toMatchObject({
+      baseRef: "base-sha",
+      branchName: `goal/goal-a/task-a-${record.id}`,
+      path: record.cwd,
+      status: "created",
+    });
+    expect(
+      run?.evidence.some(
+        (item) => item.label === `Worker ${record.id} worktree created` && item.path === record.cwd,
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks a task instead of launching when isolated worktree creation is unsafe", async () => {
+    const runner: GoalWorktreeCommandRunner = {
+      execFile: vi.fn(async (_file, args) =>
+        args[0] === "status"
+          ? { stdout: " M packages/dirty.ts\n", stderr: "" }
+          : { stdout: "", stderr: "" },
+      ),
+    };
+    const mod = await import("./goal-worker.js");
+
+    await expect(
+      mod.startGoalWorker({
+        cwd: tmpProject,
+        provider: "anthropic",
+        model: "claude-test",
+        goalRunId: "goal-a",
+        goalTaskId: "task-a",
+        prompt: "Do deterministic work",
+        worktreeCommandRunner: runner,
+      }),
+    ).rejects.toThrow("Cannot launch isolated Goal worker from a dirty checkout");
+
+    const run = await getGoalRun(tmpProject, "goal-a");
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(run?.tasks[0]).toMatchObject({
+      status: "blocked",
+      lastSummary: expect.stringContaining("dirty checkout"),
+    });
+    expect(run?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: expect.stringContaining("worktree failed"),
+          content: expect.stringContaining("packages/dirty.ts"),
+        }),
+      ]),
+    );
   });
 
   it("exports a testable worker system prompt/context helper", async () => {

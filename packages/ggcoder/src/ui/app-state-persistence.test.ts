@@ -1,21 +1,19 @@
 import { describe, expect, it } from "vitest";
+import type { CompletedItem, GoalProgressItem } from "./app-items.js";
+import { routePromptCommandInput } from "./prompt-routing.js";
+import { formatGoalTerminalProgress, getGoalContinuationChoiceKey } from "./goal-progress.js";
+import { getNextGeneratedItemId } from "./item-helpers.js";
 import {
-  formatGoalTerminalProgress,
   getDoneFlushDecision,
   getGoalActivationPaneTransition,
-  getGoalContinuationChoiceKey,
   getGoalSetupFinishedPaneTransition,
   getGoalSetupPaneTransitionAfterRun,
-  getNextGeneratedItemId,
   nextGoalModeAfterAgentDone,
-  routePromptCommandInput,
   shouldHideHistoryForOverlayView,
   shouldHideStaticItemsForOverlayView,
   shouldResetUIForGoalSetupPaneTransition,
   shouldStabilizeOverlayPaneRerender,
-  type CompletedItem,
-  type GoalProgressItem,
-} from "./App.js";
+} from "./layout-decisions.js";
 import { buildGoalSummaryRows } from "./goal-summary.js";
 import type { GoalRun } from "../core/goal-store.js";
 

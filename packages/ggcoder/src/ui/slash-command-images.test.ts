@@ -8,7 +8,7 @@ import {
   isGoalPromptCommandName,
   routePromptCommandInput,
   runGoalPromptSetupSequence,
-} from "./App.js";
+} from "./prompt-routing.js";
 
 describe("prompt-template slash commands with attachments", () => {
   it("routes /goal input to a short setup wrapper containing user args", () => {

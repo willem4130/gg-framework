@@ -15,6 +15,11 @@ import {
   getGoalRun,
   type GoalRun,
 } from "./goal-store.js";
+import {
+  createGoalWorkerWorktree,
+  type GoalWorktreeCommandRunner,
+  type GoalWorktreeCandidate,
+} from "./goal-worktree.js";
 
 const DEFAULT_GOAL_WORKER_MAX_TURNS = 12;
 export const DEFAULT_GOAL_WORKER_TIMEOUT_MS = 30 * 60 * 1000;
@@ -26,6 +31,8 @@ export interface GoalWorkerRecord {
   goalRunId: string;
   goalTaskId: string;
   cwd: string;
+  projectPath: string;
+  worktree?: GoalWorktreeCandidate;
   provider: Provider;
   model: string;
   startedAt: string;
@@ -72,6 +79,10 @@ export interface StartGoalWorkerOptions extends GoalWorkerContext {
   thinkingLevel?: ThinkingLevel;
   maxTurns?: number;
   timeoutMs?: number;
+  isolateWorktree?: boolean;
+  worktreeBaseRef?: string;
+  worktreesRoot?: string;
+  worktreeCommandRunner?: GoalWorktreeCommandRunner;
   onComplete?: (completion: GoalWorkerCompletion) => void;
 }
 
@@ -93,7 +104,7 @@ export function buildGoalWorkerSystemPrompt(context: GoalWorkerContext): string 
     "Follow only the assigned Goal task prompt, which is passed as this worker's user message. Keep changes focused, use local/free tools, source_path/docs/kencode real-code research when relevant, and translate the requested outcome into observable proof: model the intended experience, identify goal-specific failure modes, choose the required senses/signals, then create the simplest reliable local/free proof path for this domain. " +
     "Create needed scripts/fixtures/harnesses only when they directly observe those signals. Use tests, local CLIs, dev servers, browser/simulator/device screenshots, video/frame inspection, logs, generated assets, protocol traces, database assertions, API probes, contract tests, performance measurements, source/docs comparison, or other artifacts as appropriate; do not default to generic tests, scripts, screenshots, benchmarks, or simulations, and do not rely on narrative or human visual inspection. For mobile/UI, prefer local simulator/browser evidence such as iOS Simulator screenshots when available before requiring a physical phone. " +
     "Run requested verification and update durable Goal state with the goals tool using command/file evidence, screenshot/log evidence, not narrative or human visual inspection. Worker-started background processes, including dev servers, are worker-owned and are cleaned up when this worker CLI exits; if a later worker/verifier needs a persistent server, record instructions or metadata for the orchestrator to start/provide the localhost URL instead of relying on your background process. " +
-    "Treat your cwd as an isolated git worktree candidate when the launcher provides one. Do not merge or touch the main checkout. At completion, record a candidate packet with base SHA, branch/worktree path when available, changed files, diffstat, patch path or how to reproduce the patch, verifier command/result, evidence paths, and risk notes. " +
+    "Your cwd is the worker candidate checkout. For implementation tasks the launcher should provide an isolated git worktree, so do not merge or touch the main checkout. At completion, record a candidate packet with base SHA, branch/worktree path, changed files, diffstat, patch path or how to reproduce the patch, verifier command/result, evidence paths, and risk notes. " +
     "Preserve and report any task-graph metadata from the assigned prompt, including depends_on, parallel_group, expected_changed_scope, and merge_strategy, so the coordinator can parallelize independent tasks and hold dependent work until prerequisites are integrated. " +
     `Record evidence and task status with goals({ action: "evidence" | "task", run_id: "${context.goalRunId}", task_id: "${context.goalTaskId}", ... }) for goal ${context.goalRunId}, task ${context.goalTaskId}. ` +
     "Do not mark the whole goal complete; only the orchestrator/verifier can complete it."
@@ -109,7 +120,7 @@ function completionMatchesProject(
   completion: GoalWorkerCompletion,
   projectPath: string | undefined,
 ): boolean {
-  return projectPath === undefined || completion.worker.cwd === projectPath;
+  return projectPath === undefined || completion.worker.projectPath === projectPath;
 }
 
 function emitGoalWorkerCompletion(completion: GoalWorkerCompletion): void {
@@ -191,7 +202,36 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
   if (existing) return existing;
 
   const workerId = randomUUID().slice(0, 8);
-  const workerDir = join(projectDir(options.cwd), "workers");
+  const projectPath = options.cwd;
+  let worktree: GoalWorktreeCandidate | undefined;
+  if (options.isolateWorktree !== false) {
+    try {
+      worktree = await createGoalWorkerWorktree({
+        projectPath,
+        goalRunId: options.goalRunId,
+        goalTaskId: options.goalTaskId,
+        workerId,
+        ...(options.worktreeBaseRef ? { baseRef: options.worktreeBaseRef } : {}),
+        ...(options.worktreesRoot ? { worktreesRoot: options.worktreesRoot } : {}),
+        ...(options.worktreeCommandRunner ? { commandRunner: options.worktreeCommandRunner } : {}),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await updateGoalTask(projectPath, options.goalRunId, options.goalTaskId, {
+        status: "blocked",
+        workerId,
+        lastSummary: message,
+      });
+      await appendGoalEvidence(projectPath, options.goalRunId, {
+        kind: "summary",
+        label: `Worker ${workerId} worktree failed`,
+        content: message,
+      });
+      throw error;
+    }
+  }
+  const workerCwd = worktree?.path ?? projectPath;
+  const workerDir = join(projectDir(projectPath), "workers");
   await mkdir(workerDir, { recursive: true });
   const logFile = join(workerDir, `${workerId}.ndjson`);
   const logStream = createWriteStream(logFile, { flags: "a" });
@@ -207,7 +247,7 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
     "--system-prompt",
     options.systemPrompt ??
       buildGoalWorkerSystemPrompt({
-        cwd: options.cwd,
+        cwd: workerCwd,
         goalRunId: options.goalRunId,
         goalTaskId: options.goalTaskId,
         ...(options.taskTitle ? { taskTitle: options.taskTitle } : {}),
@@ -222,9 +262,9 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
   cliArgs.push(options.prompt);
 
   const child = spawn(process.execPath, [cliPath, ...cliArgs], {
-    cwd: options.cwd,
+    cwd: workerCwd,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...process.env, GG_GOAL_PROJECT_PATH: projectPath },
   });
 
   const record: GoalWorkerRecord = {
@@ -232,7 +272,9 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
     pid: child.pid ?? 0,
     goalRunId: options.goalRunId,
     goalTaskId: options.goalTaskId,
-    cwd: options.cwd,
+    cwd: workerCwd,
+    projectPath,
+    ...(worktree ? { worktree } : {}),
     provider: options.provider,
     model: options.model,
     startedAt: new Date().toISOString(),
@@ -243,11 +285,20 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
   workers.set(workerId, record);
   children.set(workerId, child);
 
-  await updateGoalTask(options.cwd, options.goalRunId, options.goalTaskId, {
+  await updateGoalTask(projectPath, options.goalRunId, options.goalTaskId, {
     status: "running",
     workerId,
+    ...(worktree ? { worktree: { ...worktree, status: "created" } } : {}),
   });
-  await setRunWorker(options.cwd, options.goalRunId, workerId);
+  if (worktree) {
+    await appendGoalEvidence(projectPath, options.goalRunId, {
+      kind: "summary",
+      label: `Worker ${workerId} worktree created`,
+      content: `base_ref=${worktree.baseRef}; branch=${worktree.branchName}; path=${worktree.path}`,
+      path: worktree.path,
+    });
+  }
+  await setRunWorker(projectPath, options.goalRunId, workerId);
 
   let summary = "";
   let stderr = "";
@@ -272,7 +323,7 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
             ? (event.args as Record<string, unknown>)
             : {};
         record.currentActivity = formatActivity(name, args);
-        void appendGoalEvidence(options.cwd, options.goalRunId, {
+        void appendGoalEvidence(projectPath, options.goalRunId, {
           kind: "log",
           label: `Worker ${workerId} tool start`,
           content: record.currentActivity,
@@ -340,18 +391,18 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
             stderr.trim() ||
             (code === 0 ? "Worker completed." : "Worker failed.");
       const finalCode = timedOut ? 124 : (code ?? (record.status === "done" ? 0 : 1));
-      await updateGoalTask(options.cwd, options.goalRunId, options.goalTaskId, {
+      await updateGoalTask(projectPath, options.goalRunId, options.goalTaskId, {
         status: record.status,
         workerId,
         lastSummary: finalSummary,
       });
-      await appendGoalEvidence(options.cwd, options.goalRunId, {
+      await appendGoalEvidence(projectPath, options.goalRunId, {
         kind: "log",
         label: timedOut ? `Worker ${workerId} timeout` : `Worker ${workerId} ${record.status}`,
         content: finalSummary,
         path: logFile,
       });
-      await setRunWorker(options.cwd, options.goalRunId, undefined);
+      await setRunWorker(projectPath, options.goalRunId, undefined);
       const completion: GoalWorkerCompletion = {
         worker: { ...record },
         summary: finalSummary,
@@ -379,18 +430,18 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
       record.exitCode = 1;
       record.status = "failed";
       const finalSummary = `Failed to spawn Goal worker: ${err.message}`;
-      await updateGoalTask(options.cwd, options.goalRunId, options.goalTaskId, {
+      await updateGoalTask(projectPath, options.goalRunId, options.goalTaskId, {
         status: "failed",
         workerId,
         lastSummary: finalSummary,
       });
-      await appendGoalEvidence(options.cwd, options.goalRunId, {
+      await appendGoalEvidence(projectPath, options.goalRunId, {
         kind: "log",
         label: `Worker ${workerId} spawn failed`,
         content: err.message,
         path: logFile,
       });
-      await setRunWorker(options.cwd, options.goalRunId, undefined);
+      await setRunWorker(projectPath, options.goalRunId, undefined);
       const completion: GoalWorkerCompletion = {
         worker: { ...record },
         summary: finalSummary,
@@ -416,7 +467,7 @@ export async function startGoalWorker(options: StartGoalWorkerOptions): Promise<
 
 export function listGoalWorkers(projectPath?: string): GoalWorkerRecord[] {
   const records = [...workers.values()];
-  return projectPath ? records.filter((record) => record.cwd === projectPath) : records;
+  return projectPath ? records.filter((record) => record.projectPath === projectPath) : records;
 }
 
 export async function stopGoalWorker(workerId: string): Promise<string> {
@@ -432,18 +483,18 @@ export async function stopGoalWorker(workerId: string): Promise<string> {
     child.kill("SIGTERM");
   }
   children.delete(workerId);
-  await updateGoalTask(record.cwd, record.goalRunId, record.goalTaskId, {
+  await updateGoalTask(record.projectPath, record.goalRunId, record.goalTaskId, {
     status: "blocked",
     workerId,
     lastSummary: "Worker stopped by user.",
   });
-  await appendGoalEvidence(record.cwd, record.goalRunId, {
+  await appendGoalEvidence(record.projectPath, record.goalRunId, {
     kind: "summary",
     label: `Worker ${workerId} stopped`,
     content: "Worker stopped by user.",
     path: record.logFile,
   });
-  await setRunWorker(record.cwd, record.goalRunId, undefined);
+  await setRunWorker(record.projectPath, record.goalRunId, undefined);
   return `Goal worker ${workerId} stopped.`;
 }
 

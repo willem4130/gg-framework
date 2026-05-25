@@ -235,7 +235,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("Forbidden: `edit`, `write`, `subagent`, verifier execution");
     expect(prompt).toContain("Workers are the only actors that implement project changes");
     expect(prompt).toContain("Goal Worktree Isolation Contract");
-    expect(prompt).toContain("isolated candidate worktrees");
+    expect(prompt).toContain("isolated candidate worktree tasks");
     expect(prompt).toContain("base SHA");
     expect(prompt).toContain("candidate packet");
     expect(prompt).toContain("Goal Task DAG Contract");
@@ -301,7 +301,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("Workers and UI-driven verifier execution are the only actors");
     expect(prompt).toContain("Goal Worktree Isolation Contract");
     expect(prompt).toContain("candidate packets first");
-    expect(prompt).toContain("integration worktree");
+    expect(prompt).toContain("main/integration checkout");
     expect(prompt).toContain("verify after merge");
     expect(prompt).toContain("Goal Task DAG Contract");
     expect(prompt).toContain("zero-dependency");

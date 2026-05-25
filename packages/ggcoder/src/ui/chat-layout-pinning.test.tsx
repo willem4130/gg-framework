@@ -1,13 +1,12 @@
 import React from "react";
 import { Box, Text, render, renderToString } from "ink";
 import { describe, expect, it } from "vitest";
+import { partitionCompleted, pinStreamingTextBeforeToolBoundary } from "./item-helpers.js";
 import {
   getChatControlsLayoutDecision,
-  partitionCompleted,
-  pinStreamingTextBeforeToolBoundary,
   shouldTopSpaceAssistantAfterToolBoundary,
   shouldTopSpaceStreamingAssistant,
-} from "./App.js";
+} from "./layout-decisions.js";
 import { AssistantMessage } from "./components/AssistantMessage.js";
 import { StreamingArea } from "./components/StreamingArea.js";
 import { TerminalSizeProvider } from "./hooks/useTerminalSize.js";

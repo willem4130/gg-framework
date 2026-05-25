@@ -5,7 +5,12 @@ import path from "node:path";
 import type { ToolExecuteResult } from "@kenkaiiii/gg-agent";
 import { createGoalsTool } from "./goals.js";
 import { decideGoalNextAction } from "../core/goal-controller.js";
-import { getGoalRun, upsertGoalRun, type GoalReference } from "../core/goal-store.js";
+import {
+  getActiveGoalRun,
+  getGoalRun,
+  upsertGoalRun,
+  type GoalReference,
+} from "../core/goal-store.js";
 
 let tmpBase: string;
 let tmpProject: string;
@@ -168,6 +173,58 @@ describe("goals tool state guards", () => {
         "Goal setup incomplete: verifier_command is required.",
       ]),
     );
+  });
+
+  it("routes worker goal tool writes to the original project path from isolated worktrees", async () => {
+    const workerCwd = await fs.mkdtemp(path.join(os.tmpdir(), "goals-tool-worker-cwd-"));
+    const previousProjectPath = process.env.GG_GOAL_PROJECT_PATH;
+    try {
+      process.env.GG_GOAL_PROJECT_PATH = tmpProject;
+      await upsertGoalRun(tmpProject, {
+        id: "worker-env-goal",
+        title: "Worker env goal",
+        goal: "Persist from isolated worker cwd",
+        status: "ready",
+        successCriteria: [],
+        prerequisites: [],
+        harness: [],
+        evidencePlan: [],
+        tasks: [],
+        evidence: [],
+        blockers: [],
+      });
+
+      const tool = createGoalsTool(workerCwd);
+      const result = await tool.execute(
+        {
+          action: "evidence",
+          evidence_kind: "summary",
+          evidence_label: "Worker isolated evidence",
+          evidence_content: "stored on original project",
+        },
+        { signal: new AbortController().signal, toolCallId: "test-call" },
+      );
+
+      const projectRun = await getGoalRun(tmpProject, "worker-env-goal");
+      const workerRun = await getActiveGoalRun(workerCwd);
+      expect(result).toBe('Evidence added to "Worker env goal".');
+      expect(workerRun).toBeNull();
+      expect(projectRun?.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: "Worker isolated evidence",
+            content: "stored on original project",
+          }),
+        ]),
+      );
+    } finally {
+      if (previousProjectPath === undefined) {
+        delete process.env.GG_GOAL_PROJECT_PATH;
+      } else {
+        process.env.GG_GOAL_PROJECT_PATH = previousProjectPath;
+      }
+      await fs.rm(workerCwd, { recursive: true, force: true });
+    }
   });
 
   it("updates an explicit run_id task and evidence when no active goal exists in the caller cwd", async () => {

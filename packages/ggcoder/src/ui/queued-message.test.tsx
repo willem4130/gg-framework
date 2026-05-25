@@ -7,7 +7,8 @@ import {
   createTerminalHistoryPrinter,
   serializeCompletedItemToTerminalHistory,
 } from "./terminal-history.js";
-import { isActiveItem, type CompletedItem } from "./App.js";
+import type { CompletedItem } from "./app-items.js";
+import { isActiveItem } from "./item-helpers.js";
 import { loadTheme, ThemeContext } from "./theme/theme.js";
 import { TerminalSizeProvider } from "./hooks/useTerminalSize.js";
 import type { Theme } from "./theme/theme.js";

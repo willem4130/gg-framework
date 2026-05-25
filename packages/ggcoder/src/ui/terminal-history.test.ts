@@ -4,7 +4,7 @@ import {
   createTerminalHistoryPrinter,
   serializeCompletedItemToTerminalHistory,
 } from "./terminal-history.js";
-import type { CompletedItem } from "./App.js";
+import type { CompletedItem } from "./app-items.js";
 import { loadTheme } from "./theme/theme.js";
 
 const context = {

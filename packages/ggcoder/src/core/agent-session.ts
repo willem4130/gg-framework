@@ -25,13 +25,12 @@ import { log } from "./logger.js";
 import { setEstimatorModel } from "./compaction/token-estimator.js";
 import { discoverAgents } from "./agents.js";
 import {
-  FOCUSED_REPO_MAP_MAX_CHARS,
-  FIRST_TURN_REPO_MAP_MAX_CHARS,
   buildRepoMap,
   createRepoMapCache,
   type RepoMapCache,
   type RepoMapSnapshot,
 } from "./repomap.js";
+import { getRepoMapBudgetForContext } from "./repomap-budget.js";
 import {
   getLatestUserText,
   injectRepoMapContextMessages,
@@ -758,10 +757,10 @@ export class AgentSession {
   }
 
   private getRepoMapBudget(): number {
-    const userTurns = this.messages.filter((message) => message.role === "user").length;
-    if (userTurns <= 1 && this.repoMapReadFiles.size === 0) return FIRST_TURN_REPO_MAP_MAX_CHARS;
-    if (this.repoMapReadFiles.size > 0) return FOCUSED_REPO_MAP_MAX_CHARS;
-    return FOCUSED_REPO_MAP_MAX_CHARS + 1000;
+    return getRepoMapBudgetForContext({
+      messages: this.messages,
+      readFileCount: this.repoMapReadFiles.size,
+    });
   }
 
   private async prepareDynamicContext(latestUserPrompt?: string): Promise<Message[]> {

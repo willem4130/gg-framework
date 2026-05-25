@@ -3,7 +3,7 @@ import { Box, Text, renderToString } from "ink";
 import { describe, expect, it } from "vitest";
 import stripAnsi from "strip-ansi";
 import stringWidth from "string-width";
-import type { CompletedItem } from "./App.js";
+import type { CompletedItem } from "./app-items.js";
 import { serializeCompletedItemToTerminalHistory } from "./terminal-history.js";
 import { loadTheme, ThemeContext } from "./theme/theme.js";
 import type { Theme } from "./theme/theme.js";

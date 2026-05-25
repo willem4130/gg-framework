@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getNextThinkingLevel } from "./App.js";
+import {
+  getNextThinkingLevel,
+  getSupportedThinkingLevels,
+  isThinkingLevelSupported,
+} from "./thinking-level.js";
 
 describe("getNextThinkingLevel", () => {
   it("cycles OpenAI GPT models through medium, high, xhigh, then off", () => {
@@ -7,6 +11,13 @@ describe("getNextThinkingLevel", () => {
     expect(getNextThinkingLevel("openai", "gpt-5.5", "medium")).toBe("high");
     expect(getNextThinkingLevel("openai", "gpt-5.5", "high")).toBe("xhigh");
     expect(getNextThinkingLevel("openai", "gpt-5.5", "xhigh")).toBeUndefined();
+  });
+
+  it("recognizes every OpenAI GPT cycle level as supported", () => {
+    expect(getSupportedThinkingLevels("openai", "gpt-5.5")).toEqual(["medium", "high", "xhigh"]);
+    expect(isThinkingLevelSupported("openai", "gpt-5.5", "medium")).toBe(true);
+    expect(isThinkingLevelSupported("openai", "gpt-5.5", "high")).toBe(true);
+    expect(isThinkingLevelSupported("openai", "gpt-5.5", "xhigh")).toBe(true);
   });
 
   it("keeps non-OpenAI models as a binary max-thinking toggle", () => {
