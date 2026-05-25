@@ -1053,6 +1053,31 @@ export function nextGoalModeAfterAgentDone({
   return "off";
 }
 
+export type GoalSyntheticEventRoute =
+  | { action: "queue"; nextQueuedSyntheticEvents: number; nextGoalMode: "coordinator" }
+  | { action: "run"; nextQueuedSyntheticEvents: number; nextGoalMode: "coordinator" };
+
+export function routeGoalSyntheticEvent({
+  agentRunning,
+  queuedSyntheticEvents,
+}: {
+  agentRunning: boolean;
+  queuedSyntheticEvents: number;
+}): GoalSyntheticEventRoute {
+  if (agentRunning) {
+    return {
+      action: "queue",
+      nextQueuedSyntheticEvents: queuedSyntheticEvents + 1,
+      nextGoalMode: "coordinator",
+    };
+  }
+  return {
+    action: "run",
+    nextQueuedSyntheticEvents: queuedSyntheticEvents,
+    nextGoalMode: "coordinator",
+  };
+}
+
 export function hasParagraphBreakLiveUserMessage(text: string): boolean {
   return /\n[ \t]*\n/.test(text);
 }
@@ -1417,6 +1442,7 @@ export interface AppProps {
   goalReferencesRef?: { current: readonly GoalReference[] | undefined };
   repoMapChangedFilesRef?: { current: Set<string> };
   repoMapReadFilesRef?: { current: Set<string> };
+  connectInitialMcpTools?: () => Promise<AgentTool[]>;
   terminalHistoryPrinter?: TerminalHistoryPrinter;
   /**
    * Wired by `renderApp`. Tears down the current Ink instance and renders
@@ -1940,6 +1966,32 @@ export function App(props: AppProps) {
     },
     [rebuildSystemPrompt],
   );
+
+  useEffect(() => {
+    if (!props.connectInitialMcpTools) return;
+    let cancelled = false;
+    void props
+      .connectInitialMcpTools()
+      .then((mcpTools) => {
+        if (cancelled || mcpTools.length === 0) return;
+        setCurrentTools((prev) => {
+          const next = [...prev.filter((tool) => !tool.name.startsWith("mcp__")), ...mcpTools];
+          currentToolsRef.current = next;
+          void replaceSystemPrompt({ tools: next });
+          return next;
+        });
+      })
+      .catch((err: unknown) => {
+        log(
+          "WARN",
+          "mcp",
+          `MCP initialization failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.connectInitialMcpTools, replaceSystemPrompt]);
 
   const setGoalModeAndPrompt = useCallback(
     async (
@@ -4381,9 +4433,13 @@ export function App(props: AppProps) {
         eventInfo?.kind === "worker"
           ? `Inspecting worker result${eventInfo.task ? ` for ${eventInfo.task}` : ""}.`
           : `Inspecting verifier result${eventInfo?.status ? ` (${eventInfo.status})` : ""}.`;
-      if (agentRunningRef.current) {
-        queuedGoalSyntheticEventsRef.current += 1;
-        void setGoalModeAndPrompt("coordinator");
+      const route = routeGoalSyntheticEvent({
+        agentRunning: agentRunningRef.current,
+        queuedSyntheticEvents: queuedGoalSyntheticEventsRef.current,
+      });
+      if (route.action === "queue") {
+        queuedGoalSyntheticEventsRef.current = route.nextQueuedSyntheticEvents;
+        void setGoalModeAndPrompt(route.nextGoalMode);
         appendGoalProgress({
           kind: "goal_progress",
           phase: "orchestrator_reviewing",

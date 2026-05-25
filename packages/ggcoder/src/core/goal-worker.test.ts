@@ -183,6 +183,25 @@ describe("goal worker failure propagation", () => {
     expect(args).toEqual(expect.arrayContaining(["--thinking", "xhigh"]));
   });
 
+  it("launches workers through JSON mode so they use the AgentSession auto-compaction path", async () => {
+    await start();
+
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "--json",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-test",
+        "--max-turns",
+        "12",
+        "--system-prompt",
+      ]),
+    );
+    expect(args.at(-1)).toBe("Do deterministic work");
+  });
+
   it("exports a testable worker system prompt/context helper", async () => {
     const mod = await import("./goal-worker.js");
 

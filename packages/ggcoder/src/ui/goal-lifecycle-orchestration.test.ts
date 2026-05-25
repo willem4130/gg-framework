@@ -6,6 +6,7 @@ import {
   completedItemsWithDurableGoalTerminalProgress,
   formatGoalTerminalProgress,
   nextGoalModeAfterAgentDone,
+  routeGoalSyntheticEvent,
   truncateGoalProgressText,
   type CompletedItem,
 } from "./App.js";
@@ -177,6 +178,30 @@ describe("/goal UI orchestration lifecycle", () => {
     expect(once).toHaveLength(1);
     expect(twice).toHaveLength(1);
     expect(afterDifferentRow).toHaveLength(3);
+  });
+
+  it("queues worker completion synthetic events while the orchestrator is busy", () => {
+    expect(
+      routeGoalSyntheticEvent({
+        agentRunning: true,
+        queuedSyntheticEvents: 2,
+      }),
+    ).toEqual({
+      action: "queue",
+      nextQueuedSyntheticEvents: 3,
+      nextGoalMode: "coordinator",
+    });
+
+    expect(
+      routeGoalSyntheticEvent({
+        agentRunning: false,
+        queuedSyntheticEvents: 2,
+      }),
+    ).toEqual({
+      action: "run",
+      nextQueuedSyntheticEvents: 2,
+      nextGoalMode: "coordinator",
+    });
   });
 
   it("keeps coordinator mode only while Goal continuation work remains", () => {

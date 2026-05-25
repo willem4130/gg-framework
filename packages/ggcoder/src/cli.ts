@@ -60,6 +60,7 @@ import { runAgentHomeMode } from "./modes/agent-home-mode.js";
 import { renderLoginSelector } from "./ui/login.js";
 import { renderSessionSelector } from "./ui/sessions.js";
 import type { CompletedItem, GoalProgressDraft } from "./ui/App.js";
+import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { segmentDisplayText, stripDoneMarkers } from "./utils/plan-steps.js";
 import { formatUserError } from "./utils/error-handler.js";
 import type { Message, Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
@@ -666,20 +667,18 @@ async function runInkTUI(opts: {
     return rebuilt;
   };
 
-  // Connect MCP servers
+  // MCP startup can involve `npx` installing/booting servers. Do it after the
+  // TUI paints so a slow network or npm cache never looks like "nothing happens".
   const mcpManager = new MCPClientManager();
-  try {
-    const providerApiKey =
-      provider === "glm" ? credentialsByProvider["glm"]?.accessToken : undefined;
-    const mcpTools = await mcpManager.connectAll(getMCPServers(provider, providerApiKey));
-    tools.push(...mcpTools);
-  } catch (err) {
-    log(
-      "WARN",
-      "mcp",
-      `MCP initialization failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  let initialMcpConnectPromise: Promise<AgentTool[]> | undefined;
+  const connectInitialMcpTools = async (): Promise<AgentTool[]> => {
+    initialMcpConnectPromise ??= (async () => {
+      const providerApiKey =
+        provider === "glm" ? credentialsByProvider["glm"]?.accessToken : undefined;
+      return mcpManager.connectAll(getMCPServers(provider, providerApiKey));
+    })();
+    return initialMcpConnectPromise;
+  };
 
   const systemPrompt = await buildSystemPrompt(
     cwd,
@@ -814,6 +813,7 @@ async function runInkTUI(opts: {
     rebuildToolsForCwd,
     repoMapChangedFilesRef,
     repoMapReadFilesRef,
+    connectInitialMcpTools,
   });
 
   closeLogger();
