@@ -14,6 +14,7 @@ export const DEFAULT_GOAL_TASK_ATTEMPT_LIMIT = 5;
 export const DEFAULT_GOAL_VERIFIER_FIX_LIMIT = 5;
 
 export const APPLY_INTEGRATION_TO_MAIN_TASK_TITLE = "Apply integrated worktree to main";
+export const COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE = "Commit integrated goal changes";
 const FINAL_COMPLETION_AUDIT_TASK_TITLE = "Audit Goal completion evidence";
 const DEFAULT_GOAL_COMPLETION_AUDIT_LIMIT = 3;
 
@@ -239,6 +240,10 @@ function hasApplyIntegrationTask(run: GoalRun): boolean {
   return run.tasks.some((task) => task.title === APPLY_INTEGRATION_TO_MAIN_TASK_TITLE);
 }
 
+function hasCommitIntegratedChangesTask(run: GoalRun): boolean {
+  return run.tasks.some((task) => task.title === COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE);
+}
+
 function pendingAfterDependenciesImplementationTasks(run: GoalRun): GoalTask[] {
   return run.tasks.filter(
     (task) =>
@@ -254,11 +259,30 @@ function appliedIntegrationEvidence(run: GoalRun): boolean {
   );
 }
 
+function committedIntegrationEvidence(run: GoalRun): boolean {
+  return run.evidence.some((item) => item.label === "Integrated Goal changes committed");
+}
+
+function hasIntegratedWorktreeChanges(run: GoalRun): boolean {
+  return pendingAfterDependenciesImplementationTasks(run).length > 0 || appliedIntegrationEvidence(run);
+}
+
 function needsMainIntegrationApplyTask(run: GoalRun): boolean {
   return (
     pendingAfterDependenciesImplementationTasks(run).length > 0 &&
     !hasApplyIntegrationTask(run) &&
     !appliedIntegrationEvidence(run)
+  );
+}
+
+function needsIntegratedGoalChangesCommitTask(run: GoalRun): boolean {
+  return (
+    hasIntegratedWorktreeChanges(run) &&
+    appliedIntegrationEvidence(run) &&
+    run.verifier?.lastResult?.status === "pass" &&
+    !latestNonAuditWorkerEvidenceAfterVerifier(run) &&
+    !hasCommitIntegratedChangesTask(run) &&
+    !committedIntegrationEvidence(run)
   );
 }
 
@@ -414,9 +438,19 @@ function buildApplyIntegrationToMainTaskPrompt(run: GoalRun): string {
   return (
     `Goal: ${run.goal}\n\n` +
     referencePromptSection(run.references) +
-    `Apply accepted integration worktree changes into the user's main checkout before any release, verifier, final audit, or completion. This task intentionally runs in the main checkout, not a new isolated worktree.\n\n` +
+    `Apply accepted integration worktree changes into the user's main checkout before any release, verifier, final audit, commit, or completion. This task intentionally runs in the main checkout, not a new isolated worktree.\n\n` +
     `Integrated/after-dependencies worker outputs to apply:\n${integrationTasks || "- none recorded"}\n\n` +
-    `For each integrated worktree, inspect its candidate packet, patch, diffstat, changed files, base SHA, verification logs, and risk notes. Apply or port only accepted changes to the main checkout; reject stale/risky/unrelated artifacts with durable evidence. Preserve user work. Run targeted checks in the main checkout after applying. Record durable evidence with label "Integrated worktree applied to main" containing the source worktree(s), accepted/rejected artifacts, changed files, diffstat, commands/results, commit-needed note, and restart-needed note. Do not mark the whole Goal complete.`
+    `For each integrated worktree, inspect its candidate packet, patch, diffstat, changed files, base SHA, verification logs, and risk notes. Apply or port only accepted changes to the main checkout; reject stale/risky/unrelated artifacts with durable evidence. Preserve user work. Run targeted checks in the main checkout after applying. Record durable evidence with label "Integrated worktree applied to main" containing the source worktree(s), accepted/rejected artifacts, changed files, diffstat, commands/results, and restart-needed note. Do not commit changes in this task; the controller will schedule a separate commit task after main-checkout verification evidence exists. Do not mark the whole Goal complete.`
+  );
+}
+
+function buildCommitIntegratedGoalChangesTaskPrompt(run: GoalRun): string {
+  return (
+    `Goal: ${run.goal}\n\n` +
+    referencePromptSection(run.references) +
+    `Commit verified integrated Goal changes in the user's main checkout before final audit or completion. This task intentionally runs in the main checkout, not a new isolated worktree.\n\n` +
+    `Before committing, inspect git status and recent durable evidence to confirm accepted worktree changes were applied to main and main-checkout verification passed. Preserve user work: commit only files that belong to this Goal's accepted integrated changes, and do not stage unrelated user edits. If unrelated dirty files exist, block with exact paths and instructions instead of committing them.\n\n` +
+    `Run a targeted pre-commit check appropriate to the changed files if no fresh main-checkout verification evidence exists. Create one git commit with a concise message describing the Goal changes. Record durable evidence with label "Integrated Goal changes committed" containing the commit hash, staged/committed files, verification command/result used for confidence, and any restart-needed note. Do not mark the whole Goal complete.`
   );
 }
 
@@ -496,6 +530,13 @@ export function canCompleteGoalRun(run: GoalRun): GoalCompletionCheck {
 
   const requiredEvidence = hasRequiredGoalEvidence(run);
   if (!requiredEvidence.ok) return requiredEvidence;
+
+  if (hasIntegratedWorktreeChanges(run) && !committedIntegrationEvidence(run)) {
+    return {
+      ok: false,
+      reason: "Integrated Goal changes have not been committed in the main checkout.",
+    };
+  }
 
   const verifierResult = run.verifier?.lastResult;
   if (!verifierResult) {
@@ -713,7 +754,17 @@ export function decideGoalNextAction(
       title: APPLY_INTEGRATION_TO_MAIN_TASK_TITLE,
       prompt: buildApplyIntegrationToMainTaskPrompt(run),
       reason:
-        "Accepted integration worktree changes must be applied to the user's main checkout before verifier, final audit, release, or completion.",
+        "Accepted integration worktree changes must be applied to the user's main checkout before verifier, final audit, release, commit, or completion.",
+    };
+  }
+
+  if (needsIntegratedGoalChangesCommitTask(run)) {
+    return {
+      kind: "create_task",
+      title: COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE,
+      prompt: buildCommitIntegratedGoalChangesTaskPrompt(run),
+      reason:
+        "Verified integrated Goal changes must be committed in the user's main checkout before final audit or completion.",
     };
   }
 

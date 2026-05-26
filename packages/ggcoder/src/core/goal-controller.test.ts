@@ -651,32 +651,129 @@ describe("goal controller", () => {
       kind: "create_task",
       title: "Apply integrated worktree to main",
       reason:
-        "Accepted integration worktree changes must be applied to the user's main checkout before verifier, final audit, release, or completion.",
+        "Accepted integration worktree changes must be applied to the user's main checkout before verifier, final audit, release, commit, or completion.",
     });
   });
 
-  it("runs the verifier only after all tasks are done and integration is applied to main", () => {
+  it("runs verifier after main integration, then requires a commit before final audit and completion", () => {
+    const integratedTask = {
+      id: "integrate",
+      title: "Integrate candidates and verify",
+      prompt: "Integrate accepted candidates",
+      status: "done" as const,
+      attempts: 1,
+      mergeStrategy: "after_dependencies" as const,
+      worktree: {
+        baseRef: "base-sha",
+        branchName: "goal/a/integrate-worker",
+        path: "/tmp/worktrees/integrate-worker",
+        status: "created" as const,
+      },
+    };
+    const appliedEvidence = {
+      id: "applied",
+      kind: "summary" as const,
+      label: "Integrated worktree applied to main",
+      content: "Accepted integration diff applied to main and checks passed.",
+      createdAt: "2024-01-01T00:00:01.000Z",
+    };
+
     expect(
       decideGoalNextAction(
         goalRun({
-          tasks: [{ id: "task-a", title: "Done", prompt: "Done", status: "done", attempts: 1 }],
-          verifier: { description: "Full check", command: "pnpm test" },
-          evidence: [
-            durablePlanEvidence,
+          tasks: [
+            integratedTask,
             {
-              id: "applied",
-              kind: "summary",
-              label: "Integrated worktree applied to main",
-              content: "Accepted integration diff applied to main and checks passed.",
-              createdAt: "2024-01-01T00:00:01.000Z",
+              id: "apply",
+              title: "Apply integrated worktree to main",
+              prompt: "Apply accepted changes",
+              status: "done",
+              attempts: 1,
             },
           ],
+          verifier: { description: "Full check", command: "pnpm test" },
+          evidence: [durablePlanEvidence, appliedEvidence],
         }),
       ),
     ).toEqual({
       kind: "run_verifier",
       command: "pnpm test",
       reason: "All Goal tasks are done; running configured verifier for real completion evidence.",
+    });
+
+    const verifierPassed = goalRun({
+      tasks: [
+        integratedTask,
+        {
+          id: "apply",
+          title: "Apply integrated worktree to main",
+          prompt: "Apply accepted changes",
+          status: "done",
+          attempts: 1,
+        },
+      ],
+      evidence: [durablePlanEvidence, appliedEvidence],
+      verifier: {
+        description: "Full check",
+        command: "pnpm test",
+        lastResult: {
+          status: "pass",
+          summary: "main checkout verifier passed",
+          command: "pnpm test",
+          outputPath: ".goal-evidence/verifier.log",
+          checkedAt: "2024-01-01T00:00:02.000Z",
+        },
+      },
+    });
+
+    expect(canCompleteGoalRun(withPassingCompletionAudit(verifierPassed))).toEqual({
+      ok: false,
+      reason: "Integrated Goal changes have not been committed in the main checkout.",
+    });
+    expect(decideGoalNextAction(verifierPassed)).toMatchObject({
+      kind: "create_task",
+      title: "Commit integrated goal changes",
+      reason:
+        "Verified integrated Goal changes must be committed in the user's main checkout before final audit or completion.",
+    });
+
+    const committed = withPassingCompletionAudit(
+      goalRun({
+        tasks: [
+          integratedTask,
+          {
+            id: "apply",
+            title: "Apply integrated worktree to main",
+            prompt: "Apply accepted changes",
+            status: "done",
+            attempts: 1,
+          },
+          {
+            id: "commit",
+            title: "Commit integrated goal changes",
+            prompt: "Commit accepted changes",
+            status: "done",
+            attempts: 1,
+          },
+        ],
+        evidence: [
+          durablePlanEvidence,
+          appliedEvidence,
+          {
+            id: "commit-evidence",
+            kind: "command",
+            label: "Integrated Goal changes committed",
+            content: "Committed accepted Goal changes as abc1234.",
+            createdAt: "2024-01-01T00:00:03.000Z",
+          },
+        ],
+        verifier: verifierPassed.verifier,
+      }),
+    );
+
+    expect(decideGoalNextAction(committed)).toEqual({
+      kind: "complete",
+      reason: "All tasks are done, verifier evidence passed, and final completion audit passed.",
     });
   });
 
