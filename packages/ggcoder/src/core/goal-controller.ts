@@ -264,7 +264,9 @@ function committedIntegrationEvidence(run: GoalRun): boolean {
 }
 
 function hasIntegratedWorktreeChanges(run: GoalRun): boolean {
-  return pendingAfterDependenciesImplementationTasks(run).length > 0 || appliedIntegrationEvidence(run);
+  return (
+    pendingAfterDependenciesImplementationTasks(run).length > 0 || appliedIntegrationEvidence(run)
+  );
 }
 
 function needsMainIntegrationApplyTask(run: GoalRun): boolean {

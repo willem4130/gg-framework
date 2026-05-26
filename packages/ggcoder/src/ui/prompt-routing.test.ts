@@ -15,7 +15,9 @@ describe("Goal prompt routing", () => {
     const longPreamble = "diagnostic chatter ".repeat(400);
     const messages: Message[] = [
       user("/goal improve the loop"),
-      assistant(`${longPreamble}\nGOAL_PLAN\nresearch=local\nsuccess=durable setup\nproof=targeted test\nEND_GOAL_PLAN`),
+      assistant(
+        `${longPreamble}\nGOAL_PLAN\nresearch=local\nsuccess=durable setup\nproof=targeted test\nEND_GOAL_PLAN`,
+      ),
     ];
 
     const collected = collectAssistantTextSince(messages, 1, 2400);
@@ -28,7 +30,8 @@ describe("Goal prompt routing", () => {
 
   it("instructs Goal setup to persist planner output as durable setup evidence", () => {
     const setupPrompt = buildGoalSetupPromptFromPlanner({
-      originalGoalPrompt: "/goal ship it\n\n## Goal References (MANDATORY)\n\n- [original-goal-prompt] kind=prompt; label=\"Original Goal prompt\"",
+      originalGoalPrompt:
+        '/goal ship it\n\n## Goal References (MANDATORY)\n\n- [original-goal-prompt] kind=prompt; label="Original Goal prompt"',
       plannerOutput: "GOAL_PLAN\nresearch=none\nsuccess=ship\nEND_GOAL_PLAN",
     });
 
@@ -40,7 +43,8 @@ describe("Goal prompt routing", () => {
 
   it("strips the repeated slash-command preamble before setup handoff", () => {
     const setupPrompt = buildGoalSetupPromptFromPlanner({
-      originalGoalPrompt: "Create a Goal run for the following objective. First plan/research only if needed; Goal setup will consume that plan and create durable Goal state.\n\n## User Instructions\n\nDo the thing",
+      originalGoalPrompt:
+        "Create a Goal run for the following objective. First plan/research only if needed; Goal setup will consume that plan and create durable Goal state.\n\n## User Instructions\n\nDo the thing",
       plannerOutput: "GOAL_PLAN\nresearch=none\nEND_GOAL_PLAN",
     });
 

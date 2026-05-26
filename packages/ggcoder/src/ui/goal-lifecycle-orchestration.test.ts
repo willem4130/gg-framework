@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { GoalRun, GoalTask } from "../core/goal-store.js";
-import { canCompleteGoalRun, decideGoalNextAction } from "../core/goal-controller.js";
+import {
+  APPLY_INTEGRATION_TO_MAIN_TASK_TITLE,
+  COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE,
+  canCompleteGoalRun,
+  decideGoalNextAction,
+} from "../core/goal-controller.js";
 import { GoalWorktreeDirtyError } from "../core/goal-worktree.js";
 import type { CompletedItem } from "./app-items.js";
 import {
@@ -11,7 +16,11 @@ import {
   truncateGoalProgressText,
 } from "./goal-progress.js";
 import { nextGoalModeAfterAgentDone } from "./layout-decisions.js";
-import { buildGoalDirtyWorktreeUserPrompt, goalDirtyWorktreeInfoText } from "./App.js";
+import {
+  buildGoalDirtyWorktreeUserPrompt,
+  goalDirtyWorktreeInfoText,
+  shouldRunGoalTaskInMainCheckout,
+} from "./App.js";
 
 function goalRun(overrides: Partial<GoalRun> = {}): GoalRun {
   return {
@@ -149,6 +158,12 @@ function applyCompletionAudit(run: GoalRun): GoalRun {
 }
 
 describe("/goal UI orchestration lifecycle", () => {
+  it("runs integration apply and commit tasks in the main checkout", () => {
+    expect(shouldRunGoalTaskInMainCheckout(APPLY_INTEGRATION_TO_MAIN_TASK_TITLE)).toBe(true);
+    expect(shouldRunGoalTaskInMainCheckout(COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE)).toBe(true);
+    expect(shouldRunGoalTaskInMainCheckout("Implement isolated feature")).toBe(false);
+  });
+
   it("turns dirty worktree launch failures into a user choice prompt", () => {
     const error = new GoalWorktreeDirtyError(" M packages/ggcoder/src/ui/App.tsx\n?? scratch.md");
 

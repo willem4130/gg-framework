@@ -431,7 +431,10 @@ describe("goals tool state guards", () => {
     );
     expect(run?.status).toBe("ready");
     expect(run?.references).toEqual(
-      expect.arrayContaining([expect.objectContaining(reference), expect.objectContaining(documentReference)]),
+      expect.arrayContaining([
+        expect.objectContaining(reference),
+        expect.objectContaining(documentReference),
+      ]),
     );
     expect(run?.tasks).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "reference-task" })]),

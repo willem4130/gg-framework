@@ -155,6 +155,7 @@ import {
 } from "../core/tasks-store.js";
 import {
   APPLY_INTEGRATION_TO_MAIN_TASK_TITLE,
+  COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE,
   canCompleteGoalRun,
   decideGoalNextAction,
 } from "../core/goal-controller.js";
@@ -342,6 +343,13 @@ function buildGoalTaskPromptWithReferences(run: GoalRun, taskPrompt: string): st
   if (taskPrompt.includes("## Goal References (MANDATORY)")) return taskPrompt;
   const references = formatGoalReferencesForPrompt(run.references ?? []);
   return references ? `${references}\n\n${taskPrompt}` : taskPrompt;
+}
+
+export function shouldRunGoalTaskInMainCheckout(taskTitle: string): boolean {
+  return (
+    taskTitle === APPLY_INTEGRATION_TO_MAIN_TASK_TITLE ||
+    taskTitle === COMMIT_INTEGRATED_GOAL_CHANGES_TASK_TITLE
+  );
 }
 
 export function buildGoalDirtyWorktreeUserPrompt(error: GoalWorktreeDirtyError): string {
@@ -3841,8 +3849,7 @@ export function App(props: AppProps) {
           goalTaskId: decision.task.id,
           taskTitle: decision.task.title,
           prompt: buildGoalTaskPromptWithReferences(checkedRun, decision.task.prompt),
-          isolateWorktree:
-            decision.task.title === APPLY_INTEGRATION_TO_MAIN_TASK_TITLE ? false : undefined,
+          isolateWorktree: shouldRunGoalTaskInMainCheckout(decision.task.title) ? false : undefined,
         });
         const latestRun =
           (await loadGoalRuns(props.cwd)).find((item) => item.id === checkedRun.id) ??
