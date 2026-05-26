@@ -361,19 +361,27 @@ function resolveTaskDependencyIds(
 
 const SETUP_BLOCKER_PREFIX = "Goal setup incomplete:";
 
+function referenceMentionTokens(reference: GoalReference): string[] {
+  return [reference.id, reference.label, reference.value, reference.path]
+    .filter((token): token is string => !!token?.trim())
+    .map((token) => token.toLowerCase());
+}
+
+function unacknowledgedReferences(
+  references: readonly GoalReference[] | undefined,
+  fields: readonly string[],
+): GoalReference[] {
+  const haystack = fields.join("\n").toLowerCase();
+  return referencesRequiringAcknowledgement(references ?? []).filter(
+    (reference) => !referenceMentionTokens(reference).some((token) => haystack.includes(token)),
+  );
+}
+
 function referencesAcknowledged(
   references: readonly GoalReference[] | undefined,
   fields: readonly string[],
 ): boolean {
-  const required = referencesRequiringAcknowledgement(references ?? []);
-  if (required.length === 0) return true;
-  const haystack = fields.join("\n").toLowerCase();
-  return required.every((reference) => {
-    const tokens = [reference.id, reference.label, reference.value, reference.path]
-      .filter((token): token is string => !!token?.trim())
-      .map((token) => token.toLowerCase());
-    return tokens.some((token) => haystack.includes(token));
-  });
+  return unacknowledgedReferences(references, fields).length === 0;
 }
 
 function hasOriginalGoalPromptReference(references: readonly GoalReference[] | undefined): boolean {
@@ -439,9 +447,10 @@ function setupBlockersForRun(run: {
     run.verifier?.description ?? "",
     run.verifier?.command ?? "",
   ];
-  if (!referencesAcknowledged(run.references, referenceFields)) {
+  const missingReferences = unacknowledgedReferences(run.references, referenceFields);
+  if (missingReferences.length > 0) {
     blockers.push(
-      `${SETUP_BLOCKER_PREFIX} every non-prompt Goal reference must be named in success criteria, task prompts, evidence_plan, or verifier metadata.`,
+      `${SETUP_BLOCKER_PREFIX} every non-prompt Goal reference must be named in success criteria, task prompts, evidence_plan, or verifier metadata. Missing: ${missingReferences.map((reference) => reference.id).join(", ")}.`,
     );
   }
   return blockers;
@@ -589,9 +598,12 @@ export function createGoalsTool(
             verifier,
           };
           const setupBlockers = setupBlockersForRun(draftProbe);
+          const priorBlockers = (args.blockers ?? existing?.blockers ?? []).filter(
+            (blocker) => !blocker.startsWith(SETUP_BLOCKER_PREFIX),
+          );
           const blockers = Array.from(
             new Set([
-              ...(args.blockers ?? existing?.blockers ?? []),
+              ...priorBlockers,
               ...(hasBlockingPrerequisites ? [missingPrerequisites] : []),
               ...setupBlockers,
             ]),
@@ -605,13 +617,17 @@ export function createGoalsTool(
                 ? "draft"
                 : hasBlockingPrerequisites
                   ? "blocked"
-                  : (existing?.status ?? "ready"),
+                  : existing?.status === "draft"
+                    ? "ready"
+                    : (existing?.status ?? "ready"),
             successCriteria: draftProbe.successCriteria,
             prerequisites: nextPrerequisites,
             harness: harness ?? existing?.harness ?? [],
             evidencePlan: draftProbe.evidencePlan,
             references: draftProbe.references,
-            ...(plannerEvidence ? { evidence: plannerEvidence } : {}),
+            ...(plannerEvidence
+              ? { evidence: [...(existing?.evidence ?? []), ...plannerEvidence] }
+              : {}),
             ...(verifier ? { verifier } : {}),
             blockers,
           });
@@ -715,11 +731,14 @@ export function createGoalsTool(
           if (!taskExisted && (!args.task_title || !args.task_prompt)) {
             return "Error: task_title and task_prompt are required when adding a task.";
           }
-          if (
-            !taskExisted &&
-            !referencesAcknowledged(run.references, [args.task_title ?? "", args.task_prompt ?? ""])
-          ) {
-            return "Error: task_prompt must explicitly include each non-prompt Goal reference id, label, URL, or path so workers cannot silently ignore the user's references.";
+          if (!taskExisted) {
+            const missingReferences = unacknowledgedReferences(run.references, [
+              args.task_title ?? "",
+              args.task_prompt ?? "",
+            ]);
+            if (missingReferences.length > 0) {
+              return `Error: task_prompt must explicitly include each non-prompt Goal reference id, label, URL, or path so workers cannot silently ignore the user's references. Missing: ${missingReferences.map((reference) => reference.id).join(", ")}.`;
+            }
           }
           const taskStatus = asTaskStatus(args.task_status);
           const mergeStrategy = asTaskMergeStrategy(args.merge_strategy);

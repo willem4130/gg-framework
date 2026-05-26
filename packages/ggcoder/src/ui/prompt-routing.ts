@@ -29,6 +29,7 @@ export function routePromptCommandInput(
 }
 
 const GOAL_PLANNER_OUTPUT_MAX_CHARS = 2400;
+const GOAL_PLAN_BLOCK_PATTERN = /GOAL_PLAN[\s\S]*?END_GOAL_PLAN/;
 
 function messageTextContent(message: Message): string {
   if (typeof message.content === "string") return message.content;
@@ -49,6 +50,8 @@ export function collectAssistantTextSince(
     .map(messageTextContent)
     .join("\n")
     .trim();
+  const goalPlanBlock = text.match(GOAL_PLAN_BLOCK_PATTERN)?.[0]?.trim();
+  if (goalPlanBlock) return goalPlanBlock;
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars).trimEnd() + "\n[planner output truncated]";
 }
@@ -65,6 +68,7 @@ export function buildGoalSetupPromptFromPlanner({
     `${originalGoalPrompt.trim()}\n\n` +
     `## Goal Planner Output\n\n${compactPlannerOutput}\n\n` +
     `Use the original objective plus this planner output to create durable Goal setup only. ` +
+    `Pass this exact planner output in the goals create summary so durable GOAL_PLAN evidence is recorded. ` +
     `Do not redo planner research unless the planner output is unusable.`
   );
 }
