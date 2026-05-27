@@ -2,6 +2,7 @@ export type GoalMode = "off" | "planner" | "setup" | "coordinator";
 
 export interface RuntimeModeRefs {
   goalModeRef?: { current: GoalMode };
+  planModeRef?: { current: boolean };
 }
 
 export function getActiveGoalMode(goalModeRef?: { current: GoalMode }): GoalMode {
@@ -14,4 +15,12 @@ export function isGoalModeActive(goalModeRef?: { current: GoalMode }): boolean {
 
 export function goalModeRestriction(toolName: string, action: string): string {
   return `Error: ${toolName} is restricted in Goal mode. The parent session is planning/orchestration-only; use the appropriate Goal phase for ${action} and let Goal workers perform implementation.`;
+}
+
+export function isPlanModeActive(planModeRef?: { current: boolean }): boolean {
+  return planModeRef?.current === true;
+}
+
+export function planModeRestriction(toolName: string): string {
+  return `Error: ${toolName} is restricted in plan mode. Use read-only tools to explore, write the plan under .gg/plans/, then call exit_plan for review.`;
 }

@@ -24,7 +24,7 @@ describe("continue replay inventory high-risk classes", () => {
     const history = messagesToHistoryItems(persisted);
 
     expect(history).toMatchObject([
-      { kind: "assistant", text: "Implemented the first step. " },
+      { kind: "assistant", text: "Implemented the first step." },
       { kind: "step_done", stepNum: 1, description: "" },
       { kind: "assistant", text: "Continuing with the next one." },
     ]);

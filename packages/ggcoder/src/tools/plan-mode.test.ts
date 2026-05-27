@@ -1,47 +1,107 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import { createTools } from "./index.js";
 import { buildSystemPrompt } from "../system-prompt.js";
 
-describe("legacy plan mode removal", () => {
-  const retiredEnterToolName = `enter_${"plan"}`;
-  const retiredExitToolName = `exit_${"plan"}`;
+async function makeTempDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "gg-plan-mode-"));
+}
 
-  it("does not register retired plan transition tools", () => {
-    const { tools, processManager } = createTools(os.tmpdir());
+function toolContext(): { signal: AbortSignal; toolCallId: string } {
+  return { signal: new AbortController().signal, toolCallId: "test-tool-call" };
+}
+
+describe("plan mode", () => {
+  it("registers plan transition tools when callbacks are supplied", () => {
+    const { tools, processManager } = createTools(os.tmpdir(), {
+      onEnterPlan: () => {},
+      onExitPlan: async () => "ok",
+    });
 
     const toolNames = tools.map((tool) => tool.name);
 
-    expect(toolNames).not.toContain(retiredEnterToolName);
-    expect(toolNames).not.toContain(retiredExitToolName);
+    expect(toolNames).toContain("enter_plan");
+    expect(toolNames).toContain("exit_plan");
     processManager.shutdownAll();
   });
 
-  it("does not render retired plan tools even if stale tool names are supplied", async () => {
-    const prompt = await buildSystemPrompt(os.tmpdir(), [], false, undefined, [
-      "read",
-      retiredEnterToolName,
-      retiredExitToolName,
-    ]);
-
-    expect(prompt).toContain("**read**");
-    expect(prompt).not.toContain(`**${retiredEnterToolName}**`);
-    expect(prompt).not.toContain(`**${retiredExitToolName}**`);
-  });
-
-  it("ignores the retired planMode prompt flag", async () => {
+  it("renders active plan instructions and plan tools", async () => {
     const prompt = await buildSystemPrompt(os.tmpdir(), [], true, undefined, [
       "read",
       "write",
       "edit",
       "bash",
-      retiredEnterToolName,
-      retiredExitToolName,
+      "enter_plan",
+      "exit_plan",
     ]);
 
-    expect(prompt).not.toContain("Plan Mode (ACTIVE)");
-    expect(prompt).not.toContain("Restricted: bash, edit, write except .gg/plans/");
-    expect(prompt).not.toContain(retiredExitToolName);
-    expect(prompt).not.toContain(retiredEnterToolName);
+    expect(prompt).toContain("## Plan Mode (ACTIVE)");
+    expect(prompt).toContain("draft a structured markdown plan at `.gg/plans/<name>.md`");
+    expect(prompt).not.toContain("1. Explore");
+    expect(prompt).toContain("**enter_plan**");
+    expect(prompt).toContain("**exit_plan**");
+  });
+
+  it("allows write only under .gg/plans while plan mode is active", async () => {
+    const cwd = await makeTempDir();
+    const planModeRef = { current: true };
+    const { tools, processManager } = createTools(cwd, { planModeRef });
+    const writeTool = tools.find((tool) => tool.name === "write");
+    expect(writeTool).toBeDefined();
+
+    const denied = await writeTool!.execute(
+      { file_path: "src/index.ts", content: "export {};\n" },
+      toolContext(),
+    );
+    expect(String(denied)).toContain("write is restricted in plan mode");
+
+    const allowed = await writeTool!.execute(
+      { file_path: ".gg/plans/example.md", content: "# Plan\n" },
+      toolContext(),
+    );
+    expect(String(allowed)).toContain("Wrote");
+    await expect(fs.readFile(path.join(cwd, ".gg/plans/example.md"), "utf-8")).resolves.toBe(
+      "# Plan\n",
+    );
+
+    processManager.shutdownAll();
+  });
+
+  it("blocks bash/edit/subagent while plan mode is active", async () => {
+    const cwd = await makeTempDir();
+    const planModeRef = { current: true };
+    const { tools, processManager } = createTools(cwd, {
+      planModeRef,
+      agents: [
+        {
+          name: "worker",
+          description: "test",
+          systemPrompt: "test",
+          tools: [],
+          source: "project",
+        },
+      ],
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+    });
+
+    const context = toolContext();
+    const bashTool = tools.find((tool) => tool.name === "bash");
+    const editTool = tools.find((tool) => tool.name === "edit");
+    const subagentTool = tools.find((tool) => tool.name === "subagent");
+
+    expect(String(await bashTool!.execute({ command: "echo hi" }, context))).toContain(
+      "bash is restricted in plan mode",
+    );
+    expect(String(await editTool!.execute({ file_path: "x", edits: [] }, context))).toContain(
+      "edit is restricted in plan mode",
+    );
+    expect(String(await subagentTool!.execute({ task: "x" }, context))).toContain(
+      "subagent is restricted in plan mode",
+    );
+
+    processManager.shutdownAll();
   });
 });

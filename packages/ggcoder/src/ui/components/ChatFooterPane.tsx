@@ -24,6 +24,7 @@ interface ChatFooterPaneProps {
   gitBranch?: string | null;
   thinkingLevel?: ThinkingLevel;
   goalMode: GoalMode;
+  planMode: boolean;
   exitPending: boolean;
   renderMarkdown: boolean;
   goalStatusEntries: GoalStatusEntry[];
@@ -45,6 +46,7 @@ export function ChatFooterPane({
   gitBranch,
   thinkingLevel,
   goalMode,
+  planMode,
   exitPending,
   renderMarkdown,
   goalStatusEntries,
@@ -81,6 +83,7 @@ export function ChatFooterPane({
         gitBranch={gitBranch}
         thinkingLevel={thinkingLevel}
         goalMode={goalMode}
+        planMode={planMode}
         exitPending={exitPending}
         renderMarkdown={renderMarkdown}
       />

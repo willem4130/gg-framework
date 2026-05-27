@@ -20,6 +20,9 @@ export const TOOL_PROMPT_HINTS: Record<string, string> = {
   task_stop: "Stop a background process by id.",
   goals:
     "Manage durable Goal runs for /goal and Ctrl+G workflows. Use for Goal setup, coordinator evidence, worker tasks, verifier records, final completion audits, blockers, and completion state.",
+  enter_plan:
+    "Enter read-only plan mode for complex/risky tasks before implementation; draft a plan under .gg/plans/.",
+  exit_plan: "Submit a .gg/plans/ markdown plan for user approval and leave plan mode.",
   subagent: "Delegate focused, isolated subtasks (research, parallel exploration).",
   skill: "Invoke a named skill for specialized instructions.",
   "mcp__kencode-search__referenceSources":
@@ -44,6 +47,8 @@ export const DEFAULT_TOOL_NAMES: readonly string[] = [
   "task_output",
   "task_stop",
   "goals",
+  "enter_plan",
+  "exit_plan",
   "subagent",
   "skill",
   "mcp__kencode-search__referenceSources",

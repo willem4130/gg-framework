@@ -1,6 +1,7 @@
 import type { CompletedItem } from "../app-items.js";
 
 export const TRANSCRIPT_SPACING_KINDS = [
+  "user",
   "assistant",
   "queued",
   "task",

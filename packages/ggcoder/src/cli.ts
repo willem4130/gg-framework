@@ -562,15 +562,25 @@ async function runInkTUI(opts: {
 
   // Runtime mode refs — shared between tools and UI
   const goalModeRef = { current: "off" as GoalMode };
+  const planModeRef = { current: false };
   const goalReferencesRef: { current: readonly GoalReference[] | undefined } = {
     current: undefined,
   };
+  const planToolCallbacks: {
+    onEnterPlan?: (reason?: string) => void | Promise<void>;
+    onExitPlan?: (planPath: string) => Promise<string>;
+  } = {};
+
   const { tools, processManager } = createTools(cwd, {
     agents,
     skills,
     provider,
     model,
     goalModeRef,
+    planModeRef,
+    onEnterPlan: (reason) => planToolCallbacks.onEnterPlan?.(reason),
+    onExitPlan: (planPath) =>
+      planToolCallbacks.onExitPlan?.(planPath) ?? Promise.resolve("Plan review is unavailable."),
     getGoalReferences: () => goalReferencesRef.current,
   });
 
@@ -584,6 +594,10 @@ async function runInkTUI(opts: {
       provider,
       model,
       goalModeRef,
+      planModeRef,
+      onEnterPlan: (reason) => planToolCallbacks.onEnterPlan?.(reason),
+      onExitPlan: (planPath) =>
+        planToolCallbacks.onExitPlan?.(planPath) ?? Promise.resolve("Plan review is unavailable."),
       getGoalReferences: () => goalReferencesRef.current,
     });
     return rebuilt;
@@ -605,7 +619,7 @@ async function runInkTUI(opts: {
   const systemPrompt = await buildSystemPrompt(
     cwd,
     skills,
-    false,
+    planModeRef.current,
     undefined,
     tools.map((tool) => tool.name),
     undefined,
@@ -736,11 +750,13 @@ async function runInkTUI(opts: {
     mcpManager,
     authStorage,
     goalModeRef,
+    planModeRef,
     goalReferencesRef,
     skills,
     initialOverlay: opts.initialOverlay,
     rebuildToolsForCwd,
     connectInitialMcpTools,
+    planCallbacks: planToolCallbacks,
   });
 
   closeLogger();

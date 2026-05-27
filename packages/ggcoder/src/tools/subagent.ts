@@ -5,7 +5,13 @@ import type { AgentTool } from "@kenkaiiii/gg-agent";
 import type { AgentDefinition } from "../core/agents.js";
 import { log } from "../core/logger.js";
 import { truncateTail } from "./truncate.js";
-import { goalModeRestriction, isGoalModeActive, type GoalMode } from "../core/runtime-mode.js";
+import {
+  goalModeRestriction,
+  isGoalModeActive,
+  isPlanModeActive,
+  planModeRestriction,
+  type GoalMode,
+} from "../core/runtime-mode.js";
 
 const SUB_AGENT_MAX_TURNS = 10;
 const SUB_AGENT_MAX_OUTPUT_CHARS = 100_000; // ~25k tokens, matches other tool limits
@@ -40,6 +46,7 @@ export function createSubAgentTool(
   parentModel: string,
   goalModeRef?: { current: GoalMode },
   getParentCacheKey?: () => string | undefined,
+  planModeRef?: { current: boolean },
 ): AgentTool<typeof SubAgentParams> {
   const agentList = agents.map((a) => `- ${a.name}: ${a.description}`).join("\n");
   const agentDesc = agentList
@@ -56,6 +63,9 @@ export function createSubAgentTool(
     async execute(args, context) {
       if (isGoalModeActive(goalModeRef)) {
         return goalModeRestriction("subagent", "Goal task creation through the goals tool");
+      }
+      if (isPlanModeActive(planModeRef)) {
+        return planModeRestriction("subagent");
       }
 
       const startTime = Date.now();

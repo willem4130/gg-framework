@@ -84,8 +84,8 @@ describe("main footer Goal mode layout", () => {
     expect(getGoalFooterLabel("coordinator")).toBe("Goal coord");
   });
 
-  it("includes the Goal label and separator in right-side width calculations", () => {
-    const withoutGoalWidth = 8 + 1 + 2 + 1 + 3 + "Sonnet".length + 3 + "Thinking off".length;
+  it("includes Goal and Plan labels plus separators in right-side width calculations", () => {
+    const withoutModeWidth = 8 + 1 + 2 + 1 + 3 + "Sonnet".length + 3 + "Thinking off".length;
 
     expect(
       getFooterRightLength({
@@ -93,8 +93,9 @@ describe("main footer Goal mode layout", () => {
         contextPct: 12,
         modelName: "Sonnet",
         goalText: "Goal coord",
+        planText: "Plan on",
         thinkingText: "Thinking off",
       }),
-    ).toBe(withoutGoalWidth + 3 + "Goal coord".length);
+    ).toBe(withoutModeWidth + 3 + "Goal coord".length + 3 + "Plan on".length);
   });
 });

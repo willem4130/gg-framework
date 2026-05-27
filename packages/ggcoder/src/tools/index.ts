@@ -16,6 +16,8 @@ import { createTaskStopTool } from "./task-stop.js";
 import { createTasksTool } from "./tasks.js";
 import { createGoalsTool } from "./goals.js";
 import { createSkillTool } from "./skill.js";
+import { createEnterPlanTool } from "./enter-plan.js";
+import { createExitPlanTool } from "./exit-plan.js";
 import { localOperations, type ToolOperations } from "./operations.js";
 import type { ReadTracker } from "./read-tracker.js";
 import type { AgentDefinition } from "../core/agents.js";
@@ -32,6 +34,12 @@ export interface CreateToolsOptions {
   operations?: ToolOperations;
   /** Ref for checking Goal orchestration mode inside tool execute functions. */
   goalModeRef?: { current: GoalMode };
+  /** Ref for checking plan mode inside tool execute functions. */
+  planModeRef?: { current: boolean };
+  /** Callback when the LLM enters plan mode. */
+  onEnterPlan?: (reason?: string) => void | Promise<void>;
+  /** Callback when the LLM submits a plan for review. */
+  onExitPlan?: (planPath: string) => Promise<string>;
   /** Callback after read tool successfully reads a text file. */
   onFileRead?: (filePath: string) => void | Promise<void>;
   /** Callback after write/edit tools successfully mutate a file. */
@@ -59,12 +67,13 @@ export function createTools(cwd: string, opts?: CreateToolsOptions): CreateTools
   const processManager = new ProcessManager();
   const ops = opts?.operations ?? localOperations;
   const goalModeRef = opts?.goalModeRef;
+  const planModeRef = opts?.planModeRef;
 
   const tools: AgentTool[] = [
     createReadTool(cwd, readFiles, ops, opts?.onFileRead),
-    createWriteTool(cwd, readFiles, ops, goalModeRef, opts?.onFileMutated),
-    createEditTool(cwd, readFiles, ops, goalModeRef, opts?.onFileMutated),
-    createBashTool(cwd, processManager, ops, goalModeRef),
+    createWriteTool(cwd, readFiles, ops, goalModeRef, planModeRef, opts?.onFileMutated),
+    createEditTool(cwd, readFiles, ops, goalModeRef, planModeRef, opts?.onFileMutated),
+    createBashTool(cwd, processManager, ops, goalModeRef, planModeRef),
     createFindTool(cwd),
     createGrepTool(cwd, ops),
     createLsTool(cwd, ops),
@@ -90,12 +99,21 @@ export function createTools(cwd: string, opts?: CreateToolsOptions): CreateTools
         opts.model,
         goalModeRef,
         opts.getCacheKey,
+        planModeRef,
       ),
     );
   }
 
   if (opts?.skills && opts.skills.length > 0) {
     tools.push(createSkillTool(opts.skills));
+  }
+
+  if (opts?.onEnterPlan) {
+    tools.push(createEnterPlanTool(opts.onEnterPlan));
+  }
+
+  if (opts?.onExitPlan) {
+    tools.push(createExitPlanTool(cwd, opts.onExitPlan));
   }
 
   return { tools, processManager };
@@ -116,5 +134,7 @@ export { createTaskStopTool } from "./task-stop.js";
 export { createTasksTool } from "./tasks.js";
 export { createGoalsTool } from "./goals.js";
 export { createSkillTool } from "./skill.js";
+export { createEnterPlanTool } from "./enter-plan.js";
+export { createExitPlanTool } from "./exit-plan.js";
 export { ProcessManager } from "../core/process-manager.js";
 export { localOperations, type ToolOperations } from "./operations.js";

@@ -293,11 +293,16 @@ export interface AppProps {
   mcpManager?: MCPClientManager;
   authStorage?: AuthStorage;
   goalModeRef?: { current: GoalMode };
+  planModeRef?: { current: boolean };
   skills?: Skill[];
   initialOverlay?: "pixel" | "goal";
   rebuildToolsForCwd?: (cwd: string) => AgentTool[];
   goalReferencesRef?: { current: readonly GoalReference[] | undefined };
   connectInitialMcpTools?: () => Promise<AgentTool[]>;
+  planCallbacks?: {
+    onEnterPlan?: (reason?: string) => void | Promise<void>;
+    onExitPlan?: (planPath: string) => Promise<string>;
+  };
   terminalHistoryPrinter?: TerminalHistoryPrinter;
   /**
    * Wired by `renderApp`. Tears down the current Ink instance and renders
@@ -366,6 +371,7 @@ export interface AppProps {
     runAllPixel?: boolean;
     goalStatusEntries?: GoalStatusEntry[];
     goalMode?: GoalMode;
+    planMode?: boolean;
   };
 }
 
@@ -382,6 +388,9 @@ export function App(props: AppProps) {
   const [exitPending, setExitPending] = useState(false);
   const [goalMode, setGoalMode] = useState<GoalMode>(
     props.sessionStore?.goalMode ?? props.goalModeRef?.current ?? "off",
+  );
+  const [planMode, setPlanMode] = useState(
+    props.sessionStore?.planMode ?? props.planModeRef?.current ?? false,
   );
   // Terminal title — updated later after agentLoop is created
   // (hoisted here so the hook is always called in the same order)
@@ -467,6 +476,7 @@ export function App(props: AppProps) {
   const planStepsRef = useRef<PlanStep[]>(props.sessionStore?.planSteps ?? []);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>(props.sessionStore?.planSteps ?? []);
   const goalModeStateRef = useRef<GoalMode>(goalMode);
+  const planModeStateRef = useRef(planMode);
   // Stuck-guard for the plan-continuation follow-up nudge. Tracks how many
   // times we've nudged the agent to continue the same step. Reset whenever a
   // new [DONE:n] marker advances progress (see onTurnText). Caps at 2 nudges
@@ -633,6 +643,9 @@ export function App(props: AppProps) {
   useEffect(() => {
     if (sessionStore) sessionStore.goalMode = goalMode;
   }, [goalMode, sessionStore]);
+  useEffect(() => {
+    if (sessionStore) sessionStore.planMode = planMode;
+  }, [planMode, sessionStore]);
 
   // pendingAction is consumed via a useEffect AFTER agentLoop is created
   // — see below where useAgentLoop is set up.
@@ -722,6 +735,11 @@ export function App(props: AppProps) {
     }
   }, [goalMode, props.goalModeRef]);
 
+  useEffect(() => {
+    planModeStateRef.current = planMode;
+    if (props.planModeRef) props.planModeRef.current = planMode;
+  }, [planMode, props.planModeRef]);
+
   const setActiveGoalReferences = useCallback(
     (references: readonly GoalReference[] | undefined): void => {
       if (props.goalReferencesRef) props.goalReferencesRef.current = references;
@@ -737,6 +755,7 @@ export function App(props: AppProps) {
       activeLanguages?: Set<LanguageId>;
       tools?: AgentTool[];
       goalMode?: GoalMode;
+      planMode?: boolean;
     }): Promise<string> => {
       const approvedPlanPath = options?.clearApprovedPlan
         ? undefined
@@ -744,7 +763,7 @@ export function App(props: AppProps) {
       return buildSystemPrompt(
         options?.cwd ?? cwdRef.current,
         props.skills,
-        false,
+        options?.planMode ?? planModeStateRef.current,
         approvedPlanPath,
         (options?.tools ?? currentToolsRef.current).map((tool) => tool.name),
         options?.activeLanguages ?? injectedLanguagesRef.current,
@@ -803,6 +822,17 @@ export function App(props: AppProps) {
       await replaceSystemPrompt({ ...options, goalMode: nextMode });
     },
     [props.goalModeRef, props.sessionStore, replaceSystemPrompt],
+  );
+
+  const setPlanModeAndPrompt = useCallback(
+    async (nextMode: boolean): Promise<void> => {
+      planModeStateRef.current = nextMode;
+      if (props.planModeRef) props.planModeRef.current = nextMode;
+      if (props.sessionStore) props.sessionStore.planMode = nextMode;
+      setPlanMode(nextMode);
+      await replaceSystemPrompt({ planMode: nextMode });
+    },
+    [props.planModeRef, props.sessionStore, replaceSystemPrompt],
   );
 
   const clearGoalModeIfIdle = useCallback((): void => {
@@ -3494,7 +3524,7 @@ export function App(props: AppProps) {
       queueFlush([
         {
           kind: "assistant",
-          text: split.flushedText,
+          text: stripDoneMarkers(split.flushedText),
           continuation: streamedAssistantFlushRef.current.flushedChars > 0,
           id: getId(),
         },
@@ -3510,8 +3540,8 @@ export function App(props: AppProps) {
       text: rawVisibleStreamingText,
     };
   }, [rawVisibleStreamingText, queueFlush]);
-  const visibleStreamingText = rawVisibleStreamingText.slice(
-    streamedAssistantFlushRef.current.flushedChars,
+  const visibleStreamingText = stripDoneMarkers(
+    rawVisibleStreamingText.slice(streamedAssistantFlushRef.current.flushedChars),
   );
   const lastLiveItem = liveItems.at(-1);
   const lastPendingHistoryItem = pendingHistoryFlushRef.current.at(-1);
@@ -3557,6 +3587,48 @@ export function App(props: AppProps) {
     }
     setOverlay(null);
   };
+
+  const handleEnterPlanMode = useCallback(
+    async (reason?: string): Promise<void> => {
+      await setPlanModeAndPrompt(true);
+      const detail = reason ? `Plan mode ON — ${reason}` : "Plan mode ON";
+      setLiveItems((prev) => [
+        ...prev,
+        { kind: "plan_transition", text: detail, id: getId(), active: true },
+      ]);
+    },
+    [setPlanModeAndPrompt],
+  );
+
+  const handleExitPlanMode = useCallback(
+    async (planPath: string): Promise<string> => {
+      await setPlanModeAndPrompt(false);
+      planOverlayPendingRef.current = true;
+      setPlanAutoExpand(true);
+      if (props.sessionStore) {
+        props.sessionStore.overlay = "plan";
+        props.sessionStore.planAutoExpand = true;
+      }
+      setOverlay("plan");
+      setLiveItems((prev) => [
+        ...prev,
+        {
+          kind: "plan_transition",
+          text: `Plan ready for review: ${planPath}`,
+          id: getId(),
+          active: false,
+        },
+      ]);
+      return "Plan submitted for user review. Wait for the user to approve, reject, or dismiss it before implementing.";
+    },
+    [props.sessionStore, setPlanModeAndPrompt],
+  );
+
+  useEffect(() => {
+    if (!props.planCallbacks) return;
+    props.planCallbacks.onEnterPlan = handleEnterPlanMode;
+    props.planCallbacks.onExitPlan = handleExitPlanMode;
+  }, [handleEnterPlanMode, handleExitPlanMode, props.planCallbacks]);
 
   const handleClosePlanOverlay = () => {
     planOverlayPendingRef.current = false;
@@ -3876,6 +3948,7 @@ export function App(props: AppProps) {
           displayedCwd={displayedCwd}
           gitBranch={gitBranch}
           goalMode={goalMode}
+          planMode={planMode}
           exitPending={exitPending}
           goalStatusEntries={goalStatusEntries}
           footerStatusLayout={footerStatusLayout}

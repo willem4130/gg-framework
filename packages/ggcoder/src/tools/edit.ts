@@ -14,12 +14,26 @@ import {
 } from "./edit-diff.js";
 import { localOperations, type ToolOperations } from "./operations.js";
 import { assertFresh, recordWrite, type ReadTracker } from "./read-tracker.js";
-import { goalModeRestriction, isGoalModeActive, type GoalMode } from "../core/runtime-mode.js";
+import {
+  goalModeRestriction,
+  isGoalModeActive,
+  isPlanModeActive,
+  planModeRestriction,
+  type GoalMode,
+} from "../core/runtime-mode.js";
 
 type MutationCallback = (filePath: string) => void | Promise<void>;
 
 function isMutationCallback(value: unknown): value is MutationCallback {
   return typeof value === "function";
+}
+
+function isPlanModeRef(value: unknown): value is { current: boolean } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { current?: unknown }).current === "boolean"
+  );
 }
 
 const EditItem = z.object({
@@ -122,14 +136,20 @@ export function createEditTool(
   readFiles?: ReadTracker,
   ops: ToolOperations = localOperations,
   goalModeRefOrOnFileMutated?: { current: GoalMode } | MutationCallback,
+  planModeRefOrOnFileMutated?: { current: boolean } | MutationCallback,
   onFileMutated?: MutationCallback,
 ): AgentTool<typeof EditParams> {
   const goalModeRef = isMutationCallback(goalModeRefOrOnFileMutated)
     ? undefined
     : goalModeRefOrOnFileMutated;
+  const planModeRef = isPlanModeRef(planModeRefOrOnFileMutated)
+    ? planModeRefOrOnFileMutated
+    : undefined;
   const mutationCallback = isMutationCallback(goalModeRefOrOnFileMutated)
     ? goalModeRefOrOnFileMutated
-    : onFileMutated;
+    : isMutationCallback(planModeRefOrOnFileMutated)
+      ? planModeRefOrOnFileMutated
+      : onFileMutated;
   return {
     name: "edit",
     description:
@@ -143,6 +163,9 @@ export function createEditTool(
     async execute({ file_path, edits, atomic = false }) {
       if (isGoalModeActive(goalModeRef)) {
         return goalModeRestriction("edit", "Goal metadata, evidence plans, and task creation");
+      }
+      if (isPlanModeActive(planModeRef)) {
+        return planModeRestriction("edit");
       }
       const resolved = resolvePath(cwd, file_path);
       await rejectSymlink(resolved);

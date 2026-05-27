@@ -106,6 +106,7 @@ interface ChatScreenProps {
   displayedCwd: string;
   gitBranch?: string | null;
   goalMode: GoalMode;
+  planMode: boolean;
   exitPending: boolean;
   goalStatusEntries: GoalStatusEntry[];
   footerStatusLayout: FooterStatusLayoutDecision;
@@ -172,6 +173,7 @@ export function ChatScreen({
   displayedCwd,
   gitBranch,
   goalMode,
+  planMode,
   exitPending,
   goalStatusEntries,
   footerStatusLayout,
@@ -275,6 +277,7 @@ export function ChatScreen({
           gitBranch={gitBranch}
           thinkingLevel={thinkingLevel}
           goalMode={goalMode}
+          planMode={planMode}
           exitPending={exitPending}
           renderMarkdown={renderMarkdown}
           goalStatusEntries={goalStatusEntries}

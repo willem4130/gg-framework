@@ -50,11 +50,16 @@ export interface RenderAppConfig {
   mcpManager?: MCPClientManager;
   authStorage?: AuthStorage;
   goalModeRef?: { current: GoalMode };
+  planModeRef?: { current: boolean };
   skills?: Skill[];
   initialOverlay?: "pixel" | "goal";
   rebuildToolsForCwd?: (cwd: string) => AgentTool[];
   goalReferencesRef?: { current: readonly GoalReference[] | undefined };
   connectInitialMcpTools?: () => Promise<AgentTool[]>;
+  planCallbacks?: {
+    onEnterPlan?: (reason?: string) => void | Promise<void>;
+    onExitPlan?: (planPath: string) => Promise<string>;
+  };
 }
 
 /**
@@ -139,6 +144,8 @@ export interface SessionStore {
   goalStatusEntries?: GoalStatusEntry[];
   /** Goal orchestration mode display state. */
   goalMode?: GoalMode;
+  /** Plan mode display/restriction state. */
+  planMode?: boolean;
 }
 
 export interface ResetUIOptions {
@@ -273,6 +280,7 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
     pendingGoalRun: undefined,
     goalStatusEntries: [],
     goalMode: config.goalModeRef?.current ?? "off",
+    planMode: config.planModeRef?.current ?? false,
   };
 
   const terminalHistoryPrinter = createTerminalHistoryPrinter();
@@ -314,11 +322,13 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
             mcpManager: config.mcpManager,
             authStorage: config.authStorage,
             goalModeRef: config.goalModeRef,
+            planModeRef: config.planModeRef,
             skills: config.skills,
             initialOverlay: config.initialOverlay,
             rebuildToolsForCwd: config.rebuildToolsForCwd,
             goalReferencesRef: config.goalReferencesRef,
             connectInitialMcpTools: config.connectInitialMcpTools,
+            planCallbacks: config.planCallbacks,
             terminalHistoryPrinter,
             resetUI,
             onRuntimeStateChange,

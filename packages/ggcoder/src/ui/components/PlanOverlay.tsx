@@ -55,6 +55,13 @@ const PLAN_LOGO = [
   " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
 ];
 
+const YOUR_PLAN_LOGO = [
+  "▗▖  ▗▖▗▄▖ ▗▖ ▗▖▗▄▄▖     ▗▄▄▖ ▗▖    ▗▄▖ ▗▖  ▗▖",
+  " ▝▚▞▘▐▌ ▐▌▐▌ ▐▌▐▌ ▐▌    ▐▌ ▐▌▐▌   ▐▌ ▐▌▐▛▚▖▐▌",
+  "  ▐▌ ▐▌ ▐▌▐▌ ▐▌▐▛▀▚▖    ▐▛▀▘ ▐▌   ▐▛▀▜▌▐▌ ▝▜▌",
+  "  ▐▌ ▝▚▄▞▘▝▚▄▞▘▐▌ ▐▌    ▐▌   ▐▙▄▄▖▐▌ ▐▌▐▌  ▐▌",
+];
+
 const AMBER_GRADIENT = [
   "#f59e0b",
   "#fbbf24",
@@ -134,6 +141,67 @@ interface PlanContentStaticItem {
 }
 
 type StaticItem = BannerStaticItem | PlanHeaderStaticItem | PlanContentStaticItem;
+
+interface PlanActionBarProps {
+  planName?: string;
+  confirmDelete: boolean;
+  rejectMode: boolean;
+  rejectFeedback: string;
+}
+
+export function PlanActionBar({
+  planName,
+  confirmDelete,
+  rejectMode,
+  rejectFeedback,
+}: PlanActionBarProps) {
+  const theme = useTheme();
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {confirmDelete && (
+        <Box marginTop={1}>
+          <Text color={theme.error}>
+            {"  Delete "}
+            <Text bold>{planName}</Text>
+            {"? (y/N)"}
+          </Text>
+        </Box>
+      )}
+
+      {rejectMode ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={theme.planPrimary}>{"Feedback (Enter to submit, Esc to cancel):"}</Text>
+          <Box>
+            <Text color={theme.text}>
+              {"> "}
+              {rejectFeedback}
+              {"▍"}
+            </Text>
+          </Box>
+        </Box>
+      ) : (
+        <Box marginTop={1} flexDirection="row">
+          <Box width={2} flexShrink={0}>
+            <Text color={theme.planPrimary}>{"◇ "}</Text>
+          </Box>
+          <Text color={theme.textDim}>
+            <Text color={theme.success}>a</Text>
+            {" approve · "}
+            <Text color={theme.error}>r</Text>
+            {" reject · "}
+            <Text color={theme.planPrimary}>d</Text>
+            {" delete · "}
+            <Text color={theme.planPrimary}>q</Text>
+            {" back · "}
+            <Text color={theme.planPrimary}>ESC</Text>
+            {" close"}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
 
 // ── Component ────────────────────────────────────────────
 
@@ -338,6 +406,16 @@ export function PlanOverlay({
     }
   });
 
+  function renderYourPlanBanner() {
+    return (
+      <Box flexDirection="column" marginTop={1} marginBottom={1} paddingLeft={1} width={columns}>
+        {YOUR_PLAN_LOGO.map((line, index) => (
+          <PlanGradientText key={index} text={line} />
+        ))}
+      </Box>
+    );
+  }
+
   // ── Shared banner renderer ──
   function renderBanner(subtitle?: string) {
     return columns < SIDE_BY_SIDE_MIN ? (
@@ -377,6 +455,15 @@ export function PlanOverlay({
     );
   }
 
+  const expandedActionArea = (
+    <PlanActionBar
+      planName={expandedPlan?.name}
+      confirmDelete={confirmDelete}
+      rejectMode={rejectMode}
+      rejectFeedback={rejectFeedback}
+    />
+  );
+
   // ── Expanded view (Static pushes content into terminal scrollback for native scroll) ──
   if (expandedPlan) {
     return (
@@ -384,7 +471,7 @@ export function PlanOverlay({
         <Static items={staticItems}>
           {(item) => {
             if (item.kind === "banner") {
-              return <React.Fragment key={item.id}>{renderBanner()}</React.Fragment>;
+              return <React.Fragment key={item.id}>{renderYourPlanBanner()}</React.Fragment>;
             }
             if (item.kind === "plan_header") {
               return (
@@ -412,44 +499,8 @@ export function PlanOverlay({
           }}
         </Static>
 
-        {/* Live area — action bar */}
-        {confirmDelete && (
-          <Box marginTop={1}>
-            <Text color={theme.error}>
-              {"  Delete "}
-              <Text bold>{expandedPlan.name}</Text>
-              {"? (y/N)"}
-            </Text>
-          </Box>
-        )}
-
-        {rejectMode ? (
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.planPrimary}>{"Feedback (Enter to submit, Esc to cancel):"}</Text>
-            <Box>
-              <Text color={theme.text}>
-                {"> "}
-                {rejectFeedback}
-                {"\u258D"}
-              </Text>
-            </Box>
-          </Box>
-        ) : (
-          <Box marginTop={1}>
-            <Text color={theme.textDim}>
-              <Text color={theme.success}>a</Text>
-              {" approve · "}
-              <Text color={theme.error}>r</Text>
-              {" reject · "}
-              <Text color={theme.planPrimary}>d</Text>
-              {" delete · "}
-              <Text color={theme.planPrimary}>q</Text>
-              {" back · "}
-              <Text color={theme.planPrimary}>ESC</Text>
-              {" close"}
-            </Text>
-          </Box>
-        )}
+        {/* Live area — review controls. Keep this outside Static so keypress state changes don't replay the plan into scrollback. */}
+        {expandedActionArea}
       </Box>
     );
   }

@@ -59,6 +59,19 @@ function renderWorkSection(): string {
   );
 }
 
+function renderPlanModeSection(): string {
+  return (
+    `## Plan Mode (ACTIVE)\n\n` +
+    `You are in PLAN MODE. Research and design an implementation plan before writing implementation code.\n\n` +
+    `### Plan-mode flow\n` +
+    `Explore with read/search/docs tools, draft a structured markdown plan at \`.gg/plans/<name>.md\`, then call \`exit_plan\` with that path for user review.\n\n` +
+    `### Rules\n` +
+    `- Do not implement yet: no code edits outside \`.gg/plans/\`, no bash, no subagent, no task/goal orchestration.\n` +
+    `- Be specific: list exact file paths, functions, dependencies, risks, and verification criteria.\n` +
+    `- Keep investigating until the plan is actionable, then stop after \`exit_plan\`.`
+  );
+}
+
 function renderGoalPlannerSection(): string {
   return (
     `## Goal Planner Mode (ACTIVE)\n\n` +
@@ -186,7 +199,7 @@ function renderUncachedDateSuffix(): string {
 export async function buildSystemPrompt(
   cwd: string,
   skills?: Skill[],
-  _legacyPlanMode?: boolean,
+  planMode?: boolean,
   approvedPlanPath?: string,
   toolNames?: readonly string[],
   activeLanguages?: Set<LanguageId>,
@@ -198,6 +211,7 @@ export async function buildSystemPrompt(
     renderWorkSection(),
   ];
 
+  if (goalMode === "off" && planMode) sections.push(renderPlanModeSection());
   if (goalMode === "planner") sections.push(renderGoalPlannerSection());
   if (goalMode === "setup") sections.push(renderGoalSetupSection());
   if (goalMode === "coordinator") sections.push(renderGoalCoordinatorSection());

@@ -148,14 +148,14 @@ export function StepDoneRow({ item }: { item: StepDoneItem }) {
   return (
     <Box key={item.id} paddingLeft={1} flexShrink={1}>
       <Text wrap="wrap">
-        <Text color={theme.success} bold>
+        <Text color={theme.planPrimary} bold>
           {presentation.glyph}
         </Text>
-        <Text color={theme.success} bold>
+        <Text color={theme.planPrimary} bold>
           {presentation.text}
         </Text>
         {presentation.description ? (
-          <Text color={theme.textDim}>{presentation.description}</Text>
+          <Text color={theme.accent}>{presentation.description}</Text>
         ) : null}
       </Text>
     </Box>

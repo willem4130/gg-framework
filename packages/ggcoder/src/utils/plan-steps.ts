@@ -75,7 +75,11 @@ function extractStepsSection(planContent: string): string | undefined {
  * not meant to be shown to the user.
  */
 export function stripDoneMarkers(text: string): string {
-  return text.replace(/\s*\[DONE:\d+\]\s*/gi, " ").replace(/  +/g, " ");
+  return text
+    .replace(/\s*\[DONE:\d+\]\s*/gi, " ")
+    .replace(/  +/g, " ")
+    .replace(/^ /, "")
+    .replace(/ $/, "");
 }
 
 /**

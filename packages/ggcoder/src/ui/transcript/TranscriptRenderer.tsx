@@ -96,13 +96,13 @@ export function renderTranscriptItem({
         />
       );
     case "user":
-      return (
+      return withTranscriptSpacing(
         <UserMessage
           key={item.id}
           text={item.text}
           imageCount={item.imageCount}
           pasteInfo={item.pasteInfo}
-        />
+        />,
       );
     case "goal":
       return withTranscriptSpacing(<GoalRow item={item} columns={columns} />);
