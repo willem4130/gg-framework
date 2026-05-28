@@ -3,35 +3,52 @@ import { DISPLAY_ITEM_CUSTOM_KIND, type SessionManager } from "../../core/sessio
 import { compactHistory } from "../item-helpers.js";
 import { trimFlushedItems } from "../live-item-flush.js";
 import type { CompletedItem } from "../app-items.js";
-import type { TerminalHistoryContext, TerminalHistoryPrinter } from "../terminal-history.js";
+import type { TerminalHistoryContext } from "../terminal-history.js";
 
-interface SessionStoreLike {
-  history?: CompletedItem[];
-  liveItems?: CompletedItem[];
+interface TranscriptHistoryItem {
+  id: string;
+  kind: string;
 }
 
-interface UseTranscriptHistoryOptions {
-  terminalHistoryPrinter?: TerminalHistoryPrinter;
+interface SessionStoreLike<TItem extends TranscriptHistoryItem> {
+  history?: TItem[];
+  liveItems?: TItem[];
+}
+
+interface TranscriptHistoryPrinter<TItem extends TranscriptHistoryItem> {
+  print(
+    items: readonly TItem[],
+    context: TerminalHistoryContext,
+    options?: { force?: boolean; write?: (data: string) => void },
+  ): void;
+  clear(): void;
+}
+
+interface UseTranscriptHistoryOptions<TItem extends TranscriptHistoryItem> {
+  terminalHistoryPrinter?: TranscriptHistoryPrinter<TItem>;
   terminalHistoryContext: TerminalHistoryContext;
   writeStdout: (data: string) => void;
   sessionPathRef: React.RefObject<string | undefined>;
   sessionManagerRef: React.RefObject<SessionManager | null>;
-  sessionStore?: SessionStoreLike;
-  history: readonly CompletedItem[];
-  setHistory: React.Dispatch<React.SetStateAction<CompletedItem[]>>;
-  setLiveItems: React.Dispatch<React.SetStateAction<CompletedItem[]>>;
+  sessionStore?: SessionStoreLike<TItem>;
+  history: readonly TItem[];
+  setHistory: React.Dispatch<React.SetStateAction<TItem[]>>;
+  setLiveItems: React.Dispatch<React.SetStateAction<TItem[]>>;
+  compactHistoryItems?: (items: TItem[]) => TItem[];
+  persistDisplayItem?: (item: TItem) => unknown;
+  trimFlushItems?: (items: TItem[]) => TItem[];
 }
 
-interface UseTranscriptHistoryResult {
-  pendingHistoryFlushRef: React.RefObject<CompletedItem[]>;
+export interface UseTranscriptHistoryResult<TItem extends TranscriptHistoryItem> {
+  pendingHistoryFlushRef: React.RefObject<TItem[]>;
   streamedAssistantFlushRef: React.RefObject<{ flushedChars: number; text: string }>;
-  printHistoryItems: (items: readonly CompletedItem[], options?: { force?: boolean }) => void;
-  queueFlush: (items: CompletedItem[]) => void;
-  finalizeSubmittedUserItem: (item: CompletedItem) => void;
+  printHistoryItems: (items: readonly TItem[], options?: { force?: boolean }) => void;
+  queueFlush: (items: TItem[]) => void;
+  finalizeSubmittedUserItem: (item: TItem) => void;
   clearPendingHistory: () => void;
 }
 
-export function useTranscriptHistory({
+export function useTranscriptHistory<TItem extends TranscriptHistoryItem = CompletedItem>({
   terminalHistoryPrinter,
   terminalHistoryContext,
   writeStdout,
@@ -41,9 +58,12 @@ export function useTranscriptHistory({
   history,
   setHistory,
   setLiveItems,
-}: UseTranscriptHistoryOptions): UseTranscriptHistoryResult {
+  compactHistoryItems = (items) => compactHistory(items as CompletedItem[]) as TItem[],
+  persistDisplayItem,
+  trimFlushItems = (items) => trimFlushedItems(items as CompletedItem[]) as TItem[],
+}: UseTranscriptHistoryOptions<TItem>): UseTranscriptHistoryResult<TItem> {
   const terminalHistoryContextRef = useRef<TerminalHistoryContext>(terminalHistoryContext);
-  const pendingHistoryFlushRef = useRef<CompletedItem[]>([]);
+  const pendingHistoryFlushRef = useRef<TItem[]>([]);
   const persistedDisplayItemIdsRef = useRef<Set<string>>(new Set());
   const streamedAssistantFlushRef = useRef<{ flushedChars: number; text: string }>({
     flushedChars: 0,
@@ -56,7 +76,7 @@ export function useTranscriptHistory({
   }, [terminalHistoryContext]);
 
   const printHistoryItems = useCallback(
-    (items: readonly CompletedItem[], options?: { force?: boolean }) => {
+    (items: readonly TItem[], options?: { force?: boolean }) => {
       if (!terminalHistoryPrinter || items.length === 0) return;
       terminalHistoryPrinter.print(items, terminalHistoryContextRef.current, {
         ...options,
@@ -67,8 +87,8 @@ export function useTranscriptHistory({
   );
 
   const queueFlush = useCallback(
-    (items: CompletedItem[]) => {
-      const flushed = trimFlushedItems(items);
+    (items: TItem[]) => {
+      const flushed = trimFlushItems(items);
       if (flushed.length === 0) return;
       pendingHistoryFlushRef.current = [...pendingHistoryFlushRef.current, ...flushed];
       const sessionPath = sessionPathRef.current;
@@ -80,7 +100,7 @@ export function useTranscriptHistory({
           void sessionManager.appendEntry(sessionPath, {
             type: "custom",
             kind: DISPLAY_ITEM_CUSTOM_KIND,
-            data: { version: 1, item },
+            data: { version: 1, item: persistDisplayItem ? persistDisplayItem(item) : item },
             id: `display-${item.id}`,
             parentId: null,
             timestamp: new Date().toISOString(),
@@ -95,7 +115,7 @@ export function useTranscriptHistory({
       }
       setHistoryFlushGeneration((generation) => generation + 1);
     },
-    [sessionManagerRef, sessionPathRef, sessionStore],
+    [persistDisplayItem, sessionManagerRef, sessionPathRef, sessionStore, trimFlushItems],
   );
 
   useEffect(() => {
@@ -113,25 +133,23 @@ export function useTranscriptHistory({
       const existingIds = new Set(prev.map((item) => item.id));
       const nextItems = flushed.filter((item) => !existingIds.has(item.id));
       if (nextItems.length === 0) return prev;
-      const next = compactHistory([...prev, ...nextItems]);
+      const next = compactHistoryItems([...prev, ...nextItems]);
       if (sessionStore) sessionStore.history = next;
       return next;
     });
   }, [historyFlushGeneration, printHistoryItems, sessionStore, setHistory, setLiveItems]);
 
   const finalizeSubmittedUserItem = useCallback(
-    (item: CompletedItem) => {
+    (item: TItem) => {
       streamedAssistantFlushRef.current = { flushedChars: 0, text: "" };
-      setLiveItems((prev) => {
-        const finalizedItems = [...prev, item];
-        queueFlush(finalizedItems);
-        // Print synchronously so the submitted prompt is anchored in terminal
-        // scrollback before assistant streaming starts. The queued flush still
-        // persists it and updates React history; the printer dedupes by id when
-        // the effect drains the queue.
-        printHistoryItems(finalizedItems);
-        return [];
-      });
+      const finalizedItems = [item];
+      queueFlush(finalizedItems);
+      // Print synchronously so the submitted prompt is anchored in terminal
+      // scrollback before assistant streaming starts. The queued flush still
+      // persists it and updates React history; the printer dedupes by id when
+      // the effect drains the queue.
+      printHistoryItems(finalizedItems);
+      setLiveItems([]);
     },
     [printHistoryItems, queueFlush, setLiveItems],
   );

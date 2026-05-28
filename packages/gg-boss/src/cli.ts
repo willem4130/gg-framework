@@ -115,7 +115,7 @@ function printHelpAndExit(): never {
       c(COLORS.textDim, '    project to manage. spec is "cwd" or "name=cwd". repeatable.\n') +
       "  " +
       c(COLORS.primary, "--boss-model <id>") +
-      c(COLORS.textDim, "       model for the orchestrator (default: claude-opus-4-7)\n") +
+      c(COLORS.textDim, "       model for the orchestrator (default: claude-opus-4-8)\n") +
       "  " +
       c(COLORS.primary, "--worker-model <id>") +
       c(COLORS.textDim, "     model for workers (default: claude-sonnet-4-6)\n") +
@@ -181,7 +181,7 @@ async function runServeSubcommand(argv: string[]): Promise<void> {
 
   const settings = await loadSettings();
   const bossProvider = settings.bossProvider ?? "anthropic";
-  const bossModel = cliBossModel ?? settings.bossModel ?? "claude-opus-4-7";
+  const bossModel = cliBossModel ?? settings.bossModel ?? "claude-opus-4-8";
   const workerProvider = settings.workerProvider ?? "anthropic";
   const workerModel = cliWorkerModel ?? settings.workerModel ?? "claude-sonnet-4-6";
 
@@ -228,7 +228,7 @@ async function runOrchestrator(args: CliArgs): Promise<void> {
   // restarts so the user doesn't have to re-pick every session.
   const settings = await loadSettings();
   const finalBossProvider = args.bossProvider ?? settings.bossProvider ?? "anthropic";
-  const finalBossModel = args.bossModel ?? settings.bossModel ?? "claude-opus-4-7";
+  const finalBossModel = args.bossModel ?? settings.bossModel ?? "claude-opus-4-8";
   const finalWorkerProvider = args.workerProvider ?? settings.workerProvider ?? "anthropic";
   const finalWorkerModel = args.workerModel ?? settings.workerModel ?? "claude-sonnet-4-6";
 

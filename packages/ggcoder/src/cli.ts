@@ -104,12 +104,14 @@ import { routeCliCommandInput, type CliSubcommandName } from "./cli/command-rout
 
 const _require = createRequire(import.meta.url);
 const CLI_VERSION = (_require("../package.json") as { version: string }).version;
-const THINKING_LEVELS = new Set<ThinkingLevel>(["low", "medium", "high", "xhigh"]);
+const THINKING_LEVELS = new Set<ThinkingLevel>(["low", "medium", "high", "xhigh", "max"]);
 
 export function parseThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
   if (value === undefined) return undefined;
   if (THINKING_LEVELS.has(value as ThinkingLevel)) return value as ThinkingLevel;
-  throw new Error(`Invalid --thinking value "${value}". Expected low, medium, high, or xhigh.`);
+  throw new Error(
+    `Invalid --thinking value "${value}". Expected low, medium, high, xhigh, or max.`,
+  );
 }
 
 // ── Logo + gradient (mirrors Banner.tsx) ────────────────────────────
@@ -209,7 +211,7 @@ function printHelp(): void {
     ["--model <name>", "Model to use (e.g. claude-sonnet-4-6, gpt-5.5)"],
     ["--max-turns <n>", "Maximum agent turns per prompt"],
     ["--system-prompt <text>", "Override the system prompt"],
-    ["--thinking <level>", "Enable thinking level (low, medium, high, xhigh)"],
+    ["--thinking <level>", "Enable thinking level (low, medium, high, xhigh, max)"],
     ["--resume <id>", "Resume a session by id"],
     ["--json", "JSON output mode (for sub-agents)"],
     ["--rpc", "JSON-RPC mode (for IDE integrations)"],
@@ -335,7 +337,7 @@ function main(): void {
   if (values.json) {
     const message = positionals[0] ?? "";
     const jsonProvider = (values.provider ?? "anthropic") as Provider;
-    const jsonModel = values.model ?? "claude-opus-4-7";
+    const jsonModel = values.model ?? "claude-opus-4-8";
     const maxTurns = values["max-turns"] ? parseInt(values["max-turns"], 10) : undefined;
     const systemPrompt = values["system-prompt"];
     const promptCacheKey = values["prompt-cache-key"];
@@ -360,7 +362,7 @@ function main(): void {
   // RPC mode — headless JSON-over-stdio for IDE integrations
   if (values.rpc) {
     const rpcProvider = (values.provider ?? "anthropic") as Provider;
-    const rpcModel = values.model ?? "claude-opus-4-7";
+    const rpcModel = values.model ?? "claude-opus-4-8";
     const systemPrompt = values["system-prompt"];
     const cwd = process.cwd();
     runRpcMode({
@@ -389,7 +391,7 @@ function main(): void {
     if (p === "minimax") return "MiniMax-M2.7";
     if (p === "deepseek") return "deepseek-v4-pro";
     if (p === "openrouter") return "qwen/qwen3.6-plus";
-    return "claude-opus-4-7";
+    return "claude-opus-4-8";
   }
 
   const model: string = saved.model ?? getHardcodedDefault(provider);
@@ -1173,7 +1175,7 @@ async function runSessions(): Promise<void> {
     if (p === "moonshot") return "kimi-k2.6";
     if (p === "minimax") return "MiniMax-M2.7";
     if (p === "deepseek") return "deepseek-v4-pro";
-    return "claude-opus-4-7";
+    return "claude-opus-4-8";
   }
 
   const model = saved2.model ?? getDefault(provider);

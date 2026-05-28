@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { toAnthropicMessages, toAnthropicTools, toOpenAIMessages } from "./transform.js";
+import {
+  toAnthropicMessages,
+  toAnthropicThinking,
+  toAnthropicTools,
+  toOpenAIMessages,
+  toOpenAIReasoningEffort,
+} from "./transform.js";
 import type { Message, Tool } from "../types.js";
 
 const exampleTools: Tool[] = [
@@ -15,6 +21,8 @@ const exampleTools: Tool[] = [
     parameters: z.object({ filePath: z.string(), content: z.string() }),
   },
 ];
+
+const MAX_TOKENS = 16_000;
 
 describe("Anthropic transform", () => {
   it("splits system prompt into cached and uncached blocks at the marker", () => {
@@ -90,5 +98,30 @@ describe("OpenAI transform", () => {
       { role: "system", content },
       { role: "user", content: "Hello" },
     ]);
+  });
+});
+
+describe("toAnthropicThinking", () => {
+  it("passes Anthropic adaptive effort levels through for Claude Opus 4.8", () => {
+    for (const level of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(toAnthropicThinking(level, MAX_TOKENS, "claude-opus-4-8").outputConfig).toEqual({
+        effort: level,
+      });
+    }
+  });
+
+  it("clamps xhigh to high on adaptive Anthropic models that do not support xhigh", () => {
+    expect(toAnthropicThinking("xhigh", MAX_TOKENS, "claude-sonnet-4-6").outputConfig).toEqual({
+      effort: "high",
+    });
+    expect(toAnthropicThinking("max", MAX_TOKENS, "claude-sonnet-4-6").outputConfig).toEqual({
+      effort: "max",
+    });
+  });
+});
+
+describe("toOpenAIReasoningEffort", () => {
+  it("clamps shared max thinking level to OpenAI's xhigh effort", () => {
+    expect(toOpenAIReasoningEffort("max", "gpt-5.5")).toBe("xhigh");
   });
 });

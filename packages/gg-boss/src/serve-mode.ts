@@ -101,7 +101,11 @@ export async function saveBossTelegramConfig(config: BossTelegramConfig): Promis
 function formatItemForTelegram(item: HistoryItem): string | null {
   switch (item.kind) {
     case "user":
-    case "tool":
+    case "tool_start":
+    case "tool_done":
+    case "compacting":
+    case "compacted":
+    case "stopped":
     case "worker_event":
       // user: echo of what they just sent
       // tool: orchestration plumbing the boss already summarizes in prose

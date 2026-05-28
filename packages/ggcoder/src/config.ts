@@ -97,7 +97,7 @@ export function loadSavedSettings(settingsFilePath?: string): SavedSettings {
   return result;
 }
 
-const VALID_THINKING_LEVELS = new Set<ThinkingLevel>(["low", "medium", "high", "xhigh"]);
+const VALID_THINKING_LEVELS = new Set<ThinkingLevel>(["low", "medium", "high", "xhigh", "max"]);
 
 function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === "string" && VALID_THINKING_LEVELS.has(value as ThinkingLevel);

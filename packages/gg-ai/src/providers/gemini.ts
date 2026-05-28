@@ -330,6 +330,7 @@ function toGemini3ThinkingLevel(
       return "MEDIUM";
     case "high":
     case "xhigh":
+    case "max":
       return "HIGH";
   }
 }
@@ -342,6 +343,7 @@ function toThinkingBudget(level: NonNullable<StreamOptions["thinking"]>): number
       return 8_192;
     case "high":
     case "xhigh":
+    case "max":
       return 8_192;
   }
 }

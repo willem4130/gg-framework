@@ -23,14 +23,7 @@ const SettingsSchema = z.object({
   defaultModel: z.string().optional(),
   maxTokens: z.number().int().min(256).default(16384),
   thinkingEnabled: z.boolean().default(false),
-  thinkingLevel: z
-    .preprocess(
-      // Legacy "max" → "xhigh" migration for settings files written before
-      // the rename. Matches OpenAI's GPT-5.5-era naming for the top tier.
-      (v) => (v === "max" ? "xhigh" : v),
-      z.enum(["low", "medium", "high", "xhigh"]),
-    )
-    .optional(),
+  thinkingLevel: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   theme: z
     .enum([
       "auto",

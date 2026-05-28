@@ -69,7 +69,7 @@ Switch mid-conversation with `/model`. Not locked to anyone.
 
 | Provider | Models | Auth |
 |---|---|---|
-| **Anthropic** | Claude Opus 4.7, Sonnet 4.6, Haiku 4.5 | OAuth |
+| **Anthropic** | Claude Opus 4.8, Sonnet 4.6, Haiku 4.5 | OAuth |
 | **OpenAI** | GPT-5.5, GPT-5.5 Pro, GPT-5.4, GPT-5.3 Codex | OAuth |
 | **Moonshot** | Kimi K2.6 | API key |
 | **Z.AI (GLM)** | GLM-5.1, GLM-4.7, GLM-4.7 Flash | API key |

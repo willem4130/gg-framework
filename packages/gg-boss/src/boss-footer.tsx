@@ -1,5 +1,6 @@
 import React from "react";
 import { Text, Box } from "ink";
+import type { ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { useTheme } from "@kenkaiiii/ggcoder/ui/theme";
 import { useTerminalSize } from "@kenkaiiii/ggcoder/ui/hooks/terminal-size";
 import { getContextWindow } from "@kenkaiiii/ggcoder";
@@ -7,9 +8,10 @@ import { COLORS } from "./branding.js";
 
 const PARTIAL_BLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
 const LIGHT_SHADE = "░";
+const BAR_WIDTH = 8;
 
 const SHORT_MODELS: Record<string, string> = {
-  "claude-opus-4-7": "Opus",
+  "claude-opus-4-8": "Opus",
   "claude-sonnet-4-6": "Sonnet",
   "claude-haiku-4-5": "Haiku",
   "claude-haiku-4-5-20251001": "Haiku",
@@ -23,10 +25,31 @@ function shortModel(model: string): string {
   return SHORT_MODELS[model] ?? model;
 }
 
-function getContextPercent(model: string, tokensIn: number): number {
+export function getBossFooterContextPercent(model: string, tokensIn: number): number {
   const limit = getContextWindow(model);
   if (!limit || tokensIn === 0) return 0;
   return Math.round((tokensIn / limit) * 100);
+}
+
+function getContextColor(pct: number, theme: ReturnType<typeof useTheme>): string {
+  if (pct >= 80) return theme.error;
+  if (pct >= 50) return theme.warning;
+  return theme.success;
+}
+
+function getThinkingColor(
+  level: ThinkingLevel | undefined,
+  theme: ReturnType<typeof useTheme>,
+): string {
+  if (!level) return theme.textDim;
+  if (level === "low") return theme.textMuted;
+  if (level === "medium") return theme.accent;
+  if (level === "high") return theme.warning;
+  return COLORS.accent;
+}
+
+export function getBossFooterThinkingLabel(level: ThinkingLevel | undefined): string {
+  return level ? `Thinking ${level}` : "Thinking off";
 }
 
 interface BossFooterProps {
@@ -36,20 +59,16 @@ interface BossFooterProps {
   tokensIn: number;
   exitPending: boolean;
   /** Boss extended-thinking level. Falsy when thinking is off. */
-  bossThinkingLevel?: string;
-  /** Auto-updater has installed a newer @kenkaiiii/gg-boss in the background.
-   *  Show a "restart to apply" hint at the end of the footer row. */
+  bossThinkingLevel?: ThinkingLevel;
+  /** Auto-updater has installed a newer @kenkaiiii/gg-boss in the background. */
   updatePending?: boolean;
-  /** id of the currently-playing radio station (from RADIO_STATIONS), or null
-   *  when the radio is off. Renders as `♪ <short name>` between thinking and
-   *  the update notice. */
+  /** id of the currently-playing radio station, or null when the radio is off. */
   currentRadioStationId?: string | null;
+  scope: string;
+  workerCount?: number;
+  activeWorkerCount?: number;
 }
 
-// Short, recognisable station names for the footer slot. The picker shows the
-// full name; here we just want enough to tell stations apart without eating
-// column budget. Order matters: more-frequent first because pattern matching
-// in the renderer is cheap-but-still-O(n).
 const SHORT_RADIO: Record<string, string> = {
   "somafm-groove-salad": "Groove Salad",
   "somafm-drone-zone": "Drone Zone",
@@ -57,11 +76,34 @@ const SHORT_RADIO: Record<string, string> = {
   "george-fm": "George FM",
 };
 
-/**
- * Footer for gg-boss that mirrors ggcoder's Footer visual style — context bar
- * with partial-block precision, percent, then BOTH models displayed in the
- * same bold/coloured treatment so neither feels secondary.
- */
+function renderContextBar({
+  contextPct,
+  contextColor,
+  dimColor,
+}: {
+  contextPct: number;
+  contextColor: string;
+  dimColor: string;
+}): React.ReactElement[] {
+  const fillFloat = Math.min((contextPct / 100) * BAR_WIDTH, BAR_WIDTH);
+  const barChars: React.ReactElement[] = [];
+  for (let i = 0; i < BAR_WIDTH; i++) {
+    const cellFill = Math.max(0, Math.min(1, fillFloat - i));
+    const eighths = Math.round(cellFill * 8);
+    barChars.push(
+      <Text key={i} color={eighths > 0 ? contextColor : dimColor}>
+        {eighths > 0 ? PARTIAL_BLOCKS[eighths] : LIGHT_SHADE}
+      </Text>,
+    );
+  }
+  return barChars;
+}
+
+export function getBossFooterScopeLabel(scope: string): string {
+  return scope === "all" ? "all projects" : scope;
+}
+
+/** Footer matching ggcoder's structure: left context label, right status cluster. */
 export function BossFooter({
   bossModel,
   workerModel,
@@ -70,129 +112,110 @@ export function BossFooter({
   bossThinkingLevel,
   updatePending,
   currentRadioStationId,
+  scope,
 }: BossFooterProps): React.ReactElement {
   const theme = useTheme();
   const { columns } = useTerminalSize();
 
   if (exitPending) {
     return (
-      <Box paddingX={1}>
+      <Box paddingLeft={1} paddingRight={1} width={columns}>
         <Text color={theme.warning}>Press Ctrl+C again to exit</Text>
       </Box>
     );
   }
 
-  const contextPct = getContextPercent(bossModel, tokensIn);
-  const contextColor =
-    contextPct >= 80 ? theme.error : contextPct >= 50 ? theme.warning : theme.success;
-
+  const contextPct = getBossFooterContextPercent(bossModel, tokensIn);
+  const contextColor = getContextColor(contextPct, theme);
   const sep = <Text color={theme.border}>{" │ "}</Text>;
-
-  // Context bar — same partial-block precision as ggcoder's Footer.
-  const barWidth = 8;
-  const fillFloat = Math.min((contextPct / 100) * barWidth, barWidth);
-  const barChars: React.ReactElement[] = [];
-  for (let i = 0; i < barWidth; i++) {
-    const cellFill = Math.max(0, Math.min(1, fillFloat - i));
-    const eighths = Math.round(cellFill * 8);
-    if (eighths === 8) {
-      barChars.push(
-        <Text key={i} color={contextColor}>
-          {PARTIAL_BLOCKS[8]}
-        </Text>,
-      );
-    } else if (eighths > 0) {
-      barChars.push(
-        <Text key={i} color={contextColor}>
-          {PARTIAL_BLOCKS[eighths]}
-        </Text>,
-      );
-    } else {
-      barChars.push(
-        <Text key={i} color={theme.textDim}>
-          {LIGHT_SHADE}
-        </Text>,
-      );
-    }
-  }
-
-  // Priority-drop layout: when terminal is narrower than the full footer
-  // would need, we shed lower-priority chrome to keep the row from wrapping.
-  // Ranked highest-to-lowest priority:
-  //   1. context bar + %         — always visible (essential)
-  //   2. update notice           — actionable; user needs to know
-  //   3. radio                   — visible state of an audio process they started
-  //   4. boss/worker model names — frequent reference, but stable
-  //   5. thinking indicator      — least chatty, easiest to hide first
-  //   6. "boss "/"workers " text labels — pure decoration
-  //
-  // Approximate per-section widths (with separator " │ "):
-  //   bar+% = ~12, model = ~5+name+3 sep, thinking = ~14, radio ≈ ♪+name+3,
-  //   update = ~30. We compute and degrade in stages.
+  const bossName = shortModel(bossModel);
+  const workerName = shortModel(workerModel);
+  const thinkingText = getBossFooterThinkingLabel(bossThinkingLevel);
   const radioName = currentRadioStationId
     ? (SHORT_RADIO[currentRadioStationId] ?? currentRadioStationId)
     : null;
-  const bossM = shortModel(bossModel);
-  const wkrM = shortModel(workerModel);
+  const updateText = updatePending ? "Update ready. Restart GG Boss." : null;
+  const leftText = getBossFooterScopeLabel(scope);
 
-  // Rough char estimate; padding=2, separators are " │ " (3 each).
-  const estFull =
-    2 +
-    12 + // bar + " 99%"
-    3 +
-    5 +
-    bossM.length + // " │ boss <model>"
-    3 +
-    8 +
-    wkrM.length + // " │ workers <model>"
-    3 +
-    12 + // " │ Thinking off"
-    (radioName ? 3 + 2 + radioName.length : 0) + // " │ ♪ Name"
-    (updatePending ? 3 + 28 : 0); // " │ Update ready. Restart GG Boss."
+  const barChars = renderContextBar({
+    contextPct,
+    contextColor,
+    dimColor: theme.textDim,
+  });
 
-  const dropLabels = estFull > columns; // stage 1: kill "boss "/"workers " words
-  const dropThinking = estFull > columns + 14; // stage 2: kill thinking indicator
-  const useShortUpdate = updatePending && estFull > columns + 6; // stage 3: shrink the update notice
+  const rightLen =
+    BAR_WIDTH +
+    1 +
+    String(contextPct).length +
+    3 +
+    bossName.length +
+    3 +
+    "workers ".length +
+    workerName.length +
+    3 +
+    thinkingText.length +
+    (radioName ? 3 + 2 + radioName.length : 0) +
+    (updateText ? 3 + updateText.length : 0);
+  const availableWidth = columns - 2;
+  const fitsOnOneLine = leftText.length + rightLen <= availableWidth;
+  const hideRadio = !!radioName && leftText.length + rightLen > availableWidth + 8;
+  const compactUpdate = !!updateText && leftText.length + rightLen > availableWidth + 12;
+
+  const rightContent = (
+    <>
+      <Text>{barChars}</Text>
+      <Text color={contextColor}> {contextPct}%</Text>
+      {sep}
+      <Text color={theme.primary} bold>
+        {bossName}
+      </Text>
+      {sep}
+      <Text color={theme.textDim}>workers </Text>
+      <Text color={COLORS.accent} bold>
+        {workerName}
+      </Text>
+      {sep}
+      <Text color={getThinkingColor(bossThinkingLevel, theme)} bold={bossThinkingLevel === "high"}>
+        {thinkingText}
+      </Text>
+      {radioName && !hideRadio && (
+        <>
+          {sep}
+          <Text color={theme.secondary}>♪ {radioName}</Text>
+        </>
+      )}
+      {updateText && (
+        <>
+          {sep}
+          <Text color={theme.success} bold wrap="truncate">
+            {compactUpdate ? "Update ready" : updateText}
+          </Text>
+        </>
+      )}
+    </>
+  );
+
+  if (fitsOnOneLine) {
+    return (
+      <Box paddingLeft={1} paddingRight={1} width={columns}>
+        <Box flexGrow={1}>
+          <Text color={theme.textDim} wrap="truncate">
+            {leftText}
+          </Text>
+        </Box>
+        <Box flexShrink={0}>{rightContent}</Box>
+      </Box>
+    );
+  }
 
   return (
-    <Box paddingX={1} width={columns}>
-      <Box flexGrow={1} />
-      <Box flexShrink={0}>
-        <Text>{barChars}</Text>
-        <Text color={contextColor}> {contextPct}%</Text>
-        {sep}
-        {!dropLabels && <Text color={theme.textDim}>boss </Text>}
-        <Text color={COLORS.primary} bold>
-          {bossM}
+    <Box flexDirection="column" paddingLeft={1} paddingRight={1} width={columns}>
+      <Box>
+        <Text color={theme.textDim} wrap="truncate">
+          {leftText}
         </Text>
-        {sep}
-        {!dropLabels && <Text color={theme.textDim}>workers </Text>}
-        <Text color={COLORS.accent} bold>
-          {wkrM}
-        </Text>
-        {!dropThinking && (
-          <>
-            {sep}
-            <Text color={bossThinkingLevel ? theme.accent : theme.textDim}>
-              {bossThinkingLevel ? "Thinking on" : "Thinking off"}
-            </Text>
-          </>
-        )}
-        {radioName && (
-          <>
-            {sep}
-            <Text color={theme.secondary ?? theme.accent}>♪ {radioName}</Text>
-          </>
-        )}
-        {updatePending && (
-          <>
-            {sep}
-            <Text color={theme.success} bold wrap="truncate">
-              {useShortUpdate ? "Update ready" : "Update ready. Restart GG Boss."}
-            </Text>
-          </>
-        )}
       </Box>
+      <Box>{rightContent}</Box>
     </Box>
   );
 }

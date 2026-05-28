@@ -27,4 +27,7 @@ export { ActivityIndicator } from "./ActivityIndicator.js";
 export { SlashCommandMenu, type SlashCommandInfo } from "./SlashCommandMenu.js";
 export { Banner } from "./Banner.js";
 export { CompactionSpinner, CompactionDone } from "./CompactionNotice.js";
+export { ChatLayout, ChatControls, ChatLiveArea, ChatInputFooterStack } from "./ChatLayout.js";
+export { ChatLivePane } from "./ChatLivePane.js";
+export { ChatInputStack } from "./ChatInputStack.js";
 export type { ActivityPhase, RetryInfo } from "../hooks/useAgentLoop.js";

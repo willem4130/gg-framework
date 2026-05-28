@@ -145,9 +145,11 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     stream: useStreaming,
   } as Anthropic.MessageCreateParams;
 
-  // Adaptive thinking models (Opus 4.7, Opus 4.6, Sonnet 4.6) don't need the
+  // Adaptive thinking models (Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6) don't need the
   // interleaved-thinking beta — they have it built in.
   const hasAdaptiveThinking =
+    options.model.includes("opus-4-8") ||
+    options.model.includes("opus-4.8") ||
     options.model.includes("opus-4-7") ||
     options.model.includes("opus-4.7") ||
     options.model.includes("opus-4-6") ||

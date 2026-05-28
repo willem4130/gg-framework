@@ -41,6 +41,26 @@
       "import": "./dist/ui/hooks/useDoublePress.js",
       "types": "./dist/ui/hooks/useDoublePress.d.ts"
     },
+    "./ui/hooks/transcript-history": {
+      "import": "./dist/ui/hooks/useTranscriptHistory.js",
+      "types": "./dist/ui/hooks/useTranscriptHistory.d.ts"
+    },
+    "./ui/transcript/spacing": {
+      "import": "./dist/ui/transcript/spacing.js",
+      "types": "./dist/ui/transcript/spacing.d.ts"
+    },
+    "./ui/transcript/frame": {
+      "import": "./dist/ui/transcript/TranscriptItemFrame.js",
+      "types": "./dist/ui/transcript/TranscriptItemFrame.d.ts"
+    },
+    "./ui/terminal-history": {
+      "import": "./dist/ui/terminal-history.js",
+      "types": "./dist/ui/terminal-history.d.ts"
+    },
+    "./ui/terminal-history-format": {
+      "import": "./dist/ui/terminal-history-format.js",
+      "types": "./dist/ui/terminal-history-format.d.ts"
+    },
     "./ui/login": {
       "import": "./dist/ui/login.js",
       "types": "./dist/ui/login.d.ts"

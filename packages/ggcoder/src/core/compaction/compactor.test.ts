@@ -107,7 +107,7 @@ describe("shouldCompact", () => {
     }
     const estimated = estimateConversationTokens(messages);
 
-    const opusContext = getContextWindow("claude-opus-4-7");
+    const opusContext = getContextWindow("claude-opus-4-8");
     const kimiContext = getContextWindow("kimi-k2.6");
 
     // Sanity: Opus has 1M, Kimi has 256k
@@ -193,7 +193,7 @@ describe("compaction thresholds across all models", () => {
   }
 
   const modelThresholds: { model: string; contextWindow: number }[] = [
-    { model: "claude-opus-4-7", contextWindow: 1_000_000 },
+    { model: "claude-opus-4-8", contextWindow: 1_000_000 },
     { model: "claude-sonnet-4-6", contextWindow: 1_000_000 },
     { model: "claude-haiku-4-5-20251001", contextWindow: 200_000 },
     { model: "gpt-5.3-codex", contextWindow: 400_000 },

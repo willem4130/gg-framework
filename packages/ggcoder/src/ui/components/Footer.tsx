@@ -16,8 +16,8 @@ interface FooterProps {
   gitBranch?: string | null;
   /**
    * Active thinking tier, or `undefined` when thinking is off. The footer
-   * renders the tier verbatim (`Thinking xhigh`) and color-codes by power.
-   * `xhigh` additionally shimmers to signal it's the top tier.
+   * renders the tier verbatim (`Thinking max`) and color-codes by power.
+   * `xhigh` and `max` additionally shimmer to signal high-power modes.
    */
   thinkingLevel?: ThinkingLevel;
   goalMode?: GoalMode;
@@ -44,7 +44,7 @@ interface FooterProps {
 
 // Model ID → short display name
 const MODEL_SHORT_NAMES: Record<string, string> = {
-  "claude-opus-4-7": "Opus",
+  "claude-opus-4-8": "Opus",
   "claude-sonnet-4-6": "Sonnet",
   "claude-haiku-4-5": "Haiku",
   "claude-haiku-4-5-20251001": "Haiku",
@@ -76,11 +76,11 @@ function getContextColor(pct: number, theme: ReturnType<typeof useTheme>): strin
 
 // ── Thinking-level visual treatment ─────────────────────────
 //
-// Higher tier = warmer / more saturated color. `xhigh` adds a moving shimmer
-// so the top tier reads as visibly "on full power" at a glance.
+// Higher tier = warmer / more saturated color. `xhigh` and `max` add a moving
+// shimmer so high-power modes read as visibly "on full power" at a glance.
 
-const XHIGH_COLOR = "#db2777"; // hot pink — the visible "max power" tone
-const XHIGH_SHIMMER_COLOR = "#f472b6"; // brighter pink that rides the shimmer
+const MAX_COLOR = "#db2777"; // hot pink — the visible "max power" tone
+const MAX_SHIMMER_COLOR = "#f472b6"; // brighter pink that rides the shimmer
 const GOAL_COLOR = "#22c55e";
 const GOAL_SHIMMER_COLOR = "#86efac";
 const PLAN_COLOR = "#a78bfa";
@@ -95,7 +95,7 @@ function getThinkingColor(
   if (level === "low") return theme.textMuted;
   if (level === "medium") return theme.accent;
   if (level === "high") return theme.warning;
-  return XHIGH_COLOR; // xhigh
+  return MAX_COLOR; // xhigh / max
 }
 
 /**
@@ -283,7 +283,7 @@ export function Footer({
   const planText = planMode ? "Plan on" : "Plan off";
   const thinkingColor = getThinkingColor(thinkingLevel, theme);
   const reducedMotion = useReducedMotion();
-  const shimmerXhigh = thinkingLevel === "xhigh" && !reducedMotion;
+  const shimmerMaxPower = (thinkingLevel === "xhigh" || thinkingLevel === "max") && !reducedMotion;
   const shimmerGoal = goalActive && !reducedMotion;
   const shimmerPlan = planMode && !reducedMotion;
 
@@ -362,11 +362,11 @@ export function Footer({
         </>
       )}
       {sep}
-      {shimmerXhigh ? (
+      {shimmerMaxPower ? (
         <ShimmerLabel
           text={thinkingText}
-          color={XHIGH_COLOR}
-          shimmerColor={XHIGH_SHIMMER_COLOR}
+          color={MAX_COLOR}
+          shimmerColor={MAX_SHIMMER_COLOR}
           active={!exitPending}
         />
       ) : (

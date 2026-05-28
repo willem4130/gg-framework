@@ -697,7 +697,6 @@ export class GGBoss {
           bossStore.finishStreaming();
           return;
         }
-        bossStore.appendInfo("Interrupted by user.", "warning");
         bossStore.finishStreaming();
         await this.persistNewMessages();
         // Was `continue` to skip post-stream cleanup. Now we're inside

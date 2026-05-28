@@ -13,13 +13,21 @@ export interface FfmpegResult {
   stderr: string;
 }
 
+const VERSION_PROBE_TIMEOUT_MS = 1_000;
+
 export function checkFfmpeg(): boolean {
-  const r = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
+  const r = spawnSync("ffmpeg", ["-version"], {
+    encoding: "utf8",
+    timeout: VERSION_PROBE_TIMEOUT_MS,
+  });
   return r.status === 0;
 }
 
 export function checkFfprobe(): boolean {
-  const r = spawnSync("ffprobe", ["-version"], { encoding: "utf8" });
+  const r = spawnSync("ffprobe", ["-version"], {
+    encoding: "utf8",
+    timeout: VERSION_PROBE_TIMEOUT_MS,
+  });
   return r.status === 0;
 }
 

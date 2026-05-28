@@ -23,10 +23,10 @@ const CACHE_KEY = `verify-caching-${Date.now()}`;
 
 const TARGETS = [
   {
-    name: "anthropic / claude-opus-4-7",
+    name: "anthropic / claude-opus-4-8",
     options: () => ({
       provider: "anthropic",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       apiKey: auth.anthropic.accessToken,
       messages: [
         { role: "system", content: SYSTEM },

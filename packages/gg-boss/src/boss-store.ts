@@ -10,6 +10,16 @@ import type {
   ToolResult,
 } from "@kenkaiiii/gg-ai";
 import type { WorkerStatus, WorkerTurnSummary } from "./types.js";
+import type {
+  BossAssistantItem,
+  BossDisplayItem,
+  BossInfoItem,
+  BossTaskDispatchItem,
+  BossToolDoneItem,
+  BossUserItem,
+  BossWorkerEventItem,
+  BossWorkerErrorItem,
+} from "./boss-ui-items.js";
 
 let nextId = 1;
 const id = (): string => `i${nextId++}`;
@@ -30,7 +40,7 @@ let historyTrimmedUpTo = 0;
 
 function trimItemFields(item: HistoryItem): void {
   switch (item.kind) {
-    case "tool":
+    case "tool_done":
       if (item.result.length > 200) item.result = HISTORY_TRIM_MARKER;
       // args and details can be large (full prompt_worker prompts, nested
       // objects) — release them entirely.
@@ -107,59 +117,12 @@ function toolResultText(content: ToolResult["content"]): string {
 
 // ── History items (rendered in Ink Static) ─────────────────
 
-export interface UserItem {
-  kind: "user";
-  id: string;
-  text: string;
-  timestamp: number;
-}
-
-export interface AssistantItem {
-  kind: "assistant";
-  id: string;
-  text: string;
-  durationMs: number;
-  thinking?: string;
-  thinkingMs?: number;
-}
-
-export interface ToolItem {
-  kind: "tool";
-  id: string;
-  toolCallId: string;
-  name: string;
-  args: Record<string, unknown>;
-  isError: boolean;
-  durationMs: number;
-  result: string;
-  details?: unknown;
-}
-
-export interface WorkerEventItem {
-  kind: "worker_event";
-  id: string;
-  project: string;
-  status: WorkerStatus;
-  finalText: string;
-  toolsUsed: { name: string; ok: boolean }[];
-  turnIndex: number;
-  timestamp: string;
-}
-
-export interface WorkerErrorItem {
-  kind: "worker_error";
-  id: string;
-  project: string;
-  message: string;
-  timestamp: string;
-}
-
-export interface InfoItem {
-  kind: "info";
-  id: string;
-  text: string;
-  level?: "info" | "warning" | "error";
-}
+export type UserItem = BossUserItem;
+export type AssistantItem = BossAssistantItem;
+export type ToolItem = BossToolDoneItem;
+export type WorkerEventItem = BossWorkerEventItem;
+export type WorkerErrorItem = BossWorkerErrorItem;
+export type InfoItem = BossInfoItem;
 
 /**
  * Task-dispatch announcement. Rendered when the user (or boss) fires a batch
@@ -167,12 +130,7 @@ export interface InfoItem {
  * info text) so each project name can be drawn in its own projectColor() —
  * matching the WorkerStatusBar / WorkerEventRow / scope pill conventions.
  */
-export interface TaskDispatchItem {
-  kind: "task_dispatch";
-  id: string;
-  tasks: { project: string; title: string }[];
-  timestamp: number;
-}
+export type TaskDispatchItem = BossTaskDispatchItem;
 
 /**
  * Auto-update notice ("Ken just shipped 4.3.x!"). Distinct from a plain
@@ -180,21 +138,9 @@ export interface TaskDispatchItem {
  * ggcoder uses — without this, the update message renders in flat default
  * text and goes unnoticed amid worker chatter.
  */
-export interface UpdateNoticeItem {
-  kind: "update_notice";
-  id: string;
-  text: string;
-}
+export type UpdateNoticeItem = BossDisplayItem & { kind: "update_notice" };
 
-export type HistoryItem =
-  | UserItem
-  | AssistantItem
-  | ToolItem
-  | WorkerEventItem
-  | WorkerErrorItem
-  | InfoItem
-  | TaskDispatchItem
-  | UpdateNoticeItem;
+export type HistoryItem = BossDisplayItem;
 
 // ── Streaming (current boss turn, rendered live above the input) ────
 
@@ -251,6 +197,7 @@ export interface BossUiState {
   /** Providers the user is logged in to — controls which models the picker offers. */
   loggedInProviders: Provider[];
   history: HistoryItem[];
+  liveItems: HistoryItem[];
   /**
    * Two-phase flush queue. Items here have already been REMOVED from the
    * streaming live-area (so it has shrunk) but not yet committed to history.
@@ -303,6 +250,7 @@ const initialState: BossUiState = {
   workerModel: "",
   loggedInProviders: [],
   history: [],
+  liveItems: [],
   pendingFlush: [],
   flushGeneration: 0,
   pendingEndOfTurnInfos: [],
@@ -401,10 +349,32 @@ export const bossStore = {
     notify();
   },
 
-  appendUser(text: string): void {
+  createUserItem(text: string): UserItem {
+    const item: UserItem = { kind: "user", id: id(), text, timestamp: Date.now() };
     state = {
       ...state,
-      history: [...state.history, { kind: "user", id: id(), text, timestamp: Date.now() }],
+      liveItems: [...state.liveItems, item],
+    };
+    notify();
+    return item;
+  },
+
+  appendUser(text: string): void {
+    const item: UserItem = { kind: "user", id: id(), text, timestamp: Date.now() };
+    state = {
+      ...state,
+      history: [...state.history, item],
+    };
+    trimAgedHistory();
+    notify();
+  },
+
+  commitLiveItem(item: HistoryItem): void {
+    const exists = state.history.some((historyItem) => historyItem.id === item.id);
+    state = {
+      ...state,
+      liveItems: state.liveItems.filter((liveItem) => liveItem.id !== item.id),
+      history: exists ? state.history : [...state.history, item],
     };
     trimAgedHistory();
     notify();
@@ -412,23 +382,22 @@ export const bossStore = {
 
   appendTaskDispatch(tasks: { project: string; title: string }[]): void {
     if (tasks.length === 0) return;
+    const item: HistoryItem = { kind: "task_dispatch", id: id(), tasks, timestamp: Date.now() };
     state = {
       ...state,
-      history: [
-        ...state.history,
-        { kind: "task_dispatch", id: id(), tasks, timestamp: Date.now() },
-      ],
+      pendingFlush: [...state.pendingFlush, item],
+      flushGeneration: state.flushGeneration + 1,
     };
-    trimAgedHistory();
     notify();
   },
 
   appendInfo(text: string, level: InfoItem["level"] = "info"): void {
+    const item: HistoryItem = { kind: "info", id: id(), text, level };
     state = {
       ...state,
-      history: [...state.history, { kind: "info", id: id(), text, level }],
+      pendingFlush: [...state.pendingFlush, item],
+      flushGeneration: state.flushGeneration + 1,
     };
-    trimAgedHistory();
     notify();
   },
 
@@ -439,11 +408,12 @@ export const bossStore = {
    * worker chatter, this stands out.
    */
   appendUpdateNotice(text: string): void {
+    const item: HistoryItem = { kind: "update_notice", id: id(), text };
     state = {
       ...state,
-      history: [...state.history, { kind: "update_notice", id: id(), text }],
+      pendingFlush: [...state.pendingFlush, item],
+      flushGeneration: state.flushGeneration + 1,
     };
-    trimAgedHistory();
     notify();
   },
 
@@ -470,10 +440,10 @@ export const bossStore = {
     }));
     state = {
       ...state,
-      history: [...state.history, ...newRows],
+      pendingFlush: [...state.pendingFlush, ...newRows],
+      flushGeneration: state.flushGeneration + 1,
       pendingEndOfTurnInfos: [],
     };
-    trimAgedHistory();
     notify();
   },
 
@@ -557,21 +527,34 @@ export const bossStore = {
   },
 
   startCompaction(): void {
+    const compaction = {
+      state: "running" as const,
+      originalCount: 0,
+      newCount: 0,
+      tokensBefore: state.bossInputTokens,
+      tokensAfter: 0,
+    };
     state = {
       ...state,
-      compaction: {
-        state: "running",
-        originalCount: 0,
-        newCount: 0,
-        tokensBefore: state.bossInputTokens,
-        tokensAfter: 0,
-      },
+      compaction,
+      liveItems: [
+        ...state.liveItems.filter((item) => item.kind !== "compacting"),
+        { kind: "compacting", id: "boss-compacting" },
+      ],
     };
     notify();
   },
 
   endCompaction(originalCount: number, newCount: number): void {
     const before = state.compaction?.tokensBefore ?? state.bossInputTokens;
+    const item: HistoryItem = {
+      kind: "compacted",
+      id: id(),
+      originalCount,
+      newCount,
+      tokensBefore: before,
+      tokensAfter: state.bossInputTokens,
+    };
     state = {
       ...state,
       compaction: {
@@ -581,18 +564,29 @@ export const bossStore = {
         tokensBefore: before,
         tokensAfter: state.bossInputTokens,
       },
+      liveItems: state.liveItems.filter((liveItem) => liveItem.kind !== "compacting"),
+      pendingFlush: [...state.pendingFlush, item],
+      flushGeneration: state.flushGeneration + 1,
     };
     notify();
   },
 
   cancelCompaction(): void {
-    state = { ...state, compaction: null };
+    state = {
+      ...state,
+      compaction: null,
+      liveItems: state.liveItems.filter((item) => item.kind !== "compacting"),
+    };
     notify();
   },
 
   /** Read-only accessor for the orchestrator (which lives outside React). */
   getInputTokens(): number {
     return state.bossInputTokens;
+  },
+
+  getPhase(): BossUiState["phase"] {
+    return state.phase;
   },
 
   setBossInputTokens(tokens: number): void {
@@ -603,16 +597,27 @@ export const bossStore = {
 
   startTool(toolCallId: string, name: string, args: Record<string, unknown>): void {
     if (!state.streaming) return;
+    const startedAt = Date.now();
     const tool: StreamingTool = {
       toolCallId,
       name,
       args,
       status: "running",
-      startedAt: Date.now(),
+      startedAt,
+    };
+    const liveTool: HistoryItem = {
+      kind: "tool_start",
+      id: toolCallId,
+      toolCallId,
+      name,
+      args,
+      startedAt,
+      animateUntil: startedAt + 1_000,
     };
     state = {
       ...state,
       streaming: { ...state.streaming, tools: [...state.streaming.tools, tool] },
+      liveItems: [...state.liveItems, liveTool],
     };
     notify();
   },
@@ -632,7 +637,7 @@ export const bossStore = {
       return;
     }
     const historyItem: HistoryItem = {
-      kind: "tool",
+      kind: "tool_done",
       id: id(),
       toolCallId: tool.toolCallId,
       name: tool.name,
@@ -647,6 +652,7 @@ export const bossStore = {
     state = {
       ...state,
       streaming: { ...state.streaming, tools: remaining },
+      liveItems: state.liveItems.filter((item) => item.id !== toolCallId),
       pendingFlush: [...state.pendingFlush, historyItem],
       flushGeneration: state.flushGeneration + 1,
     };
@@ -704,6 +710,13 @@ export const bossStore = {
     notify();
   },
 
+  clearPendingFlush(): void {
+    if (state.pendingFlush.length === 0) return;
+    state = { ...state, pendingFlush: [] };
+    trimAgedHistory();
+    notify();
+  },
+
   /**
    * Called when the user interrupts (ESC / Ctrl+C while running). Stops all
    * in-flight running tools, queueing them in pendingFlush as errored "Stopped."
@@ -717,7 +730,7 @@ export const bossStore = {
     for (const t of state.streaming.tools) {
       if (t.status === "running") {
         stoppedItems.push({
-          kind: "tool",
+          kind: "tool_done",
           id: id(),
           toolCallId: t.toolCallId,
           name: t.name,
@@ -734,7 +747,18 @@ export const bossStore = {
     state = {
       ...state,
       streaming: { ...state.streaming, tools: remainingTools },
-      pendingFlush: [...state.pendingFlush, ...stoppedItems],
+      liveItems: state.liveItems.filter((item) => {
+        if (item.kind !== "tool_start") return true;
+        return !stoppedItems.some((stopped) => {
+          if (stopped.kind !== "tool_done") return false;
+          return stopped.toolCallId === item.toolCallId;
+        });
+      }),
+      pendingFlush: [
+        ...state.pendingFlush,
+        ...stoppedItems,
+        { kind: "stopped", id: id(), text: "Request was stopped." },
+      ],
       flushGeneration: state.flushGeneration + 1,
     };
     notify();
@@ -768,7 +792,7 @@ export const bossStore = {
     // Defensive: any running tools without a tool_call_end (shouldn't happen).
     for (const t of state.streaming.tools) {
       items.push({
-        kind: "tool",
+        kind: "tool_done",
         id: id(),
         toolCallId: t.toolCallId,
         name: t.name,
@@ -930,7 +954,7 @@ export const bossStore = {
             const result = toolResults.get(p.id);
             const resultText = result ? toolResultText(result.content) : "";
             items.push({
-              kind: "tool",
+              kind: "tool_done",
               id: id(),
               toolCallId: p.id,
               name: p.name,
@@ -964,6 +988,7 @@ export const bossStore = {
     state = {
       ...state,
       history: [],
+      liveItems: [],
       pendingFlush: [],
       flushGeneration: state.flushGeneration + 1,
       streaming: null,

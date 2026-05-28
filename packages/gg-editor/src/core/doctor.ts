@@ -28,6 +28,8 @@ import { spawnSync } from "node:child_process";
 import { getStoredApiKey } from "./auth/api-keys.js";
 import { checkFfmpeg, checkFfprobe } from "./media/ffmpeg.js";
 
+const PROBE_TIMEOUT_MS = 1_000;
+
 export type CheckSeverity = "block" | "required" | "optional" | "info";
 
 export type CheckStatus = "ok" | "missing" | "warn";
@@ -257,6 +259,7 @@ function checkPython(): DoctorCheck {
   for (const cmd of candidates) {
     const r = spawnSync(cmd, cmd === "py" ? ["-3", "--version"] : ["--version"], {
       encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
     });
     if (r.status === 0) {
       const out = (r.stdout || r.stderr).trim();
@@ -299,7 +302,7 @@ function checkPython(): DoctorCheck {
 
 function checkWhisperCpp(): DoctorCheck {
   for (const cmd of ["whisper-cli", "whisper", "main"]) {
-    const r = spawnSync(cmd, ["--help"], { encoding: "utf8" });
+    const r = spawnSync(cmd, ["--help"], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS });
     if (r.status === 0 && (r.stdout + r.stderr).toLowerCase().includes("whisper")) {
       return {
         id: "whisper-cpp",
@@ -335,7 +338,7 @@ function checkWhisperCpp(): DoctorCheck {
 }
 
 function checkWhisperX(): DoctorCheck {
-  const r = spawnSync("whisperx", ["--help"], { encoding: "utf8" });
+  const r = spawnSync("whisperx", ["--help"], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS });
   const ok = r.status === 0;
   const fromEnv = !!process.env.HF_TOKEN;
   const fromStore = !!getStoredApiKey("huggingface");
@@ -460,7 +463,7 @@ function checkAuthFile(home: string): DoctorCheck {
  * doctor's right-hand column stays a clean one-word status.
  */
 function versionLine(cmd: string): string {
-  const r = spawnSync(cmd, ["-version"], { encoding: "utf8" });
+  const r = spawnSync(cmd, ["-version"], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS });
   if (r.status !== 0) return "found";
   const first = (r.stdout.split(/\r?\n/)[0] || "").trim();
   const m = /\b(\d+\.\d+(?:\.\d+)?)\b/.exec(first);
@@ -489,7 +492,7 @@ const _managerCache = new Map<string, boolean>();
 function hasManager(cmd: string): boolean {
   const cached = _managerCache.get(cmd);
   if (cached !== undefined) return cached;
-  const r = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+  const r = spawnSync(cmd, ["--version"], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS });
   const ok = r.status === 0;
   _managerCache.set(cmd, ok);
   return ok;

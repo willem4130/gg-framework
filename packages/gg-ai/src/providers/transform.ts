@@ -330,7 +330,7 @@ export function toAnthropicToolChoice(choice: ToolChoice): Anthropic.ToolChoice 
 }
 
 function supportsAdaptiveThinking(model: string): boolean {
-  return /opus-4-7|opus-4-6|sonnet-4-6/.test(model);
+  return /opus-4-8|opus-4-7|opus-4-6|sonnet-4-6/.test(model);
 }
 
 export function toAnthropicThinking(
@@ -344,11 +344,11 @@ export function toAnthropicThinking(
 } {
   if (supportsAdaptiveThinking(model)) {
     // Adaptive thinking — model decides when/how much to think.
-    // budget_tokens is deprecated on Opus 4.7 / Opus 4.6 / Sonnet 4.6.
-    // Anthropic's output_config.effort uses "max" as the top tier (Opus-only);
-    // map our "xhigh" → "max", and clamp non-Opus models to "high".
-    let effort: string = level === "xhigh" ? "max" : level;
-    if (effort === "max" && !model.includes("opus")) {
+    // budget_tokens is deprecated on Opus 4.8 / Opus 4.7 / Opus 4.6 / Sonnet 4.6.
+    // Anthropic's output_config.effort accepts low, medium, high, xhigh, and max.
+    // xhigh is Opus 4.8/4.7-only; max is supported by Opus 4.8/4.7/4.6 and Sonnet 4.6.
+    let effort: string = level;
+    if (effort === "xhigh" && !/opus-4-8|opus-4-7/.test(model)) {
       effort = "high";
     }
     return {
@@ -358,8 +358,8 @@ export function toAnthropicThinking(
     };
   }
 
-  // Legacy budget-based thinking for older models ("xhigh" treated as "high")
-  const effectiveLevel = level === "xhigh" ? "high" : level;
+  // Legacy budget-based thinking for older models ("xhigh"/"max" treated as "high")
+  const effectiveLevel = level === "xhigh" || level === "max" ? "high" : level;
   const budgetMap: Record<"low" | "medium" | "high", number> = {
     low: Math.max(1024, Math.floor(maxTokens * 0.25)),
     medium: Math.max(2048, Math.floor(maxTokens * 0.5)),
@@ -560,7 +560,7 @@ export function toOpenAIReasoningEffort(
   level: ThinkingLevel,
   _model: string,
 ): "low" | "medium" | "high" | "xhigh" {
-  return level;
+  return level === "max" ? "xhigh" : level;
 }
 
 // ── Response Normalization ─────────────────────────────────
