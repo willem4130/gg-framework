@@ -20,6 +20,7 @@ import { AssistantMessage } from "./components/AssistantMessage.js";
 import { UserMessage } from "./components/UserMessage.js";
 import { Banner } from "./components/Banner.js";
 import { SessionSummaryDisplay } from "./components/SessionSummary.js";
+import { PlanModeLogo } from "./components/PlanModeLogo.js";
 import { BLACK_CIRCLE } from "./constants/figures.js";
 
 const TERMINAL_COLUMNS = 68;
@@ -446,13 +447,7 @@ function liveElementFor(item: CompletedItem): React.ReactElement | null {
     case "info":
       return renderStatusLive("○ ", item.text, theme.commandColor, theme, { muted: true });
     case "plan_transition":
-      return renderStatusLive(
-        `${BLACK_CIRCLE} `,
-        item.text.replace(/\\n/g, "\n").replace(/^\n+|\n+$/g, ""),
-        theme.commandColor,
-        theme,
-        { bold: true },
-      );
+      return <PlanModeLogo />;
     case "goal_agent_transition":
       return renderStatusLive(
         `${BLACK_CIRCLE} `,

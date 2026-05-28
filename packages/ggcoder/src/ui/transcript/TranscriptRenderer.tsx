@@ -23,13 +23,13 @@ import {
   presentInfo,
   presentModelTransition,
   presentPlanEvent,
-  presentPlanTransition,
   presentStopped,
   presentTask,
   presentThemeTransition,
 } from "./presentation.js";
 import { StatusRow } from "./StatusRow.js";
 import { SessionSummaryDisplay } from "../components/SessionSummary.js";
+import { PlanModeLogo } from "../components/PlanModeLogo.js";
 import {
   ServerToolDoneRow,
   ServerToolStartRow,
@@ -141,9 +141,8 @@ export function renderTranscriptItem({
     case "update_notice":
       return withTranscriptSpacing(<UpdateNoticeRow item={item} />);
     case "plan_transition":
-      return withTranscriptSpacing(
-        <StatusRow id={item.id} presentation={presentPlanTransition(item)} />,
-      );
+      if (item.active) return withTranscriptSpacing(<PlanModeLogo key={item.id} />);
+      return null;
     case "goal_agent_transition":
       return withTranscriptSpacing(
         <StatusRow id={item.id} presentation={presentGoalAgentTransition(item)} />,

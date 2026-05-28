@@ -115,6 +115,7 @@ export function getTranscriptItemMarginTop({
       ? 1
       : 0;
   }
+  if (item.kind === "plan_transition") return 0;
   return shouldSeparateTranscriptItems({ previousKind, currentKind: item.kind }) ? 1 : 0;
 }
 

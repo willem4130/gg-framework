@@ -1601,6 +1601,21 @@ export function App(props: AppProps) {
             });
           } else {
             setLiveItems((prev) => {
+              if (name === "enter_plan") {
+                const updated = prev
+                  .filter((item) => !(item.kind === "tool_start" && item.toolCallId === toolCallId))
+                  .map((item) =>
+                    item.kind === "plan_transition" && item.active
+                      ? { ...item, active: false }
+                      : item,
+                  );
+                const { flushed, remaining } = partitionCompleted(updated);
+                if (flushed.length > 0) {
+                  queueFlush(flushed);
+                  return remaining;
+                }
+                return updated;
+              }
               // Check if this tool is in a tool_group
               const groupIdx = prev.findIndex(
                 (item) =>
@@ -3648,17 +3663,16 @@ export function App(props: AppProps) {
   const handleEnterPlanMode = useCallback(
     async (reason?: string): Promise<void> => {
       await setPlanModeAndPrompt(true);
-      const detail = reason ? `Plan mode ON — ${reason}` : "Plan mode ON";
       setLiveItems((prev) => [
         ...prev,
-        { kind: "plan_transition", text: detail, id: getId(), active: true },
+        { kind: "plan_transition", text: reason ?? "", id: getId(), active: true },
       ]);
     },
     [setPlanModeAndPrompt],
   );
 
   const handleExitPlanMode = useCallback(
-    async (planPath: string): Promise<string> => {
+    async (_planPath: string): Promise<string> => {
       await setPlanModeAndPrompt(false);
       planOverlayPendingRef.current = true;
       setPlanAutoExpand(true);
@@ -3667,15 +3681,6 @@ export function App(props: AppProps) {
         props.sessionStore.planAutoExpand = true;
       }
       setOverlay("plan");
-      setLiveItems((prev) => [
-        ...prev,
-        {
-          kind: "plan_transition",
-          text: `Plan ready for review: ${planPath}`,
-          id: getId(),
-          active: false,
-        },
-      ]);
       return "Plan submitted for user review. Wait for the user to approve, reject, or dismiss it before implementing.";
     },
     [props.sessionStore, setPlanModeAndPrompt],

@@ -58,6 +58,8 @@ export function isActiveItem(item: CompletedItem): boolean {
     case "queued":
     case "compacting":
       return true;
+    case "plan_transition":
+      return item.active;
     case "tool_group":
       return (item as ToolGroupItem).tools.some((t) => t.status === "running");
     case "subagent_group":

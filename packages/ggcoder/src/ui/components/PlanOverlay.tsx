@@ -408,7 +408,7 @@ export function PlanOverlay({
 
   function renderYourPlanBanner() {
     return (
-      <Box flexDirection="column" marginTop={1} marginBottom={1} paddingLeft={1} width={columns}>
+      <Box flexDirection="column" marginBottom={1} paddingLeft={1} width={columns}>
         {YOUR_PLAN_LOGO.map((line, index) => (
           <PlanGradientText key={index} text={line} />
         ))}

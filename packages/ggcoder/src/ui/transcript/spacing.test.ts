@@ -113,7 +113,12 @@ describe("transcript spacing", () => {
       for (const currentKind of TRANSCRIPT_SPACING_KINDS) {
         const previous = itemForKind(previousKind, `previous-${previousKind}`);
         const current = itemForKind(currentKind, `current-${currentKind}`);
-        const expected = shouldSeparateTranscriptItems({ previousKind, currentKind }) ? 1 : 0;
+        const expected =
+          currentKind === "plan_transition"
+            ? 0
+            : shouldSeparateTranscriptItems({ previousKind, currentKind })
+              ? 1
+              : 0;
 
         expect(
           getTranscriptItemMarginTop({
