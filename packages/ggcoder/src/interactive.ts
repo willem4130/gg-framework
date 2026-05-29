@@ -57,6 +57,9 @@ export async function runInteractive(config: CliConfig): Promise<void> {
       false,
       undefined,
       tools.map((tool) => tool.name),
+      undefined,
+      "off",
+      provider,
     ));
   process.on("exit", () => processManager.shutdownAll());
   const authStorage = new AuthStorage(paths.authFile);

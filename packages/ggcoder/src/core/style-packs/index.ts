@@ -43,7 +43,7 @@ export function renderStylePacksSection(active: Set<LanguageId>, cwd: string): s
   if (parts.length === 0) return "";
   return (
     `## Language Style Packs\n\n` +
-    `Conventions for new code in active languages. Project context and existing local patterns override these defaults; library names are illustrative.\n\n` +
+    `Conventions for new code in active languages; library names are illustrative.\n\n` +
     `${AGENT_WRITTEN_CODE_PREAMBLE}\n\n` +
     parts.join("\n\n")
   );

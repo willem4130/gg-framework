@@ -103,11 +103,12 @@ describe("buildSystemPrompt", () => {
     );
     expect(prompt).not.toContain("## Goal Auto-Continuation Events");
     expect(prompt).not.toContain("[event:goal_worker_complete]");
-    expect(prompt).toContain("model the intended experience");
-    expect(prompt).toContain("choose the required senses/signals");
+    // Goal-only verification guidance is gated out of normal (off) mode.
+    expect(prompt).not.toContain("model the intended experience");
+    expect(prompt).not.toContain("choose the required senses/signals");
     expect(prompt).toContain("Woops I just farted!");
     expect(prompt).toContain("don't force it, overuse it, or repeat one hardcoded line");
-    expect(prompt).toContain(
+    expect(prompt).not.toContain(
       "Do not default to generic tests, scripts, screenshots, benchmarks, or simulations",
     );
     expect(sectionIndex(prompt, "## Code Quality")).toBeLessThan(sectionIndex(prompt, "## Tools"));
@@ -144,7 +145,7 @@ describe("buildSystemPrompt", () => {
     expect(renderedTools).not.toContain("**edit**");
   });
 
-  it("places project-context precedence next to project context before style packs", async () => {
+  it("states rule precedence exactly once and keeps project context before style packs", async () => {
     const cwd = await makeProject({
       "AGENTS.md": "Use tabs for this fixture.",
       "tsconfig.json": "{}",
@@ -159,15 +160,14 @@ describe("buildSystemPrompt", () => {
       new Set<LanguageId>(["typescript"]),
     );
 
-    const projectContextIndex = sectionIndex(prompt, "## Project Context");
-    const precedenceIndex = prompt.indexOf("**Highest precedence**", projectContextIndex);
-    expect(precedenceIndex).toBeGreaterThan(projectContextIndex);
-    expect(precedenceIndex).toBeLessThan(sectionIndex(prompt, "### AGENTS.md"));
+    // Precedence lives in How to Work only — not restated in Project Context or Style Packs.
+    expect(prompt).toContain("Rule precedence: project context files");
+    expect(prompt.match(/Rule precedence/g)).toHaveLength(1);
+    expect(prompt).not.toContain("**Highest precedence**");
+    expect(prompt).not.toContain("override default guidance");
+    expect(prompt).not.toContain("override these defaults");
     expect(sectionIndex(prompt, "## Project Context")).toBeLessThan(
       sectionIndex(prompt, "## Language Style Packs"),
-    );
-    expect(prompt).toContain(
-      "AGENTS.md / CLAUDE.md and other project rules override default guidance",
     );
   });
 
@@ -572,5 +572,70 @@ describe("buildSystemPrompt", () => {
     expect(audit.flags).toEqual([]);
     expect(audit.size.characters).toBeLessThan(9_500);
     expect(audit.size.sections).toBeGreaterThanOrEqual(8);
+  });
+
+  it("uses the Claude Code identity for Anthropic and GG Coder for other providers", async () => {
+    const cwd = await makeProject();
+    const anthropic = await buildSystemPrompt(
+      cwd,
+      undefined,
+      false,
+      undefined,
+      ["read"],
+      undefined,
+      "off",
+      "anthropic",
+    );
+    const openai = await buildSystemPrompt(
+      cwd,
+      undefined,
+      false,
+      undefined,
+      ["read"],
+      undefined,
+      "off",
+      "openai",
+    );
+
+    expect(anthropic.startsWith("You are Claude Code")).toBe(true);
+    expect(anthropic).not.toContain("GG Coder by Ken Kai");
+    expect(openai.startsWith("You are GG Coder by Ken Kai")).toBe(true);
+    expect(openai).not.toContain("You are Claude Code");
+  });
+
+  it("applies the dynamic identity inside Goal modes too", async () => {
+    const cwd = await makeProject();
+    const prompt = await buildSystemPrompt(
+      cwd,
+      undefined,
+      false,
+      undefined,
+      ["read", "goals"],
+      undefined,
+      "coordinator",
+      "anthropic",
+    );
+
+    expect(prompt.split("\n", 1)[0]).toContain("durable Goal coordinator for Claude Code");
+  });
+
+  it("includes Goal-only verification guidance only when a Goal mode is active", async () => {
+    const cwd = await makeProject();
+    const off = await buildSystemPrompt(cwd, undefined, false, undefined, ["read"]);
+    const setup = await buildSystemPrompt(
+      cwd,
+      undefined,
+      false,
+      undefined,
+      ["read", "goals"],
+      undefined,
+      "setup",
+    );
+
+    expect(off).not.toContain("model the intended experience");
+    expect(setup).toContain("model the intended experience");
+    expect(setup).toContain(
+      "Do not default to generic tests, scripts, screenshots, benchmarks, or simulations",
+    );
   });
 });

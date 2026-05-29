@@ -345,11 +345,13 @@ If CLAUDE.md does NOT exist:
 
 ## Step 2: Analyze Project (Use Sub-agents in Parallel)
 
+Derive every fact from the actual project — source code, entry points, manifests, and config. Treat README, docs, and code comments as unverified hints that are frequently stale: never copy claims from them, and only state things you can confirm from the code and config themselves.
+
 Spawn 3 sub-agents in parallel using the subagent tool (call the subagent tool 3 times in a single response):
 
-1. **Project Purpose Agent**: Analyze README, package.json description, main files to understand what the project does
+1. **Project Purpose Agent**: Determine what the project actually does from its real code — entry points, main modules, exported/public APIs, CLI commands, routes, and manifests. Do not rely on the README's description.
 2. **Directory Structure Agent**: Map out the folder structure and what each folder contains
-3. **Tech Stack Agent**: Identify languages, frameworks, tools, dependencies
+3. **Tech Stack Agent**: Identify languages, frameworks, tools, and dependencies from manifests/lockfiles and config (not from prose docs)
 
 Wait for all sub-agents to complete, then synthesize the information.
 
@@ -361,7 +363,7 @@ Check for config files:
 - go.mod -> Go
 - Cargo.toml -> Rust
 
-Extract exact commands that are useful project facts. Verify commands against local package scripts, manifests, Makefiles, CI, or documented project workflows; do not invent commands from convention alone. Do not restate generic "run checks after edits" behavior, and do not turn discovered commands into mandatory after-every-edit requirements unless local docs or CI explicitly require that stricter sequence.
+Extract exact commands that are useful project facts. Take commands from authoritative sources — package scripts, manifests, Makefiles, and CI config; do not invent them from convention, and do not trust README/doc command snippets unless a script or manifest confirms they still exist. Do not restate generic "run checks after edits" behavior, and do not turn discovered commands into mandatory after-every-edit requirements unless local docs or CI explicitly require that stricter sequence.
 
 ## Step 4: Summarize Stable Structure
 

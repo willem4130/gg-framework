@@ -6,31 +6,43 @@ import type { LanguageId } from "./core/language-detector.js";
 import { renderStylePacksSection } from "./core/style-packs/index.js";
 import { detectVerifyCommands, renderVerifySection } from "./core/verify-commands.js";
 import type { GoalMode } from "./core/runtime-mode.js";
+import type { Provider } from "@kenkaiiii/gg-ai";
 
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".cursorrules", "CONVENTIONS.md"];
 const UNCACHED_MARKER = "<!-- uncached -->";
 
-function renderIdentitySection(goalMode: GoalMode): string {
+/**
+ * The agent's product identity. Anthropic models run as "Claude Code" (matching
+ * the Claude Code identity Anthropic's OAuth tokens require in the system
+ * prompt); every other provider runs as GG Coder. Keeping this dynamic avoids a
+ * contradictory double identity when streaming through Anthropic.
+ */
+function productName(provider: Provider | undefined): string {
+  return provider === "anthropic" ? "Claude Code" : "GG Coder by Ken Kai";
+}
+
+function renderIdentitySection(goalMode: GoalMode, provider: Provider | undefined): string {
+  const name = productName(provider);
   if (goalMode === "planner") {
     return (
-      `You are the Goal planner for GG Coder by Ken Kai, not setup, coordinator, or implementation worker. ` +
+      `You are the Goal planner for ${name}, not setup, coordinator, or implementation worker. ` +
       `You decide whether research is needed and emit one compact machine-oriented GOAL_PLAN for setup.`
     );
   }
   if (goalMode === "setup") {
     return (
-      `You are the Goal setup orchestrator for GG Coder by Ken Kai, not an implementation worker. ` +
+      `You are the Goal setup orchestrator for ${name}, not an implementation worker. ` +
       `You create durable Goal runs, prerequisite records, evidence plans, and worker tasks; you do not edit project files or start implementation.`
     );
   }
   if (goalMode === "coordinator") {
     return (
-      `You are the durable Goal coordinator for GG Coder by Ken Kai, not an implementation worker. ` +
+      `You are the durable Goal coordinator for ${name}, not an implementation worker. ` +
       `You inspect Goal state, persist decisions and evidence, schedule the next worker/verifier step, and stop only when durable proof satisfies the Goal.`
     );
   }
   return (
-    `You are GG Coder by Ken Kai — a coding agent that works directly in the user's codebase. ` +
+    `You are ${name} — a coding agent that works directly in the user's codebase. ` +
     `You explore, understand, change, and verify code — completing tasks end-to-end ` +
     `rather than just suggesting edits.`
   );
@@ -42,7 +54,7 @@ function renderTalkSection(): string {
     `Between tool calls: at most one short sentence about the next action; no output dumps, restating, or thinking aloud. ` +
     `Final replies: 1–3 sentences, hard cap 5; no preamble/recap/"let me know"; bullets only for real lists. ` +
     `Occasionally and naturally, add playful variations of “Woops I just farted!” with emojis while conversing with the user; don't force it, overuse it, or repeat one hardcoded line. ` +
-    `Exceptions: ask before destructive actions, surface tradeoffs, admit unverified claims.`
+    `Exceptions: surface tradeoffs and admit unverified claims.`
   );
 }
 
@@ -120,12 +132,16 @@ async function renderApprovedPlanSection(
   );
 }
 
-function renderResearchSection(): string {
+function renderResearchSection(goalMode: GoalMode): string {
+  const goalGuidance =
+    goalMode === "off"
+      ? ""
+      : `When driving a programmatic Goal run, model the intended experience, imagine goal-specific failures, choose the required senses/signals, and plan proportional local/free instruments before claiming success. Do not default to generic tests, scripts, screenshots, benchmarks, or simulations; use them only when they observe what this specific goal needs. Let workers build missing instruments/harnesses when the Goal runs, and block only with exact user instructions for true external prerequisites. `;
   return (
     `## Research & Verification\n\n` +
     `Do not assume APIs, CLI flags, config schema, internals, or error wording. Use \`source_path\` for installed deps and inspect with read/grep/find/ls; use \`web_search\` then \`web_fetch\` for authoritative docs. ` +
     `For public code, use ReferenceSources for curated repos or DiscoverRepos for current/top repos, then verify exact snippets with SearchCode literal text/RE2 (not semantic); \`path\` is a literal path substring and \`repo\` only after broad/peek proof. ` +
-    `When driving a programmatic Goal run, model the intended experience, imagine goal-specific failures, choose the required senses/signals, and plan proportional local/free instruments before claiming success. Do not default to generic tests, scripts, screenshots, benchmarks, or simulations; use them only when they observe what this specific goal needs. Let workers build missing instruments/harnesses when the Goal runs, and block only with exact user instructions for true external prerequisites. ` +
+    goalGuidance +
     `Run targeted checks when they are relevant to the change; read/fix failures; never report unrun or failing checks as passing.`
   );
 }
@@ -174,7 +190,7 @@ async function collectProjectContext(cwd: string): Promise<string[]> {
 
 function renderProjectContextSection(contextParts: readonly string[]): string | null {
   if (contextParts.length === 0) return null;
-  return `## Project Context\n\n**Highest precedence** — AGENTS.md / CLAUDE.md and other project rules override default guidance.\n\n${contextParts.join("\n\n")}`;
+  return `## Project Context\n\n${contextParts.join("\n\n")}`;
 }
 
 function renderEnvironmentSection(cwd: string): string {
@@ -195,6 +211,8 @@ function renderUncachedDateSuffix(): string {
  * @param toolNames — if provided, the Tools section only lists these tools.
  *   Pass `tools.map(t => t.name)` from the session so the prompt reflects
  *   exactly what the model can call. Defaults to the full built-in set.
+ * @param provider — the active LLM provider. Drives the product identity
+ *   (`anthropic` → "Claude Code", everything else → "GG Coder").
  */
 export async function buildSystemPrompt(
   cwd: string,
@@ -204,9 +222,10 @@ export async function buildSystemPrompt(
   toolNames?: readonly string[],
   activeLanguages?: Set<LanguageId>,
   goalMode: GoalMode = "off",
+  provider?: Provider,
 ): Promise<string> {
   const sections: string[] = [
-    renderIdentitySection(goalMode),
+    renderIdentitySection(goalMode, provider),
     renderTalkSection(),
     renderWorkSection(),
   ];
@@ -219,7 +238,7 @@ export async function buildSystemPrompt(
   const approvedPlanSection = await renderApprovedPlanSection(approvedPlanPath, goalMode);
   if (approvedPlanSection) sections.push(approvedPlanSection);
 
-  sections.push(renderResearchSection(), renderCodeQualitySection());
+  sections.push(renderResearchSection(goalMode), renderCodeQualitySection());
 
   const toolsSection = renderToolsSection(toolNames);
   if (toolsSection) sections.push(toolsSection);

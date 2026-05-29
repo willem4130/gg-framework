@@ -11,10 +11,8 @@ export const TOOL_PROMPT_HINTS: Record<string, string> = {
   bash: "Run shell commands from project root; use for computation and long/background processes, not direct file rewrites.",
   find: "Find files/dirs by name pattern. Faster than bash find, respects .gitignore.",
   grep: "Regex search across files. Use for usages, definitions, imports.",
-  ls: "List directory contents.",
   source_path:
     "Resolve installed package/repo source via opensrc. Use before assuming dependency APIs; inspect returned absolute path with read/grep/find/ls.",
-  web_fetch: "Fetch a URL (docs, endpoints, external resources).",
   web_search: "Search the web. Use before web_fetch to find pages.",
   task_output: "Read new output from a background process by id.",
   task_stop: "Stop a background process by id.",

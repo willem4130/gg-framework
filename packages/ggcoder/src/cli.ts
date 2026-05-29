@@ -575,6 +575,7 @@ async function runInkTUI(opts: {
     tools.map((tool) => tool.name),
     undefined,
     goalModeRef.current,
+    provider,
   );
 
   // Kill all background processes on exit (synchronous — catches all exit paths)

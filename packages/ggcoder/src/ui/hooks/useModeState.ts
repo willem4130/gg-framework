@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { Message } from "@kenkaiiii/gg-ai";
+import type { Message, Provider } from "@kenkaiiii/gg-ai";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { buildSystemPrompt } from "../../system-prompt.js";
 import type { GoalMode } from "../../core/runtime-mode.js";
@@ -33,6 +33,8 @@ interface UseModeStateOptions {
   // External refs the system prompt is rebuilt from (owned by App).
   cwdRef: MutableRefObject<string>;
   currentToolsRef: MutableRefObject<AgentTool[]>;
+  // Active provider, consulted so the prompt identity tracks the current model.
+  providerRef: MutableRefObject<Provider>;
   approvedPlanPathRef: MutableRefObject<string | undefined>;
   injectedLanguagesRef: MutableRefObject<Set<LanguageId>>;
   messagesRef: MutableRefObject<Message[]>;
@@ -72,6 +74,7 @@ export function useModeState({
   sessionStore,
   cwdRef,
   currentToolsRef,
+  providerRef,
   approvedPlanPathRef,
   injectedLanguagesRef,
   messagesRef,
@@ -108,9 +111,10 @@ export function useModeState({
         (options?.tools ?? currentToolsRef.current).map((tool) => tool.name),
         options?.activeLanguages ?? injectedLanguagesRef.current,
         options?.goalMode ?? goalModeStateRef.current,
+        providerRef.current,
       );
     },
-    [skills, approvedPlanPathRef, cwdRef, currentToolsRef, injectedLanguagesRef],
+    [skills, approvedPlanPathRef, cwdRef, currentToolsRef, providerRef, injectedLanguagesRef],
   );
 
   const replaceSystemPrompt = useCallback(

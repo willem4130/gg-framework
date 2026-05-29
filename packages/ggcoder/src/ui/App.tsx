@@ -430,6 +430,7 @@ export function App(props: AppProps) {
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState(props.model);
   const [currentProvider, setCurrentProvider] = useState(props.provider);
+  const currentProviderRef = useRef(props.provider);
   const [currentTools, setCurrentTools] = useState(props.tools);
   const currentToolsRef = useRef(props.tools);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | undefined>(props.thinking);
@@ -545,6 +546,7 @@ export function App(props: AppProps) {
     sessionStore: props.sessionStore,
     cwdRef,
     currentToolsRef,
+    providerRef: currentProviderRef,
     approvedPlanPathRef,
     injectedLanguagesRef,
     messagesRef,
@@ -2148,6 +2150,9 @@ export function App(props: AppProps) {
       const newProvider = value.slice(0, colonIdx) as Provider;
       const newModelId = value.slice(colonIdx + 1);
       log("INFO", "model", `Model changed`, { provider: newProvider, model: newModelId });
+      // Keep the ref in sync before any prompt rebuild so the identity (Claude
+      // Code vs GG Coder) reflects the newly selected provider immediately.
+      currentProviderRef.current = newProvider;
 
       const rebuildPromptWithTools = (tools: AgentTool[]) => {
         currentToolsRef.current = tools;
