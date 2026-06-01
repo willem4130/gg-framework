@@ -16,6 +16,31 @@
 
 export type ErrorSource = "provider" | "ggcoder" | "network" | "auth";
 
+/**
+ * Probe a web `Headers` object or a plain header record for the first present
+ * header among `names`. Case-insensitive for plain records. Returns the value
+ * of the first name that resolves to a string, or `undefined`.
+ */
+export function readHeader(headers: unknown, ...names: string[]): string | undefined {
+  if (!headers) return undefined;
+  const getter =
+    typeof (headers as { get?: unknown }).get === "function"
+      ? (name: string): string | undefined => (headers as Headers).get(name) ?? undefined
+      : typeof headers === "object"
+        ? (name: string): string | undefined => {
+            const rec = headers as Record<string, unknown>;
+            const value = rec[name] ?? rec[name.toLowerCase()];
+            return typeof value === "string" ? value : undefined;
+          }
+        : undefined;
+  if (!getter) return undefined;
+  for (const name of names) {
+    const value = getter(name);
+    if (value != null) return value;
+  }
+  return undefined;
+}
+
 export interface FormattedError {
   /** Plain-English headline, e.g. "OpenAI returned an error." */
   headline: string;

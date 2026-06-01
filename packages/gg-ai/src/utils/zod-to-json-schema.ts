@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Tool } from "../types.js";
 
 /**
  * Converts a Zod schema to a JSON Schema object suitable for provider tool
@@ -41,6 +42,14 @@ export function zodToJsonSchema(schema: z.ZodType): JsonSchema {
   const jsonSchema = z.toJSONSchema(schema) as JsonSchema;
   const { $schema: _schema, ...rest } = jsonSchema;
   return normalizeRootForAnthropic(rest);
+}
+
+/**
+ * Resolve a tool's JSON Schema for provider tool definitions: prefer the
+ * tool's pre-built `rawInputSchema`, otherwise convert its Zod `parameters`.
+ */
+export function resolveToolSchema(tool: Tool): JsonSchema {
+  return tool.rawInputSchema ?? zodToJsonSchema(tool.parameters);
 }
 
 /**

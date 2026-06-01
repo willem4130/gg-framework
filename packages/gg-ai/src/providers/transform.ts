@@ -13,7 +13,7 @@ import type {
   ToolChoice,
   ToolResultContent,
 } from "../types.js";
-import { zodToJsonSchema } from "../utils/zod-to-json-schema.js";
+import { resolveToolSchema, zodToJsonSchema } from "../utils/zod-to-json-schema.js";
 
 // ── Shared helpers ─────────────────────────────────────────
 
@@ -184,7 +184,7 @@ export function downgradeUnsupportedImages(
 }
 
 /** Extract concatenated text from tool_result content (array or string). */
-function toolResultText(content: ToolResultContent): string {
+export function toolResultText(content: ToolResultContent): string {
   if (typeof content === "string") return content;
   return content
     .filter((b): b is TextContent => b.type === "text")
@@ -419,8 +419,14 @@ export function toAnthropicToolChoice(choice: ToolChoice): Anthropic.ToolChoice 
   return { type: "tool", name: choice.name };
 }
 
-function supportsAdaptiveThinking(model: string): boolean {
-  return /opus-4-8|opus-4-7|opus-4-6|sonnet-4-6/.test(model);
+/**
+ * Anthropic models with built-in adaptive thinking (Opus 4.8/4.7/4.6,
+ * Sonnet 4.6). Matches both dashed (`opus-4-8`) and dotted (`opus-4.8`) forms
+ * so callers don't have to enumerate variants. These models don't need the
+ * `interleaved-thinking` beta header — it's built in.
+ */
+export function isAdaptiveThinkingModel(model: string): boolean {
+  return /opus-4[-.]8|opus-4[-.]7|opus-4[-.]6|sonnet-4[-.]6/.test(model);
 }
 
 export function toAnthropicThinking(
@@ -432,7 +438,7 @@ export function toAnthropicThinking(
   maxTokens: number;
   outputConfig?: { effort: string };
 } {
-  if (supportsAdaptiveThinking(model)) {
+  if (isAdaptiveThinkingModel(model)) {
     // Adaptive thinking — model decides when/how much to think.
     // budget_tokens is deprecated on Opus 4.8 / Opus 4.7 / Opus 4.6 / Sonnet 4.6.
     // Anthropic's output_config.effort accepts low, medium, high, xhigh, and max.
@@ -634,7 +640,7 @@ export function toOpenAITools(tools: Tool[]): OpenAI.ChatCompletionTool[] {
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.rawInputSchema ?? zodToJsonSchema(tool.parameters),
+      parameters: resolveToolSchema(tool),
     },
   }));
 }

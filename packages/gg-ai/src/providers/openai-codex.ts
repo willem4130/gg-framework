@@ -6,34 +6,20 @@ import type {
   StreamEvent,
   StreamOptions,
   StreamResponse,
-  TextContent,
   Tool,
   ToolCall,
-  ToolResultContent,
 } from "../types.js";
-import { ProviderError } from "../errors.js";
+import { ProviderError, readHeader } from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import { providerDiag } from "../utils/diag.js";
-import { zodToJsonSchema } from "../utils/zod-to-json-schema.js";
+import { resolveToolSchema } from "../utils/zod-to-json-schema.js";
 import { normalizePromptCacheKey } from "./prompt-cache-key.js";
-import { downgradeUnsupportedImages } from "./transform.js";
+import { downgradeUnsupportedImages, toolResultText } from "./transform.js";
+import { parseToolArguments } from "../utils/json.js";
+import { readSseStream } from "../utils/sse.js";
+import { extractRequestIdFromMessage } from "../utils/request-id.js";
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseToolArguments(argsJson: string): Record<string, unknown> {
-  if (!argsJson) return {};
-  try {
-    const parsed = JSON.parse(argsJson) as unknown;
-    const unwrapped = typeof parsed === "string" ? (JSON.parse(parsed) as unknown) : parsed;
-    return isJsonObject(unwrapped) ? unwrapped : {};
-  } catch {
-    return {};
-  }
-}
 
 function outputTextKey(itemId: string | undefined, contentIndex: number | undefined): string {
   return `${itemId ?? ""}:${contentIndex ?? 0}`;
@@ -124,10 +110,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     const message = parsed.message ?? `Codex API returned HTTP ${response.status}.`;
     const requestId =
       parsed.requestId ??
-      response.headers.get("x-request-id") ??
-      response.headers.get("openai-request-id") ??
-      response.headers.get("x-oai-request-id") ??
-      undefined;
+      readHeader(response.headers, "x-request-id", "openai-request-id", "x-oai-request-id");
 
     // ChatGPT-subscription usage-window exhaustion. The codex backend returns
     // HTTP 429 with a usage_limit_reached / usage_not_included / rate_limit_exceeded
@@ -209,7 +192,8 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
       // OpenAI sometimes embeds the request ID inside the human-readable
       // message ("…request ID abc123 in your message"); fish it out so the
       // FormattedError can surface it on its own line.
-      const requestId = extractCodexRequestId(message) ?? (event.request_id as string | undefined);
+      const requestId =
+        extractRequestIdFromMessage(message) ?? (event.request_id as string | undefined);
       // ChatGPT-subscription usage-window exhaustion can arrive mid-stream as an
       // error chunk. Surface it as a hard usage-limit stop, not a retriable error.
       const usageLimit = codexUsageLimitError(
@@ -227,7 +211,8 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     if (type === "response.failed") {
       const nested = event.error as Record<string, unknown> | undefined;
       const message = (nested?.message as string | undefined) ?? "Codex response failed.";
-      const requestId = extractCodexRequestId(message) ?? (event.request_id as string | undefined);
+      const requestId =
+        extractRequestIdFromMessage(message) ?? (event.request_id as string | undefined);
       throw new ProviderError("openai", message, {
         ...(requestId != null ? { requestId } : {}),
       });
@@ -443,41 +428,14 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
 async function* parseSSE(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Record<string, unknown>> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let idx = buffer.indexOf("\n\n");
-      while (idx !== -1) {
-        const chunk = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-
-        const dataLines = chunk
-          .split("\n")
-          .filter((l) => l.startsWith("data:"))
-          .map((l) => l.slice(5).trim());
-
-        if (dataLines.length > 0) {
-          const data = dataLines.join("\n").trim();
-          if (data && data !== "[DONE]") {
-            try {
-              yield JSON.parse(data) as Record<string, unknown>;
-            } catch {
-              // skip malformed JSON
-            }
-          }
-        }
-        idx = buffer.indexOf("\n\n");
-      }
+  for await (const event of readSseStream(body)) {
+    const data = event.data.trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      yield JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      // skip malformed JSON
     }
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -494,14 +452,6 @@ function remapCodexId(id: string, idMap: Map<string, string>): string {
   const mapped = `fc_${id.replace(/^toolu_/, "")}`;
   idMap.set(id, mapped);
   return mapped;
-}
-
-function codexToolResultText(content: ToolResultContent): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((b): b is TextContent => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
 }
 
 function toCodexInput(
@@ -576,7 +526,7 @@ function toCodexInput(
         const [callId] = result.toolCallId.includes("|")
           ? result.toolCallId.split("|", 2)
           : [result.toolCallId];
-        const text = codexToolResultText(result.content);
+        const text = toolResultText(result.content);
         input.push({
           type: "function_call_output",
           call_id: remapCodexId(callId, idMap),
@@ -615,17 +565,9 @@ function toCodexTools(tools: Tool[]): unknown[] {
     type: "function",
     name: tool.name,
     description: tool.description,
-    parameters: tool.rawInputSchema ?? zodToJsonSchema(tool.parameters),
+    parameters: resolveToolSchema(tool),
     strict: null,
   }));
-}
-
-// OpenAI's server_error messages embed the request ID inline ("…request ID
-// abc123 in your message"). Pull it out so we can surface it as a structured
-// field rather than leaving it buried in the message.
-function extractCodexRequestId(message: string): string | undefined {
-  const match = message.match(/request ID ([a-z0-9-]{8,})/i);
-  return match?.[1];
 }
 
 // HTTP error bodies come back as JSON or plain text. Try to extract a clean
@@ -648,7 +590,7 @@ function parseCodexErrorBody(text: string): {
     const requestId =
       (parsed.request_id as string | undefined) ??
       (error?.request_id as string | undefined) ??
-      (message ? extractCodexRequestId(message) : undefined);
+      (message ? extractRequestIdFromMessage(message) : undefined);
     // Some codex error payloads put the usage-limit fields at the top level
     // rather than under `error` — prefer the nested object but fall back to the
     // whole payload so resets_at / code are still visible.

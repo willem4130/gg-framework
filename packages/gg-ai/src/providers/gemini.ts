@@ -12,7 +12,10 @@ import type {
 import { ProviderError } from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import { downgradeUnsupportedImages } from "./transform.js";
-import { zodToJsonSchema } from "../utils/zod-to-json-schema.js";
+import { resolveToolSchema } from "../utils/zod-to-json-schema.js";
+import { isJsonObject } from "../utils/json.js";
+import { readSseStream } from "../utils/sse.js";
+import { getEnvironment } from "../utils/env.js";
 
 const DEFAULT_CODE_ASSIST_BASE_URL = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_API_VERSION = "v1internal";
@@ -145,19 +148,6 @@ interface GeminiGenerateResponse {
   usageMetadata?: GeminiUsageMetadata;
 }
 
-interface ParsedSseEvent {
-  event?: string;
-  data: string;
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value);
-}
-
-function getEnvironment(): Record<string, string | undefined> | undefined {
-  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-}
-
 function getGoogleProject(options: StreamOptions): string | undefined {
   const env = getEnvironment();
   return options.projectId ?? env?.GOOGLE_CLOUD_PROJECT ?? env?.GOOGLE_CLOUD_PROJECT_ID;
@@ -275,7 +265,7 @@ function toGeminiTools(tools: Tool[] | undefined): GeminiTool[] | undefined {
       functionDeclarations: tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        parameters: sanitizeSchema(tool.rawInputSchema ?? zodToJsonSchema(tool.parameters)),
+        parameters: sanitizeSchema(resolveToolSchema(tool)),
       })),
     },
   ];
@@ -441,61 +431,11 @@ function normalizeGeminiStopReason(reason: string | undefined): StreamResponse["
   }
 }
 
-function parseSseEvents(buffer: string): { events: ParsedSseEvent[]; remaining: string } {
-  const events: ParsedSseEvent[] = [];
-  let cursor = 0;
-
-  while (true) {
-    const next = buffer.indexOf("\n\n", cursor);
-    if (next === -1) break;
-    const raw = buffer.slice(cursor, next);
-    cursor = next + 2;
-
-    let eventName: string | undefined;
-    const dataLines: string[] = [];
-    for (const line of raw.split("\n")) {
-      if (line.startsWith("event:")) {
-        eventName = line.slice("event:".length).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice("data:".length).trimStart());
-      }
-    }
-
-    if (dataLines.length > 0) {
-      events.push({ event: eventName, data: dataLines.join("\n") });
-    }
-  }
-
-  return { events, remaining: buffer.slice(cursor) };
-}
-
 async function* streamSse(response: Response): AsyncGenerator<GeminiGenerateResponse> {
   if (!response.body) return;
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-      const parsed = parseSseEvents(buffer);
-      buffer = parsed.remaining;
-      for (const event of parsed.events) {
-        if (event.data === "[DONE]") continue;
-        yield JSON.parse(event.data) as GeminiGenerateResponse;
-      }
-    }
-    buffer += decoder.decode().replace(/\r\n/g, "\n");
-    const parsed = parseSseEvents(buffer + "\n\n");
-    for (const event of parsed.events) {
-      if (event.data === "[DONE]") continue;
-      yield JSON.parse(event.data) as GeminiGenerateResponse;
-    }
-  } finally {
-    reader.releaseLock();
+  for await (const event of readSseStream(response.body)) {
+    if (event.data === "[DONE]") continue;
+    yield JSON.parse(event.data) as GeminiGenerateResponse;
   }
 }
 

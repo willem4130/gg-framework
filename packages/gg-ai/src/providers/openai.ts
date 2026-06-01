@@ -17,20 +17,44 @@ import {
   toOpenAITools,
 } from "./transform.js";
 import { normalizePromptCacheKey } from "./prompt-cache-key.js";
+import { parseToolArguments } from "../utils/json.js";
+import { getEnvironment } from "../utils/env.js";
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseToolArguments(argsJson: string): Record<string, unknown> {
-  if (!argsJson) return {};
-  try {
-    const parsed = JSON.parse(argsJson) as unknown;
-    const unwrapped = typeof parsed === "string" ? (JSON.parse(parsed) as unknown) : parsed;
-    return isJsonObject(unwrapped) ? unwrapped : {};
-  } catch {
-    return {};
+// Normalize OpenAI completion usage to the framework convention where
+// inputTokens excludes cache hits (matching Anthropic). Handles vendor-specific
+// cache reporting fields:
+// - Kimi K2/K2.5 / StepFun: top-level `cached_tokens`
+// - DeepSeek / SiliconFlow: `prompt_cache_hit_tokens`
+// - OpenAI / Zhipu (GLM) / MiniMax / Qwen / Mistral / xAI: standard
+//   `prompt_tokens_details.cached_tokens`
+function extractOpenAIUsage(usage: OpenAI.CompletionUsage): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+} {
+  let cacheRead = 0;
+  const details = usage.prompt_tokens_details;
+  if (details?.cached_tokens) {
+    cacheRead = details.cached_tokens;
   }
+  const usageAny = usage as unknown as Record<string, unknown>;
+  if (!cacheRead && typeof usageAny.cached_tokens === "number" && usageAny.cached_tokens > 0) {
+    cacheRead = usageAny.cached_tokens as number;
+  }
+  if (
+    !cacheRead &&
+    typeof usageAny.prompt_cache_hit_tokens === "number" &&
+    usageAny.prompt_cache_hit_tokens > 0
+  ) {
+    cacheRead = usageAny.prompt_cache_hit_tokens as number;
+  }
+  // OpenAI's prompt_tokens includes cached tokens; subtract to match
+  // Anthropic's convention where inputTokens excludes cache hits.
+  return {
+    inputTokens: usage.prompt_tokens - cacheRead,
+    outputTokens: usage.completion_tokens,
+    cacheRead,
+  };
 }
 
 function createClient(options: StreamOptions): OpenAI {
@@ -122,11 +146,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   }
 
   // Dump request body for stall diagnosis when GGAI_DUMP_REQUEST is set
-  if (
-    (globalThis as Record<string, unknown>).process &&
-    ((globalThis as Record<string, unknown>).process as Record<string, Record<string, string>>).env
-      ?.GGAI_DUMP_REQUEST
-  ) {
+  if (getEnvironment()?.GGAI_DUMP_REQUEST) {
     const fs = await import("fs");
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const dumpPath = `/tmp/ggai-request-${ts}.json`;
@@ -175,30 +195,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     const choice = chunk.choices?.[0];
 
     if (chunk.usage) {
-      outputTokens = chunk.usage.completion_tokens;
-      const details = chunk.usage.prompt_tokens_details;
-      if (details?.cached_tokens) {
-        cacheRead = details.cached_tokens;
-      }
-      // Vendor-specific cache reporting fields:
-      // - Kimi K2/K2.5 / StepFun: top-level `cached_tokens`
-      // - DeepSeek / SiliconFlow: `prompt_cache_hit_tokens`
-      // OpenAI / Zhipu (GLM) / MiniMax / Qwen / Mistral / xAI all use the
-      // standard `prompt_tokens_details.cached_tokens` handled above.
-      const usageAny = chunk.usage as unknown as Record<string, unknown>;
-      if (!cacheRead && typeof usageAny.cached_tokens === "number" && usageAny.cached_tokens > 0) {
-        cacheRead = usageAny.cached_tokens as number;
-      }
-      if (
-        !cacheRead &&
-        typeof usageAny.prompt_cache_hit_tokens === "number" &&
-        usageAny.prompt_cache_hit_tokens > 0
-      ) {
-        cacheRead = usageAny.prompt_cache_hit_tokens as number;
-      }
-      // OpenAI's prompt_tokens includes cached tokens; subtract to match
-      // Anthropic's convention where inputTokens excludes cache hits.
-      inputTokens = chunk.usage.prompt_tokens - cacheRead;
+      ({ inputTokens, outputTokens, cacheRead } = extractOpenAIUsage(chunk.usage));
     }
 
     if (!choice) continue;
@@ -399,21 +396,7 @@ function completionToResponse(completion: OpenAI.ChatCompletion): StreamResponse
   let outputTokens = 0;
   let cacheRead = 0;
   if (completion.usage) {
-    outputTokens = completion.usage.completion_tokens;
-    const details = completion.usage.prompt_tokens_details;
-    if (details?.cached_tokens) cacheRead = details.cached_tokens;
-    const usageAny = completion.usage as unknown as Record<string, unknown>;
-    if (!cacheRead && typeof usageAny.cached_tokens === "number" && usageAny.cached_tokens > 0) {
-      cacheRead = usageAny.cached_tokens as number;
-    }
-    if (
-      !cacheRead &&
-      typeof usageAny.prompt_cache_hit_tokens === "number" &&
-      usageAny.prompt_cache_hit_tokens > 0
-    ) {
-      cacheRead = usageAny.prompt_cache_hit_tokens as number;
-    }
-    inputTokens = completion.usage.prompt_tokens - cacheRead;
+    ({ inputTokens, outputTokens, cacheRead } = extractOpenAIUsage(completion.usage));
   }
 
   const stopReason = normalizeOpenAIStopReason(choice?.finish_reason ?? null);

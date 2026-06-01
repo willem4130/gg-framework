@@ -8,7 +8,7 @@ import type {
   StreamResponse,
   ToolCall,
 } from "../types.js";
-import { ProviderError } from "../errors.js";
+import { ProviderError, readHeader } from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import {
   downgradeUnsupportedImages,
@@ -18,11 +18,9 @@ import {
   toAnthropicThinking,
   toAnthropicToolChoice,
   toAnthropicTools,
+  isAdaptiveThinkingModel,
 } from "./transform.js";
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value);
-}
+import { isJsonObject } from "../utils/json.js";
 
 function createClient(options: StreamOptions): Anthropic {
   const isOAuth = options.apiKey?.startsWith("sk-ant-oat");
@@ -147,15 +145,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
 
   // Adaptive thinking models (Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6) don't need the
   // interleaved-thinking beta — they have it built in.
-  const hasAdaptiveThinking =
-    options.model.includes("opus-4-8") ||
-    options.model.includes("opus-4.8") ||
-    options.model.includes("opus-4-7") ||
-    options.model.includes("opus-4.7") ||
-    options.model.includes("opus-4-6") ||
-    options.model.includes("opus-4.6") ||
-    options.model.includes("sonnet-4-6") ||
-    options.model.includes("sonnet-4.6");
+  const hasAdaptiveThinking = isAdaptiveThinkingModel(options.model);
 
   const betaHeaders = [
     ...(isOAuth ? ["claude-code-20250219", "oauth-2025-04-20"] : []),
@@ -559,22 +549,13 @@ function messageToResponse(message: Anthropic.Message): StreamResponse {
  * reset time. Works against a web `Headers` object or a plain header record.
  */
 function readUnifiedRateLimit(headers: unknown): { rejected: boolean; resetsAt?: number } {
-  const get = (name: string): string | null => {
-    if (headers && typeof (headers as { get?: unknown }).get === "function") {
-      return (headers as Headers).get(name);
-    }
-    if (headers && typeof headers === "object") {
-      const rec = headers as Record<string, unknown>;
-      const value = rec[name] ?? rec[name.toLowerCase()];
-      return typeof value === "string" ? value : null;
-    }
-    return null;
-  };
-  const status = get("anthropic-ratelimit-unified-status");
-  const resetRaw =
-    get("anthropic-ratelimit-unified-reset") ??
-    get("anthropic-ratelimit-unified-5h-reset") ??
-    get("anthropic-ratelimit-unified-7d-reset");
+  const status = readHeader(headers, "anthropic-ratelimit-unified-status");
+  const resetRaw = readHeader(
+    headers,
+    "anthropic-ratelimit-unified-reset",
+    "anthropic-ratelimit-unified-5h-reset",
+    "anthropic-ratelimit-unified-7d-reset",
+  );
   const resetNum = resetRaw != null ? Number(resetRaw) : Number.NaN;
   const resetsAt = Number.isFinite(resetNum) && resetNum > 0 ? resetNum : undefined;
   return { rejected: status === "rejected", ...(resetsAt ? { resetsAt } : {}) };
