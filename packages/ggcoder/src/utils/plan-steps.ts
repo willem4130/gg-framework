@@ -17,8 +17,16 @@ export interface PlanStep {
 /**
  * Extract numbered steps from a plan markdown string.
  *
- * Prefers steps from a canonical `## Steps` section if present.
- * Falls back to scanning the entire document for top-level numbered items.
+ * Steps are ONLY read from a canonical `## Steps` section. If the plan has no
+ * such section, this returns an empty array — progress tracking is opt-in.
+ *
+ * The previous behaviour scanned the entire document for any top-level
+ * numbered list when `## Steps` was absent, which scraped phantom "steps"
+ * out of unrelated prose (design decisions, Q&A bullets, rejected
+ * alternatives). The post-approval prompt then pushed the model to march
+ * through those non-tasks and emit `[DONE:n]` markers for them, deadlocking
+ * a model that correctly refused to fabricate completion. Requiring an
+ * explicit `## Steps` section keeps the progress contract honest.
  *
  * Looks for lines like:
  *   1. Do something
@@ -26,9 +34,10 @@ export interface PlanStep {
  *   3. **Bold step**
  */
 export function extractPlanSteps(planContent: string): PlanStep[] {
-  // Try to find a canonical ## Steps section first
-  const stepsSection = extractStepsSection(planContent);
-  const source = stepsSection ?? planContent;
+  // Steps are read ONLY from a canonical `## Steps` section. No section means
+  // no tracked steps — never fall back to scanning the whole document.
+  const source = extractStepsSection(planContent);
+  if (source === undefined) return [];
 
   const steps: PlanStep[] = [];
   // Only match non-indented numbered items (0-2 spaces max) to skip sub-items

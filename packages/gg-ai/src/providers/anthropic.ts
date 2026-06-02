@@ -333,11 +333,26 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
               args: tc.args,
             };
           } else if (accum.type === "server_tool_use") {
+            // Server tools (e.g. native web_search) stream their input via
+            // input_json_delta the same way client tool_use does. The block-start
+            // `input` is empty `{}` and only the accumulated `argsJson` carries
+            // the real arguments (e.g. the search query). Prefer the parsed
+            // streamed JSON, falling back to the block-start input only when
+            // argsJson is absent/malformed -- otherwise the query is dropped and
+            // Anthropic rejects the call with `invalid_tool_input`.
+            let input: unknown = accum.input;
+            if (accum.argsJson) {
+              try {
+                input = JSON.parse(accum.argsJson);
+              } catch {
+                // malformed JSON -- keep the block-start input fallback
+              }
+            }
             const stc: ServerToolCall = {
               type: "server_tool_call",
               id: accum.toolId,
               name: accum.toolName,
-              input: accum.input,
+              input,
             };
             contentParts.push(stc);
             yield {

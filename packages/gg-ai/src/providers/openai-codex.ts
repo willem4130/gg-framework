@@ -154,6 +154,13 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   const contentParts: ContentPart[] = [];
   let textAccum = "";
   const toolCalls = new Map<string, { id: string; name: string; argsJson: string }>();
+  // Reasoning and tool-call items in true stream arrival order. Encrypted
+  // reasoning items (store:false + include reasoning.encrypted_content) are
+  // recorded inline so each one keeps its position relative to the function_call
+  // it reasoned about — preserving the reasoning anchor even for parallel tool
+  // calls (parallels the Anthropic thinking round-trip).
+  const orderedItems: ({ kind: "reasoning"; part: ContentPart } | { kind: "tool"; id: string })[] =
+    [];
   const outputItemTypes = new Map<string, string>();
   const outputTextByPart = new Map<string, string>();
   const pendingOutputTextByPart = new Map<
@@ -361,15 +368,35 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
       }
     }
 
-    // Item done — finalize tool call
+    // Item done — capture encrypted reasoning (round-trips next request) and
+    // finalize tool calls, recording both in stream arrival order.
     if (type === "response.output_item.done") {
       const item = event.item as Record<string, unknown>;
+      if (item?.type === "reasoning") {
+        const encrypted = item.encrypted_content as string | undefined;
+        const reasoningId = item.id as string | undefined;
+        if (encrypted && reasoningId) {
+          // Preserve the entire reasoning item verbatim so it round-trips
+          // byte-identical (summary defaulted to [] since the API requires an
+          // array). Re-emitting the exact item OpenAI returned is what keeps
+          // store:false replay valid — reconstructing a subset risks dropping
+          // fields the API echoes back.
+          orderedItems.push({
+            kind: "reasoning",
+            part: {
+              type: "raw",
+              data: { ...item, summary: Array.isArray(item.summary) ? item.summary : [] },
+            },
+          });
+        }
+      }
       if (item?.type === "function_call") {
         const callId = item.call_id as string;
         const itemId = item.id as string;
         const id = `${callId}|${itemId}`;
         const tc = toolCalls.get(id);
         if (tc) {
+          orderedItems.push({ kind: "tool", id });
           const args = parseToolArguments(tc.argsJson);
           yield {
             type: "toolcall_done",
@@ -397,20 +424,47 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     }
   }
 
-  // Finalize content parts
-  if (textAccum) {
-    contentParts.push({ type: "text", text: textAccum });
-  }
-
-  for (const [, tc] of toolCalls) {
-    const args = parseToolArguments(tc.argsJson);
+  // Finalize content parts. Any encrypted reasoning that arrived before the
+  // first tool call leads the message so it precedes the function_call it
+  // reasoned about when round-tripped into input; visible answer text sits
+  // between leading reasoning and the tool calls.
+  const seenTool = new Set<string>();
+  let textInserted = false;
+  for (const entry of orderedItems) {
+    if (entry.kind === "reasoning") {
+      contentParts.push(entry.part);
+      continue;
+    }
+    if (textAccum && !textInserted) {
+      contentParts.push({ type: "text", text: textAccum });
+      textInserted = true;
+    }
+    const tc = toolCalls.get(entry.id);
+    if (!tc || seenTool.has(entry.id)) continue;
+    seenTool.add(entry.id);
     const toolCall: ToolCall = {
       type: "tool_call",
       id: tc.id,
       name: tc.name,
-      args,
+      args: parseToolArguments(tc.argsJson),
     };
     contentParts.push(toolCall);
+  }
+  if (textAccum && !textInserted) {
+    contentParts.push({ type: "text", text: textAccum });
+  }
+
+  // Tool calls whose output_item.done never arrived (defensive — finalize from
+  // the toolCalls map in insertion order so none are dropped).
+  for (const [id, tc] of toolCalls) {
+    if (seenTool.has(id)) continue;
+    seenTool.add(id);
+    contentParts.push({
+      type: "tool_call",
+      id: tc.id,
+      name: tc.name,
+      args: parseToolArguments(tc.argsJson),
+    });
   }
 
   const hasToolCalls = contentParts.some((p) => p.type === "tool_call");
@@ -460,6 +514,17 @@ function remapCodexId(id: string, idMap: Map<string, string>): string {
   return mapped;
 }
 
+/** A raw content part that holds a Codex encrypted reasoning item for round-trip. */
+function isEncryptedReasoning(
+  data: Record<string, unknown>,
+): data is { type: "reasoning"; id: string; encrypted_content: string; summary?: unknown } {
+  return (
+    data.type === "reasoning" &&
+    typeof data.id === "string" &&
+    typeof data.encrypted_content === "string"
+  );
+}
+
 function toCodexInput(
   messages: Message[],
   options?: { supportsImages?: boolean },
@@ -502,7 +567,13 @@ function toCodexInput(
       }
 
       for (const part of msg.content) {
-        if (part.type === "text") {
+        if (part.type === "raw" && isEncryptedReasoning(part.data)) {
+          // Re-emit the captured reasoning item verbatim in its original
+          // position so it precedes the following function_call (requires
+          // store:false + include reasoning.encrypted_content, both set on the
+          // request).
+          input.push(part.data);
+        } else if (part.type === "text") {
           input.push({
             type: "message",
             role: "assistant",
@@ -521,7 +592,7 @@ function toCodexInput(
             arguments: JSON.stringify(part.args),
           });
         }
-        // thinking parts are skipped for codex input
+        // thinking parts (and non-reasoning raw parts) are skipped for codex input
       }
       continue;
     }

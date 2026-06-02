@@ -698,6 +698,179 @@ describe("streamOpenAICodex", () => {
     });
   });
 
+  it("captures encrypted reasoning and round-trips it before the function_call", async () => {
+    // First request: the stream returns an encrypted reasoning item followed by
+    // a tool call. The reasoning item must be captured on the assistant message.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "reasoning",
+              id: "rs_1",
+              encrypted_content: "ENC_ABC",
+              summary: [],
+            },
+          },
+          {
+            type: "response.output_item.added",
+            item: { type: "function_call", call_id: "call_1", id: "item_1", name: "bash" },
+          },
+          {
+            type: "response.function_call_arguments.done",
+            item_id: "item_1",
+            arguments: '{"command":"echo ok"}',
+          },
+          {
+            type: "response.output_item.done",
+            item: { type: "function_call", call_id: "call_1", id: "item_1" },
+          },
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 10, output_tokens: 5 } },
+          },
+        ]),
+      ),
+    );
+
+    const first = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+      thinking: "medium",
+    });
+    for await (const _event of first) {
+      // consume
+    }
+    const firstResponse = await first.response;
+    const assistantContent = firstResponse.message.content as unknown as Array<
+      Record<string, unknown>
+    >;
+    expect(assistantContent[0]).toEqual({
+      type: "raw",
+      data: { type: "reasoning", id: "rs_1", encrypted_content: "ENC_ABC", summary: [] },
+    });
+
+    // Second request: feed the assistant turn (with captured reasoning) back in
+    // and assert the request body re-emits the reasoning item before the
+    // function_call in `input`.
+    let capturedBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        capturedBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return createSseResponse([
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+        ]);
+      }),
+    );
+
+    const second = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [
+        { role: "user", content: "hi" },
+        firstResponse.message,
+        {
+          role: "tool",
+          content: [{ type: "tool_result", toolCallId: "call_1|item_1", content: "ok" }],
+        },
+      ],
+      apiKey: "token",
+      accountId: "acct",
+      thinking: "medium",
+    });
+    for await (const _event of second) {
+      // consume
+    }
+
+    const input = capturedBody?.input as Array<Record<string, unknown>>;
+    const reasoningIdx = input.findIndex((i) => i.type === "reasoning");
+    const callIdx = input.findIndex((i) => i.type === "function_call");
+    expect(reasoningIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(reasoningIdx);
+    expect(input[reasoningIdx]).toEqual({
+      type: "reasoning",
+      id: "rs_1",
+      encrypted_content: "ENC_ABC",
+      summary: [],
+    });
+  });
+
+  it("preserves per-call reasoning order for interleaved parallel tool calls", async () => {
+    // reasoning A → call A → reasoning B → call B. Each reasoning item must keep
+    // its position immediately before the function_call it reasoned about.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createSseResponse([
+          {
+            type: "response.output_item.done",
+            item: { type: "reasoning", id: "rs_a", encrypted_content: "ENC_A", summary: [] },
+          },
+          {
+            type: "response.output_item.added",
+            item: { type: "function_call", call_id: "call_a", id: "item_a", name: "bash" },
+          },
+          {
+            type: "response.function_call_arguments.done",
+            item_id: "item_a",
+            arguments: '{"command":"a"}',
+          },
+          {
+            type: "response.output_item.done",
+            item: { type: "function_call", call_id: "call_a", id: "item_a" },
+          },
+          {
+            type: "response.output_item.done",
+            item: { type: "reasoning", id: "rs_b", encrypted_content: "ENC_B", summary: [] },
+          },
+          {
+            type: "response.output_item.added",
+            item: { type: "function_call", call_id: "call_b", id: "item_b", name: "bash" },
+          },
+          {
+            type: "response.function_call_arguments.done",
+            item_id: "item_b",
+            arguments: '{"command":"b"}',
+          },
+          {
+            type: "response.output_item.done",
+            item: { type: "function_call", call_id: "call_b", id: "item_b" },
+          },
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 10, output_tokens: 5 } },
+          },
+        ]),
+      ),
+    );
+
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+      thinking: "medium",
+    });
+    for await (const _event of result) {
+      // consume
+    }
+    const response = await result.response;
+    const content = response.message.content as unknown as Array<Record<string, unknown>>;
+    expect(
+      content.map((p) => (p.type === "raw" ? `r:${(p.data as { id: string }).id}` : `t:${p.id}`)),
+    ).toEqual(["r:rs_a", "t:call_a|item_a", "r:rs_b", "t:call_b|item_b"]);
+  });
+
   it("unwraps double-encoded function call arguments", async () => {
     vi.stubGlobal(
       "fetch",

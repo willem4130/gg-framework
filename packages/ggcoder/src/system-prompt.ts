@@ -5,6 +5,7 @@ import { TOOL_PROMPT_HINTS, buildToolSteering, DEFAULT_TOOL_NAMES } from "./tool
 import type { LanguageId } from "./core/language-detector.js";
 import { renderStylePacksSection } from "./core/style-packs/index.js";
 import { detectVerifyCommands, renderVerifySection } from "./core/verify-commands.js";
+import { extractPlanSteps } from "./utils/plan-steps.js";
 import type { Provider } from "@kenkaiiii/gg-ai";
 
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".cursorrules", "CONVENTIONS.md"];
@@ -61,6 +62,7 @@ function renderPlanModeSection(): string {
     `### Rules\n` +
     `- Do not implement yet: no code edits outside \`.gg/plans/\`, no mutating bash (read-only shell for exploration is allowed), no subagent, no task orchestration.\n` +
     `- Be specific: list exact file paths, functions, dependencies, risks, and verification criteria.\n` +
+    `- End the plan with a \`## Steps\` section: a flat, ordered, numbered list (\`1.\`, \`2.\`, …) of concrete implementation steps to execute after approval. Each step is one actionable unit of work — not a design note, question, or rejected alternative. This section is the single source of truth for post-approval progress tracking, so only put real, doable steps here.\n` +
     `- Keep investigating until the plan is actionable, then stop after \`exit_plan\`.`
   );
 }
@@ -72,12 +74,21 @@ async function renderApprovedPlanSection(
   const planContent = await fs.readFile(approvedPlanPath, "utf-8").catch(() => null);
   if (planContent === null) return null;
   if (!planContent.trim()) return null;
+  // The `[DONE:n]` progress contract only applies when the plan has a
+  // canonical `## Steps` section (the same source `extractPlanSteps` reads).
+  // Without it there are no tracked steps, so instructing the model to march
+  // through `## Steps` and emit `[DONE:n]` would push it to fabricate progress
+  // against content that isn't a task list.
+  const hasSteps = extractPlanSteps(planContent).length > 0;
+  const stepInstruction = hasSteps
+    ? `\n- After each step from \`## Steps\`, output \`[DONE:n]\` (e.g. \`[DONE:1]\`) to update the progress widget, then continue with step n+1 in the same turn.`
+    : "";
   return (
     `## Approved Plan\n\n` +
     `Follow this plan strictly. File: ${approvedPlanPath}\n\n` +
     `<approved_plan>\n${planContent.trim()}\n</approved_plan>\n\n` +
-    `- Follow step order. Don't deviate without user confirmation.\n` +
-    `- After each step from \`## Steps\`, output \`[DONE:n]\` (e.g. \`[DONE:1]\`) to update the progress widget, then continue with step n+1 in the same turn.`
+    `- Follow step order. Don't deviate without user confirmation.` +
+    stepInstruction
   );
 }
 

@@ -149,10 +149,14 @@ const CORRUPT_SIGNATURE = "sig-truncated-from-aborted-stream";
  * signature (as if its stream was interrupted mid-`signature_delta` and the
  * partial value was persisted).
  *
- * `corruptAt: "early"`  → corruption on a NON-last assistant turn (the
- *                          messages.3-style symptom). The transform must strip
- *                          thinking from older turns, so the first request is
- *                          already clean.
+ * `corruptAt: "early"`  → corruption on a NON-last assistant turn that is still
+ *                          inside the active trajectory (no user message follows
+ *                          it). The transform preserves thinking across the whole
+ *                          trajectory and can't detect a structurally-valid but
+ *                          cryptographically-invalid signature, so the corrupt
+ *                          block reaches the endpoint, the first request is
+ *                          rejected, and the loop's recovery strips thinking and
+ *                          retries — identical to the `latest` case.
  * `corruptAt: "latest"` → corruption on the LAST assistant turn. The transform
  *                          can't detect a structurally-valid-looking but
  *                          cryptographically-invalid signature, so the first
@@ -278,31 +282,37 @@ describe("thinking-block bug simulation (Anthropic 'cannot be modified')", () =>
 
   // ── The actual fix, end to end ──
 
-  it("does NOT happen: a corrupt thinking block on an OLDER turn is stripped, first request is accepted", async () => {
+  it("self-heals: a corrupt thinking block on an OLDER in-trajectory turn is rejected once, then the loop strips+retries to success", async () => {
     const { messages, issued } = buildSession("early");
     const endpoint = installFakeAnthropic(issued);
 
     const { events } = await runLoop(messages);
 
-    // The framework's first request was already valid — no retry needed.
-    expect(mockStream).toHaveBeenCalledTimes(1);
+    // The corrupt block sits inside the active trajectory, so the transform
+    // preserves it and the endpoint rejects the first request; recovery strips
+    // thinking and the second request is accepted.
+    expect(mockStream).toHaveBeenCalledTimes(2);
     expect(events.some((e) => e.type === "error")).toBe(false);
     expect(events.some((e) => e.type === "agent_done")).toBe(true);
 
-    // Mechanism: every non-latest assistant turn was stripped of thinking, so
-    // the corrupt block never reached the endpoint.
-    const wire = endpoint.requests[0]!;
-    const assistantTurns = wire.filter((m) => m.role === "assistant");
-    const olderTurns = assistantTurns.slice(0, -1);
-    for (const turn of olderTurns) {
-      const types = (turn.content as WireBlock[]).map((b) => b.type);
+    // The retry carried no thinking blocks on any assistant turn…
+    const retryWire = endpoint.requests[1]!;
+    for (const m of retryWire.filter((x) => x.role === "assistant")) {
+      const types = (m.content as WireBlock[]).map((b) => b.type);
       expect(types).not.toContain("thinking");
       expect(types).not.toContain("redacted_thinking");
     }
-    // tool_use survived on the older turns.
+    // …but tool_use survived, and reasoning was preserved as text rather than lost.
     expect(
-      olderTurns.some((t) => (t.content as WireBlock[]).some((b) => b.type === "tool_use")),
+      retryWire
+        .filter((x) => x.role === "assistant")
+        .some((t) => (t.content as WireBlock[]).some((b) => b.type === "tool_use")),
     ).toBe(true);
+    const preservedText = retryWire
+      .filter((x) => x.role === "assistant")
+      .flatMap((x) => x.content as WireBlock[])
+      .some((b) => b.type === "text" && (b.text ?? "").includes("reasoning turn"));
+    expect(preservedText).toBe(true);
   });
 
   it("self-heals: a corrupt thinking block on the LATEST turn is rejected once, then the loop strips+retries to success", async () => {

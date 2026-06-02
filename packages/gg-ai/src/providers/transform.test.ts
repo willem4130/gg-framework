@@ -219,16 +219,16 @@ describe("Anthropic transform", () => {
     ]);
   });
 
-  it("strips thinking from non-latest assistant turns but keeps the latest verbatim", () => {
-    // Anthropic only validates the latest assistant turn's thinking blocks.
-    // Keeping signed thinking on older turns makes the history fragile, so they
-    // are stripped (tool_use survives); the latest turn is preserved.
+  it("preserves signed thinking across every assistant turn in the active trajectory", () => {
+    // A multi-step tool loop has no user message between steps, so every
+    // assistant turn from the last user message forward is part of the same
+    // active trajectory and must keep its signed thinking (cookbook rule).
     const messages: Message[] = [
       { role: "user", content: "go" },
       {
         role: "assistant",
         content: [
-          { type: "thinking", text: "old reasoning", signature: "sig-old" },
+          { type: "thinking", text: "step one reasoning", signature: "sig-1" },
           { type: "tool_call", id: "call_1", name: "read_file", args: { filePath: "a.ts" } },
         ],
       },
@@ -236,7 +236,15 @@ describe("Anthropic transform", () => {
       {
         role: "assistant",
         content: [
-          { type: "thinking", text: "latest reasoning", signature: "sig-new" },
+          { type: "thinking", text: "step two reasoning", signature: "sig-2" },
+          { type: "tool_call", id: "call_2", name: "read_file", args: { filePath: "b.ts" } },
+        ],
+      },
+      { role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "ok" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "final reasoning", signature: "sig-3" },
           { type: "text", text: "done" },
         ],
       },
@@ -244,19 +252,91 @@ describe("Anthropic transform", () => {
 
     const { messages: out } = toAnthropicMessages(messages);
     const assistants = out.filter((m) => m.role === "assistant");
-    const first = assistants[0]?.content as unknown as Array<Record<string, unknown>>;
-    const last = assistants[1]?.content as unknown as Array<Record<string, unknown>>;
+    const [first, second, third] = assistants.map(
+      (m) => m.content as unknown as Array<Record<string, unknown>>,
+    );
 
-    // Older assistant: no thinking, tool_use survives.
-    expect(first.map((b) => b.type)).toEqual(["tool_use"]);
-    // Latest assistant: thinking preserved with its signature.
-    expect(last).toEqual([
-      { type: "thinking", thinking: "latest reasoning", signature: "sig-new" },
+    expect(first).toEqual([
+      { type: "thinking", thinking: "step one reasoning", signature: "sig-1" },
+      {
+        type: "tool_use",
+        id: "call_1",
+        name: "read_file",
+        input: { filePath: "a.ts" },
+      },
+    ]);
+    expect(second?.[0]).toEqual({
+      type: "thinking",
+      thinking: "step two reasoning",
+      signature: "sig-2",
+    });
+    expect(third).toEqual([
+      { type: "thinking", thinking: "final reasoning", signature: "sig-3" },
       { type: "text", text: "done" },
     ]);
   });
 
-  it("strips redacted_thinking (raw) from non-latest assistant turns", () => {
+  it("strips thinking from settled turns but preserves the post-user trajectory", () => {
+    // Two trajectories separated by a real user message. The pre-user assistant
+    // turns are settled history (thinking stripped, tool_use survives); the
+    // post-user trajectory keeps signed thinking on every turn.
+    const messages: Message[] = [
+      { role: "user", content: "first" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "settled reasoning", signature: "sig-old" },
+          { type: "tool_call", id: "call_a", name: "read_file", args: { filePath: "a.ts" } },
+        ],
+      },
+      { role: "tool", content: [{ type: "tool_result", toolCallId: "call_a", content: "ok" }] },
+      {
+        role: "assistant",
+        content: [{ type: "thinking", text: "settled answer", signature: "sig-old2" }],
+      },
+      { role: "user", content: "second" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "active reasoning", signature: "sig-new" },
+          { type: "tool_call", id: "call_b", name: "read_file", args: { filePath: "b.ts" } },
+        ],
+      },
+      { role: "tool", content: [{ type: "tool_result", toolCallId: "call_b", content: "ok" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "active answer", signature: "sig-new2" },
+          { type: "text", text: "done" },
+        ],
+      },
+    ];
+
+    const { messages: out } = toAnthropicMessages(messages);
+    const assistants = out.filter((m) => m.role === "assistant");
+    const contents = assistants.map((m) => m.content as unknown as Array<Record<string, unknown>>);
+
+    // Settled trajectory: thinking stripped (tool_use survives on the first;
+    // the second is thinking-only so it is dropped entirely).
+    expect(contents[0]?.map((b) => b.type)).toEqual(["tool_use"]);
+    // The thinking-only settled turn collapses to nothing and is skipped, so the
+    // next assistant content is the active trajectory's first turn.
+    expect(contents[1]).toEqual([
+      { type: "thinking", thinking: "active reasoning", signature: "sig-new" },
+      {
+        type: "tool_use",
+        id: "call_b",
+        name: "read_file",
+        input: { filePath: "b.ts" },
+      },
+    ]);
+    expect(contents[2]).toEqual([
+      { type: "thinking", thinking: "active answer", signature: "sig-new2" },
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  it("strips redacted_thinking (raw) from settled assistant turns", () => {
     const messages: Message[] = [
       { role: "user", content: "go" },
       {
@@ -267,6 +347,7 @@ describe("Anthropic transform", () => {
         ],
       },
       { role: "tool", content: [{ type: "tool_result", toolCallId: "c1", content: "ok" }] },
+      { role: "user", content: "again" },
       { role: "assistant", content: [{ type: "text", text: "done" }] },
     ];
 
