@@ -35,10 +35,12 @@ const DEFAULT_CODING_BASE_URL = "https://api.kimi.com/coding/v1";
 
 /** Platform identifier Kimi Code reports for the device flow. */
 const KIMI_PLATFORM = "kimi_code_cli";
-// Matches a real published kimi-code-cli release. The managed endpoint gates
-// on the `kimi-code-cli` client identity; keep this aligned with an actual
-// release (overridable via KIMI_CODE_VERSION) to avoid a version-ahead reject.
-const DEFAULT_KIMI_VERSION = "0.9.0";
+// Must match (or exceed) the current published `kimi-code` CLI version. The
+// managed coding endpoint gates on the `kimi-code-cli` client identity and
+// REJECTS versions below its expected minimum with a 403 "only available for
+// Coding Agents". Keep aligned with the latest npm `kimi-code` release;
+// overridable via KIMI_CODE_VERSION.
+const DEFAULT_KIMI_VERSION = "1.0.11";
 
 /** Local wall-clock budget for the whole device flow (15 min, matches Kimi). */
 const DEVICE_TIMEOUT_MS = 15 * 60 * 1000;

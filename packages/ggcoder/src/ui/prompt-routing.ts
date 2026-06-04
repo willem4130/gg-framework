@@ -27,6 +27,26 @@ export function routePromptCommandInput(
   };
 }
 
+/**
+ * Resolve a usable on-disk path for a video attachment. Prefers the original
+ * file path (set for any path-based attachment, works at any size). Falls back
+ * to persisting the in-memory base64 to a temp file for attachments that have
+ * no path (e.g. clipboard). Returns null if neither is available.
+ */
+function resolveVideoPath(img: ImageAttachment): string | null {
+  if (img.filePath) return img.filePath;
+  if (!img.data) return null;
+  const ext =
+    Object.entries(VIDEO_MEDIA_TYPES).find(([, mt]) => mt === img.mediaType)?.[0] ?? ".mp4";
+  const tmpPath = `/tmp/ggcoder-video-${Date.now()}${ext}`;
+  try {
+    writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+    return tmpPath;
+  } catch {
+    return null;
+  }
+}
+
 export function buildUserContentWithAttachments(
   text: string,
   inputImages: ImageAttachment[],
@@ -47,26 +67,29 @@ export function buildUserContentWithAttachments(
         text: `<file name="${img.fileName}">\n${img.data}\n</file>`,
       });
     } else if (img.kind === "video") {
+      const videoPath = resolveVideoPath(img);
       if (modelSupportsVideo) {
-        parts.push({ type: "video", mediaType: img.mediaType, data: img.data });
+        // Video-capable models (Kimi/Gemini/MiniMax) watch video via the read
+        // tool, which auto-compresses to each model's cap and delivers it in the
+        // provider's required shape. Point at the real on-disk path (any size).
+        parts.push({
+          type: "text",
+          text: videoPath
+            ? `The user attached a video at ${videoPath}. You CAN watch it: call the read tool ` +
+              `on this exact path now, then answer based on what you see. Do not say you ` +
+              `cannot watch video — reading the file lets you analyze it.`
+            : `[User attached a video but it could not be saved for analysis]`,
+        });
       } else {
-        // Models without native video: save to a temp file and tell the model
-        // to inspect it with ffmpeg/tools (mirrors the GLM image fallback).
-        const ext =
-          Object.entries(VIDEO_MEDIA_TYPES).find(([, mt]) => mt === img.mediaType)?.[0] ?? ".mp4";
-        const tmpPath = `/tmp/ggcoder-video-${Date.now()}${ext}`;
-        try {
-          writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
-          parts.push({
-            type: "text",
-            text: `[User attached a video saved at: ${tmpPath} — use ffmpeg or your tools to inspect it]`,
-          });
-        } catch {
-          parts.push({
-            type: "text",
-            text: `[User attached a video but it could not be saved for analysis]`,
-          });
-        }
+        // Models without video analysis: state the attachment plainly, with no
+        // "analyze this video" framing that would confuse a model that can't.
+        parts.push({
+          type: "text",
+          text: videoPath
+            ? `[User attached a video file at ${videoPath}. You cannot watch video directly; ` +
+              `if needed, use ffmpeg to extract frames or audio.]`
+            : `[User attached a video file.]`,
+        });
       }
     } else if (modelSupportsImages) {
       parts.push({ type: "image", mediaType: img.mediaType, data: img.data });

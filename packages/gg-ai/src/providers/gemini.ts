@@ -287,6 +287,16 @@ function toSystemAndContents(messages: Message[]): {
             },
           },
         });
+        // functionResponse can't carry media, so a tool that returned video
+        // (e.g. read on a .mp4) gets its clips appended as inlineData parts the
+        // model actually watches. stringifyToolContent left a text marker above.
+        if (typeof result.content !== "string") {
+          for (const block of result.content) {
+            if (block.type === "video") {
+              parts.push({ inlineData: { mimeType: block.mediaType, data: block.data } });
+            }
+          }
+        }
       }
       if (parts.length > 0) contents.push({ role: "user", parts });
     }

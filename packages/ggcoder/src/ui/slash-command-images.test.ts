@@ -69,7 +69,7 @@ describe("prompt-template slash commands with attachments", () => {
     expect(buildUserContentWithAttachments(fullPrompt, [], true, false)).toBe(fullPrompt);
   });
 
-  it("builds a native video block when the model supports video", () => {
+  it("routes video via the read tool when the model supports video", () => {
     const videoAttachment: ImageAttachment = {
       kind: "video",
       fileName: "clip.mp4",
@@ -80,13 +80,17 @@ describe("prompt-template slash commands with attachments", () => {
 
     const content = buildUserContentWithAttachments("Watch this", [videoAttachment], true, true);
 
-    expect(content).toEqual([
-      { type: "text", text: "Watch this" },
-      { type: "video", mediaType: "video/mp4", data: "AAAA" },
-    ]);
+    expect(Array.isArray(content)).toBe(true);
+    const parts = content as { type: string; text?: string }[];
+    expect(parts[0]).toEqual({ type: "text", text: "Watch this" });
+    // Video-capable models are pointed at the file to read (not inlined), so
+    // the read tool can auto-compress + deliver it in the provider's format.
+    expect(parts[1]!.type).toBe("text");
+    expect(parts[1]!.text).toContain("read tool");
+    expect(parts[1]!.text).toContain("/tmp/clip.mp4");
   });
 
-  it("falls back to a temp-file text block when the model lacks video support", () => {
+  it("states the attachment plainly (no analysis framing) when the model lacks video", () => {
     const videoAttachment: ImageAttachment = {
       kind: "video",
       fileName: "clip.mp4",
@@ -101,7 +105,28 @@ describe("prompt-template slash commands with attachments", () => {
     const parts = content as { type: string; text?: string }[];
     expect(parts[0]).toEqual({ type: "text", text: "Watch this" });
     expect(parts[1]!.type).toBe("text");
-    expect(parts[1]!.text).toContain("use ffmpeg or your tools to inspect it");
-    expect(parts[1]!.text).toMatch(/\/tmp\/ggcoder-video-\d+\.mp4/);
+    // No "watch/analyze this video" framing for a model that can't; just states
+    // the file and offers ffmpeg as a fallback.
+    expect(parts[1]!.text).toContain("cannot watch video");
+    expect(parts[1]!.text).toContain("/tmp/clip.mp4");
+    expect(parts[1]!.text).not.toContain("read tool");
+  });
+
+  it("handles a large path-only video (no inline base64) for video models", () => {
+    const videoAttachment: ImageAttachment = {
+      kind: "video",
+      fileName: "big.mp4",
+      filePath: "/tmp/big.mp4",
+      mediaType: "video/mp4",
+      data: "", // large clip: no inline base64, path-only
+    };
+
+    const content = buildUserContentWithAttachments("Watch this", [videoAttachment], true, true);
+
+    expect(Array.isArray(content)).toBe(true);
+    const parts = content as { type: string; text?: string }[];
+    expect(parts[1]!.type).toBe("text");
+    expect(parts[1]!.text).toContain("read tool");
+    expect(parts[1]!.text).toContain("/tmp/big.mp4");
   });
 });

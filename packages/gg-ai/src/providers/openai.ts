@@ -18,6 +18,7 @@ import {
   toOpenAITools,
 } from "./transform.js";
 import { normalizePromptCacheKey } from "./prompt-cache-key.js";
+import { uploadMoonshotVideos } from "./moonshot-video.js";
 import { parseToolArguments } from "../utils/json.js";
 import { getEnvironment } from "../utils/env.js";
 
@@ -83,6 +84,21 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
 
   const downgradedImages = downgradeUnsupportedImages(options.messages, options.supportsImages);
   const downgradedMessages = downgradeUnsupportedVideos(downgradedImages, options.supportsVideo);
+  // Moonshot/Kimi requires video uploaded to the file service and referenced by
+  // `ms://<id>` — inline base64 is rejected. Kimi's endpoint also only accepts
+  // the resulting `video_url` part inside a tool result (not user content), so
+  // ggcoder routes attached video through the read tool. This uploads every
+  // video part (in user OR tool-result content) and caches the id so multi-turn
+  // sessions don't re-upload. Done in-place before the transform.
+  if (options.provider === "moonshot") {
+    try {
+      await uploadMoonshotVideos(client, downgradedMessages, options.signal);
+    } catch (err) {
+      // Surface upload failures through the same provider-error classification
+      // as the chat call (this runs before the stream try/catch below).
+      throw toError(err, providerName);
+    }
+  }
   const messages = toOpenAIMessages(downgradedMessages, {
     provider: options.provider,
     thinking: !!options.thinking,

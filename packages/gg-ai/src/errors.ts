@@ -14,7 +14,7 @@
  *     → This is a ggcoder bug — please report it.
  */
 
-export type ErrorSource = "provider" | "ggcoder" | "network" | "auth";
+export type ErrorSource = "provider" | "ggcoder" | "network" | "auth" | "capability";
 
 /**
  * Probe a web `Headers` object or a plain header record for the first present
@@ -79,6 +79,18 @@ export class GGAIError extends Error {
     this.source = options?.source ?? "ggcoder";
     this.requestId = options?.requestId;
     this.hint = options?.hint;
+  }
+}
+
+/**
+ * The active model can't handle some content in the request (e.g. a video block
+ * left in history after switching from a video model to a text-only one). A
+ * clean, user-facing capability error — not a bug, not a provider outage.
+ */
+export class VideoUnsupportedError extends GGAIError {
+  constructor() {
+    super("This model can't analyze video.", { source: "capability" });
+    this.name = "VideoUnsupportedError";
   }
 }
 
@@ -268,6 +280,14 @@ function finaliseBySource(
         source,
         message,
         guidance: hint ?? providerGuidance(undefined, message, undefined),
+        ...(requestId ? { requestId } : {}),
+      };
+    case "capability":
+      return {
+        headline: message,
+        source,
+        message: "",
+        guidance: hint ?? "Only Kimi, Gemini, and MiniMax can analyze video. Switch with /model.",
         ...(requestId ? { requestId } : {}),
       };
     case "ggcoder":

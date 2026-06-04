@@ -249,6 +249,12 @@ function toolResultImages(content: ToolResultContent): ImageContent[] {
   return content.filter((b): b is ImageContent => b.type === "image");
 }
 
+/** Extract video blocks from tool_result content. Returns empty array for string content. */
+function toolResultVideos(content: ToolResultContent): VideoContent[] {
+  if (typeof content === "string") return [];
+  return content.filter((b): b is VideoContent => b.type === "video");
+}
+
 // ── Anthropic Transforms ───────────────────────────────────
 
 export function toAnthropicCacheControl(
@@ -273,14 +279,26 @@ type AnthropicImageSource = {
  * arrays are mapped to Anthropic's (text | image) block format, which
  * tool_result.content accepts natively.
  */
+type AnthropicToolResultBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: AnthropicImageSource }
+  | { type: "video"; source: { type: "base64"; media_type: string; data: string } };
+
 function toAnthropicToolResultContent(
   content: ToolResultContent,
-):
-  | string
-  | Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }> {
+): string | AnthropicToolResultBlock[] {
   if (typeof content === "string") return content;
-  return content.map((block) => {
+  return content.map((block): AnthropicToolResultBlock => {
     if (block.type === "text") return { type: "text" as const, text: block.text };
+    // Video blocks (e.g. read on a .mp4 for MiniMax) use the same base64 video
+    // shape as inline user content. Real Anthropic models are supportsVideo:false
+    // so they never reach here; this serves the Anthropic-compatible MiniMax API.
+    if (block.type === "video") {
+      return {
+        type: "video" as const,
+        source: { type: "base64" as const, media_type: block.mediaType, data: block.data },
+      };
+    }
     return {
       type: "image" as const,
       source: {
@@ -386,12 +404,14 @@ export function toAnthropicMessages(
     if (msg.role === "tool") {
       out.push({
         role: "user",
+        // Cast covers the video block (used by the Anthropic-compatible MiniMax
+        // API), which isn't in the first-party Anthropic tool_result types.
         content: msg.content.map((result) => ({
           type: "tool_result" as const,
           tool_use_id: remapAnthropicToolCallId(result.toolCallId, idMap),
           content: toAnthropicToolResultContent(result.content),
           is_error: result.isError,
-        })),
+        })) as unknown as Anthropic.ContentBlockParam[],
       });
     }
   }
@@ -597,14 +617,17 @@ export function toOpenAIMessages(
             ): OpenAI.ChatCompletionContentPartImage | OpenAI.ChatCompletionContentPartText => {
               if (part.type === "text") return { type: "text", text: part.text };
               if (part.type === "video") {
-                // Moonshot/Kimi accepts a `video_url` content part. Non-video
-                // models never reach here — video is downgraded to text by
-                // downgradeUnsupportedVideos before this transform runs.
+                // Moonshot/Kimi requires video uploaded to the file service and
+                // referenced by `ms://<id>` — inline base64 is rejected. The
+                // openai provider uploads first and caches `fileId` on the part.
+                // Match Kimi's wire shape exactly: when uploaded, include both
+                // `url` and `id`. Non-video models never reach here.
+                const videoUrl = part.fileId
+                  ? { url: `ms://${part.fileId}`, id: part.fileId }
+                  : { url: `data:${part.mediaType};base64,${part.data}` };
                 return {
                   type: "video_url",
-                  video_url: {
-                    url: `data:${part.mediaType};base64,${part.data}`,
-                  },
+                  video_url: videoUrl,
                 } as unknown as OpenAI.ChatCompletionContentPartImage;
               }
               return {
@@ -679,11 +702,36 @@ export function toOpenAIMessages(
       // OpenAI's `tool` role only accepts text. Emit the tool message with the
       // text content, then (if any tool results carried images and the model
       // supports vision) a follow-up `user` message carrying image_url blocks.
+      //
+      // Moonshot/Kimi is the exception for VIDEO: its coding endpoint accepts a
+      // `video_url` content part ONLY inside the tool message itself (not in a
+      // user message). So for moonshot we emit the tool content as an array
+      // `[{text}, {video_url}]` carrying the uploaded `ms://<id>` reference —
+      // mirroring the official Kimi read-media tool. The provider uploads the
+      // clip and stamps `fileId` before this transform runs.
+      const isMoonshot = options?.provider === "moonshot";
       const imageBlocks: OpenAI.ChatCompletionContentPartImage[] = [];
       for (const result of msg.content) {
         const text = toolResultText(result.content);
         const images = toolResultImages(result.content);
+        const videos = isMoonshot ? toolResultVideos(result.content) : [];
         const hasText = text.length > 0;
+        if (videos.length > 0) {
+          const parts: OpenAI.ChatCompletionContentPartText[] = [];
+          if (hasText) parts.push({ type: "text", text });
+          const videoParts = videos.map((v) => {
+            const videoUrl = v.fileId
+              ? { url: `ms://${v.fileId}`, id: v.fileId }
+              : { url: `data:${v.mediaType};base64,${v.data}` };
+            return { type: "video_url", video_url: videoUrl };
+          });
+          out.push({
+            role: "tool",
+            tool_call_id: remapToolCallId(result.toolCallId, idMap),
+            content: [...parts, ...videoParts] as unknown as string,
+          });
+          continue;
+        }
         out.push({
           role: "tool",
           tool_call_id: remapToolCallId(result.toolCallId, idMap),

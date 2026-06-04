@@ -124,6 +124,62 @@ describe("streamGemini", () => {
     });
   });
 
+  it("delivers tool-result video as an inlineData part (read on a .mp4)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          response: {
+            candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 2, totalTokenCount: 12 },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    const result = streamGemini({
+      provider: "gemini",
+      model: "gemini-3-flash-preview",
+      projectId: "test-project",
+      apiKey: "access-token",
+      streaming: false,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_call", id: "call_v", name: "read", args: { file_path: "c.mp4" } },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool_result",
+              toolCallId: "call_v",
+              content: [
+                { type: "text", text: "Read video file c.mp4 [video/mp4]" },
+                { type: "video", mediaType: "video/mp4", data: "QUJD" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    await result.response;
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      request: { contents: Array<{ role: string; parts: unknown[] }> };
+    };
+    const toolTurn = body.request.contents.find((c) => c.role === "user");
+    // functionResponse carries the text marker; the video rides as inlineData.
+    expect(toolTurn?.parts).toContainEqual({
+      inlineData: { mimeType: "video/mp4", data: "QUJD" },
+    });
+  });
+
   it("still sends Code Assist requests for Code Assist-only preview models", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

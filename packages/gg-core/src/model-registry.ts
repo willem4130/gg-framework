@@ -15,6 +15,16 @@ export interface ModelInfo {
   supportsThinking: boolean;
   supportsImages: boolean;
   supportsVideo: boolean;
+  /**
+   * Max video payload (bytes) this model's transport accepts, used to decide
+   * when an attached/read video must be compressed before sending. Differs by
+   * provider delivery mechanism:
+   *   - Moonshot/Kimi: 100 MB (file-service upload cap)
+   *   - MiniMax: 50 MB (Anthropic-compatible base64 inline cap)
+   *   - Gemini: 20 MB (inlineData per-request cap)
+   * Only meaningful when `supportsVideo` is true.
+   */
+  maxVideoBytes?: number;
   costTier: "low" | "medium" | "high";
   /**
    * The top reasoning tier this model genuinely uses. Used when thinking is
@@ -131,6 +141,7 @@ export const MODELS: ModelInfo[] = [
     supportsThinking: true,
     supportsImages: true,
     supportsVideo: true,
+    maxVideoBytes: 20 * 1024 * 1024,
     costTier: "low",
     maxThinkingLevel: "high",
   },
@@ -143,6 +154,7 @@ export const MODELS: ModelInfo[] = [
     supportsThinking: true,
     supportsImages: true,
     supportsVideo: true,
+    maxVideoBytes: 20 * 1024 * 1024,
     costTier: "low",
     maxThinkingLevel: "high",
   },
@@ -156,6 +168,7 @@ export const MODELS: ModelInfo[] = [
     supportsThinking: true,
     supportsImages: true,
     supportsVideo: true,
+    maxVideoBytes: 100 * 1024 * 1024,
     costTier: "medium",
     maxThinkingLevel: "high",
   },
@@ -206,6 +219,7 @@ export const MODELS: ModelInfo[] = [
     supportsThinking: true,
     supportsImages: true,
     supportsVideo: true,
+    maxVideoBytes: 50 * 1024 * 1024,
     costTier: "medium",
     maxThinkingLevel: "high",
   },
@@ -269,6 +283,20 @@ export function getModel(id: string): ModelInfo | undefined {
 
 export function getModelsForProvider(provider: Provider): ModelInfo[] {
   return MODELS.filter((m) => m.provider === provider);
+}
+
+/** Default video payload cap (bytes) when a video model doesn't declare one. */
+export const DEFAULT_MAX_VIDEO_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Max video payload (bytes) the given model's transport accepts before the clip
+ * must be compressed. Returns `undefined` for models without video support, so
+ * callers can skip the native-video path entirely.
+ */
+export function getVideoByteLimit(modelId: string): number | undefined {
+  const model = getModel(modelId);
+  if (!model?.supportsVideo) return undefined;
+  return model.maxVideoBytes ?? DEFAULT_MAX_VIDEO_BYTES;
 }
 
 export function getDefaultModel(provider: Provider): ModelInfo {

@@ -45,6 +45,11 @@ export interface VideoContent {
   type: "video";
   mediaType: string; // e.g. "video/mp4"
   data: string; // base64
+  /** Moonshot/Kimi file id (e.g. "d4f0…") after uploading via the files API.
+   *  Moonshot rejects inline base64 video; the provider uploads the clip once
+   *  and caches the id here so later turns reference `ms://<fileId>` instead of
+   *  re-sending the bytes. */
+  fileId?: string;
 }
 
 export interface ToolCall {
@@ -54,7 +59,7 @@ export interface ToolCall {
   args: Record<string, unknown>;
 }
 
-export type ToolResultContent = string | (TextContent | ImageContent)[];
+export type ToolResultContent = string | (TextContent | ImageContent | VideoContent)[];
 
 export interface ToolResult {
   type: "tool_result";

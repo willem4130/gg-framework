@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   GGAIError,
   ProviderError,
+  VideoUnsupportedError,
   formatError,
   formatErrorForDisplay,
   isUsageLimitError,
@@ -51,6 +52,24 @@ describe("formatError usage limit", () => {
     expect(formatted.headline).toBe("Anthropic usage limit reached.");
     expect(formatted.message).toBe("Your Anthropic usage is finished.");
     expect(formatted.resetsAt).toBeUndefined();
+  });
+});
+
+describe("VideoUnsupportedError", () => {
+  it("formats as a clean capability error naming video-capable models", () => {
+    const f = formatError(new VideoUnsupportedError());
+    expect(f.source).toBe("capability");
+    expect(f.headline).toBe("This model can't analyze video.");
+    expect(f.guidance).toContain("Kimi");
+    expect(f.guidance).toContain("Gemini");
+    expect(f.guidance).toContain("MiniMax");
+    expect(f.guidance).toContain("/model");
+  });
+
+  it("renders headline + guidance only (no bug-report framing)", () => {
+    const out = formatErrorForDisplay(new VideoUnsupportedError());
+    expect(out).toContain("This model can't analyze video.");
+    expect(out).not.toContain("ggcoder bug");
   });
 });
 

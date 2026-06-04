@@ -1,6 +1,7 @@
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { ProcessManager } from "../core/process-manager.js";
 import { createReadTool } from "./read.js";
+import { getVideoByteLimit } from "../core/model-registry.js";
 import { createWriteTool } from "./write.js";
 import { createEditTool } from "./edit.js";
 import { createBashTool } from "./bash.js";
@@ -68,8 +69,13 @@ export function createTools(cwd: string, opts?: CreateToolsOptions): CreateTools
   const ops = opts?.operations ?? localOperations;
   const planModeRef = opts?.planModeRef;
 
+  // Enable native video returns from the read tool for any video-capable model
+  // (Kimi/Moonshot, Gemini, MiniMax), each with its own per-model byte cap that
+  // drives auto-compression. Non-video models get `undefined` — video falls back
+  // to the plain binary-file notice, never offered to models that can't watch it.
+  const videoByteLimit = opts?.model ? getVideoByteLimit(opts.model) : undefined;
   const tools: AgentTool[] = [
-    createReadTool(cwd, readFiles, ops, opts?.onFileRead),
+    createReadTool(cwd, readFiles, ops, opts?.onFileRead, videoByteLimit),
     createWriteTool(cwd, readFiles, ops, planModeRef, opts?.onFileMutated, opts?.onPreFileMutation),
     createEditTool(cwd, readFiles, ops, planModeRef, opts?.onFileMutated, opts?.onPreFileMutation),
     createBashTool(cwd, processManager, ops, planModeRef),

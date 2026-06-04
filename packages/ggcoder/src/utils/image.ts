@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type SharpNamespace from "sharp";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Lazy `sharp` resolver — sharp is a hefty native module (libvips). Loading
@@ -45,9 +49,131 @@ const ATTACHABLE_EXTENSIONS = new Set([
   ...TEXT_EXTENSIONS,
 ]);
 
-/** Max inline video size in bytes (50 MB) — matches MiniMax's base64 cap.
- *  Larger videos degrade to a text placeholder naming the on-disk path. */
+/** Max video size loaded into base64 at attach time (50 MB). Video is routed by
+ *  file path, so the bytes are only kept as a fallback for path-less clipboard
+ *  clips; larger clips keep `data` empty and rely on the path. Per-model upload
+ *  caps live in the model registry (`maxVideoBytes`) and drive compression. */
 export const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+
+// ── Video compression (fit oversized clips under a per-model cap) ─────────
+
+/** Compression target — 90 MB leaves headroom under the 100 MB upload cap for
+ *  container overhead and bitrate overshoot. */
+const COMPRESS_TARGET_BYTES = 90 * 1024 * 1024;
+const COMPRESS_MAX_WIDTH = 1280; // cap long edge; preserves aspect (height auto)
+const COMPRESS_FPS = 5; // plenty for content understanding; shrinks size hard
+const COMPRESS_AUDIO_KBPS = 64; // keep speech intelligible
+const COMPRESS_MIN_VIDEO_KBPS = 100; // floor so very long clips stay decodable
+
+export type VideoCompressionResult =
+  | { ok: true; path: string; originalBytes: number; compressedBytes: number }
+  | { ok: false; reason: string };
+
+function isMissingBinary(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
+/**
+ * Transcode an oversized video down to fit under {@link COMPRESS_TARGET_BYTES}
+ * using ffmpeg: downscale to {@link COMPRESS_MAX_WIDTH}px wide, drop to
+ * {@link COMPRESS_FPS} fps, and target a bitrate computed from the clip's
+ * duration. Video understanding samples frames, so aggressive downsampling
+ * keeps the content analyzable while shrinking multi-GB clips to <100 MB.
+ *
+ * Writes to a temp file and returns its path; the caller owns deleting it.
+ * Best-effort: returns `{ ok: false, reason }` if ffmpeg/ffprobe are missing,
+ * the probe fails, or the result still exceeds the target.
+ */
+export async function compressVideoToFit(
+  inputPath: string,
+  targetBytes: number = COMPRESS_TARGET_BYTES,
+  signal?: AbortSignal,
+): Promise<VideoCompressionResult> {
+  // Probe duration to compute a size-targeted bitrate.
+  let durationSec: number;
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", inputPath],
+      { signal },
+    );
+    durationSec = Number.parseFloat(stdout.trim());
+  } catch (err) {
+    return {
+      ok: false,
+      reason: isMissingBinary(err)
+        ? "ffmpeg/ffprobe is not installed"
+        : `could not probe video: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!Number.isFinite(durationSec) || durationSec <= 0) {
+    return { ok: false, reason: "could not determine video duration" };
+  }
+
+  // total kbps budget = target bits / duration, with 90% safety margin; the
+  // audio track gets a fixed slice, the rest goes to video (floored).
+  const totalKbps = Math.floor(((targetBytes * 8) / durationSec / 1000) * 0.9);
+  const videoKbps = Math.max(COMPRESS_MIN_VIDEO_KBPS, totalKbps - COMPRESS_AUDIO_KBPS);
+  const outPath = path.join(os.tmpdir(), `ggcoder-compressed-${Date.now()}.mp4`);
+
+  try {
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-y",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-i",
+        inputPath,
+        "-vf",
+        `scale='min(${COMPRESS_MAX_WIDTH},iw)':-2,fps=${COMPRESS_FPS}`,
+        "-c:v",
+        "libx264",
+        "-b:v",
+        `${videoKbps}k`,
+        "-maxrate",
+        `${Math.floor(videoKbps * 1.5)}k`,
+        "-bufsize",
+        `${videoKbps}k`,
+        "-preset",
+        "veryfast",
+        "-c:a",
+        "aac",
+        "-b:a",
+        `${COMPRESS_AUDIO_KBPS}k`,
+        outPath,
+      ],
+      { signal, maxBuffer: 16 * 1024 * 1024 },
+    );
+  } catch (err) {
+    await fs.unlink(outPath).catch(() => {});
+    return {
+      ok: false,
+      reason: isMissingBinary(err)
+        ? "ffmpeg is not installed"
+        : `ffmpeg compression failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  let compressedBytes: number;
+  let originalBytes: number;
+  try {
+    compressedBytes = (await fs.stat(outPath)).size;
+    originalBytes = (await fs.stat(inputPath)).size;
+  } catch {
+    await fs.unlink(outPath).catch(() => {});
+    return { ok: false, reason: "compression produced no usable output" };
+  }
+  if (compressedBytes > targetBytes) {
+    await fs.unlink(outPath).catch(() => {});
+    return {
+      ok: false,
+      reason: `compressed video is still ${(compressedBytes / (1024 * 1024)).toFixed(0)} MB`,
+    };
+  }
+  return { ok: true, path: outPath, originalBytes, compressedBytes };
+}
 
 export const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -322,27 +448,16 @@ export async function readImageFile(filePath: string): Promise<ImageAttachment> 
   if (VIDEO_EXTENSIONS.has(ext)) {
     try {
       const mediaType = VIDEO_MEDIA_TYPES[ext] ?? "video/mp4";
-      const rawBuffer = await fs.readFile(filePath);
-      // Never run sharp on video buffers — read straight to base64. Over the
-      // inline cap, degrade to a text placeholder naming the on-disk path so
-      // the model can still inspect it with ffmpeg/tools.
-      if (rawBuffer.length > MAX_VIDEO_BYTES) {
-        const mb = (rawBuffer.length / (1024 * 1024)).toFixed(1);
-        return {
-          kind: "text",
-          fileName,
-          filePath,
-          mediaType: "text/plain",
-          data: `[video ${fileName} (${mb} MB) exceeds the ${MAX_VIDEO_BYTES / (1024 * 1024)} MB inline cap and is saved at: ${filePath} — use ffmpeg or your tools to inspect it]`,
-        };
-      }
-      return {
-        kind: "video",
-        fileName,
-        filePath,
-        mediaType,
-        data: rawBuffer.toString("base64"),
-      };
+      const stat = await fs.stat(filePath);
+      // Always classify as `video` so it routes through the video path (and the
+      // UI shows it as a video, not a generic file). Providers that deliver
+      // video via an upload/read-tool reference it by `filePath` at any size.
+      // Only providers that inline base64 need the bytes in-memory, and only up
+      // to MAX_VIDEO_BYTES — so for larger clips we keep `data` empty and let
+      // the path-based routes handle it.
+      const data =
+        stat.size <= MAX_VIDEO_BYTES ? (await fs.readFile(filePath)).toString("base64") : "";
+      return { kind: "video", fileName, filePath, mediaType, data };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       return {
