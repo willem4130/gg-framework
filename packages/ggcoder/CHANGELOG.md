@@ -1,5 +1,15 @@
 # @kenkaiiii/ggcoder
 
+## 4.6.2
+
+### Patch Changes
+
+- Fix OpenAI OAuth account switching by adding prompt=login to authorize URL. Previously, re-running `ggcoder login` with OpenAI would silently re-approve the cached browser session, preventing users from switching accounts.
+- Updated dependencies
+  - @kenkaiiii/gg-core@4.6.2
+  - @kenkaiiii/gg-ai@4.6.2
+  - @kenkaiiii/gg-agent@4.6.2
+
 ## 4.6.1
 
 ### Patch Changes
