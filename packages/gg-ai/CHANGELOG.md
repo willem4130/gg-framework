@@ -1,5 +1,11 @@
 # @kenkaiiii/gg-ai
 
+## 4.6.3
+
+### Patch Changes
+
+- Fix Anthropic rejecting foreign `raw` content blocks (e.g. OpenAI Codex encrypted reasoning items) when switching a session to an Anthropic model. Raw blocks whose wire type isn't a valid Anthropic input content block are now dropped on the way out.
+
 ## 4.6.2
 
 ### Patch Changes
