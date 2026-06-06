@@ -14,6 +14,7 @@ import { createWebSearchTool } from "./web-search.js";
 import { createSourcePathTool } from "./source-path.js";
 import { createTaskOutputTool } from "./task-output.js";
 import { createTaskStopTool } from "./task-stop.js";
+import { createTaskSendTool } from "./task-send.js";
 import { createTasksTool } from "./tasks.js";
 import { createSkillTool } from "./skill.js";
 import { createScreenshotTool } from "./screenshot.js";
@@ -95,6 +96,7 @@ export function createTools(cwd: string, opts?: CreateToolsOptions): CreateTools
     createSourcePathTool(cwd),
     createWebFetchTool(),
     createTaskOutputTool(processManager),
+    createTaskSendTool(processManager),
     createTaskStopTool(processManager),
     createTasksTool(cwd),
     createScreenshotTool(cwd),
@@ -147,6 +149,7 @@ export { createWebFetchTool } from "./web-fetch.js";
 export { createWebSearchTool } from "./web-search.js";
 export { createSourcePathTool } from "./source-path.js";
 export { createTaskOutputTool } from "./task-output.js";
+export { createTaskSendTool } from "./task-send.js";
 export { createTaskStopTool } from "./task-stop.js";
 export { createTasksTool } from "./tasks.js";
 export { createSkillTool } from "./skill.js";

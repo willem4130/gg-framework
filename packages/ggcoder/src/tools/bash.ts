@@ -43,8 +43,10 @@ export function createBashTool(
       "Returns exit code and combined stdout/stderr. " +
       "Commands run in a non-interactive bash shell with TERM=dumb. " +
       "Long output is truncated (tail kept). " +
-      "Set run_in_background=true for long-running processes (dev servers, watchers). " +
-      "Use task_output/task_stop to interact with background processes.",
+      "Set run_in_background=true for long-running OR interactive processes " +
+      "(dev servers, watchers, REPLs, scaffolders, programs that prompt for input). " +
+      "Use task_output to read output, task_send to type input/answer prompts, and " +
+      "task_stop to stop background processes.",
     parameters: BashParams,
     executionMode: "sequential",
     async execute({ command, timeout: timeoutMs, run_in_background }, context) {
@@ -58,7 +60,8 @@ export function createBashTool(
           `ID: ${result.id}\n` +
           `PID: ${result.pid}\n` +
           `Log: ${result.logFile}\n` +
-          `Use task_output with id="${result.id}" to read output.`
+          `Use task_output with id="${result.id}" to read output, ` +
+          `task_send to type input/answer prompts, task_stop to stop it.`
         );
       }
 

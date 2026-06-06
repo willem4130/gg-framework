@@ -65,11 +65,17 @@ export class ProcessManager {
     const child = spawn("bash", ["-c", command], {
       cwd,
       detached: true,
-      stdio: ["ignore", fd, fd],
+      // stdin is a pipe so callers can drive interactive processes (REPLs,
+      // scaffolders, [Y/n] prompts) via sendInput(); stdout/stderr go to the log.
+      stdio: ["pipe", fd, fd],
       env: getSafeToolEnv(),
     });
 
     fs.closeSync(fd);
+
+    // Swallow EPIPE: writing to a process that has already exited would
+    // otherwise emit an unhandled 'error' and crash the host.
+    child.stdin?.on("error", () => {});
 
     const pid = child.pid!;
     child.unref();
@@ -125,6 +131,52 @@ export class ProcessManager {
 
     const isRunning = this.children.has(id);
     return { id, isRunning, exitCode: proc.exitCode, output };
+  }
+
+  /**
+   * Write input to a running background process's stdin, enabling interactive
+   * control (answer prompts, drive a REPL, feed a scaffolder). By default a
+   * newline is appended (as if the user pressed Enter). Set `eof` to close
+   * stdin afterwards, signalling end-of-input (Ctrl-D) to the program.
+   */
+  async sendInput(
+    id: string,
+    input: string,
+    opts: { enter?: boolean; eof?: boolean } = {},
+  ): Promise<string> {
+    const proc = this.processes.get(id);
+    if (!proc) return `No background process with id "${id}"`;
+
+    const child = this.children.get(id);
+    if (!child || proc.exitCode !== null) {
+      return `Process ${id} already exited (code ${proc.exitCode})`;
+    }
+
+    const stdin = child.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded) {
+      return `Process ${id} is not accepting input (stdin is closed).`;
+    }
+
+    const enter = opts.enter ?? true;
+    const text = input + (enter ? "\n" : "");
+
+    try {
+      if (text.length > 0) {
+        await new Promise<void>((resolve, reject) => {
+          stdin.write(text, (err) => (err ? reject(err) : resolve()));
+        });
+      }
+      if (opts.eof) stdin.end();
+    } catch (err) {
+      return `Failed to send input to ${id}: ${(err as Error).message}`;
+    }
+
+    const summary = opts.eof
+      ? text.length > 0
+        ? `Sent input and closed stdin (EOF) for ${id}.`
+        : `Closed stdin (EOF) for ${id}.`
+      : `Sent input to ${id}.`;
+    return `${summary} Use task_output with id="${id}" to read the response.`;
   }
 
   async stop(id: string): Promise<string> {
