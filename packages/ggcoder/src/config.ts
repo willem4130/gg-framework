@@ -32,6 +32,8 @@ export interface SavedSettings {
   thinkingLevel?: ThinkingLevel;
   theme: "auto" | ThemeName;
   idealReviewEnabled: boolean;
+  /** Days to keep session transcripts before startup pruning. 0 disables. */
+  sessionRetentionDays: number;
 }
 
 const VALID_PROVIDERS = new Set<Provider>([
@@ -57,6 +59,7 @@ export function loadSavedSettings(settingsFilePath?: string): SavedSettings {
     thinkingEnabled: false,
     theme: "auto",
     idealReviewEnabled: true,
+    sessionRetentionDays: 30,
   };
   try {
     const raw = JSON.parse(fsSync.readFileSync(filePath, "utf-8"));
@@ -73,6 +76,13 @@ export function loadSavedSettings(settingsFilePath?: string): SavedSettings {
     if (isValidThinkingLevel(raw.thinkingLevel)) result.thinkingLevel = raw.thinkingLevel;
     if (typeof raw.theme === "string" && isValidThemeSetting(raw.theme)) result.theme = raw.theme;
     if (raw.idealReviewEnabled === false) result.idealReviewEnabled = false;
+    if (
+      typeof raw.sessionRetentionDays === "number" &&
+      Number.isInteger(raw.sessionRetentionDays) &&
+      raw.sessionRetentionDays >= 0
+    ) {
+      result.sessionRetentionDays = raw.sessionRetentionDays;
+    }
   } catch {
     // No settings file or invalid JSON — use defaults
   }

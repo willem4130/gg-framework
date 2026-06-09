@@ -495,6 +495,24 @@ export function App(props: AppProps) {
 
   const getId = () => `ui-${nextIdRef.current++}`;
 
+  // Session persistence failures (e.g. ENOSPC disk-full) must not crash the
+  // live session — SessionManager swallows them and reports here once per
+  // error code so the user gets a visible warning instead of a process crash.
+  useEffect(() => {
+    const manager = sessionManagerRef.current;
+    if (!manager) return;
+    manager.onPersistError = (error) => {
+      const detail =
+        error?.code === "ENOSPC"
+          ? "Disk is full — session transcript can no longer be saved. Free up space to resume saving."
+          : `Session transcript could not be saved (${error?.code ?? "unknown error"}). The session continues, but new messages won't persist.`;
+      setLiveItems((prev) => [...prev, { kind: "info", text: `⚠ ${detail}`, id: getId() }]);
+    };
+    return () => {
+      manager.onPersistError = undefined;
+    };
+  }, []);
+
   useEffect(() => {
     idealReviewEnabledRef.current = idealReviewEnabled;
     if (props.sessionStore) props.sessionStore.idealReviewEnabled = idealReviewEnabled;

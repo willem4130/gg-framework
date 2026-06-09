@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { Message, Provider } from "@kenkaiiii/gg-ai";
+import { log } from "./logger.js";
 import type { CompletedItem } from "../ui/app-items.js";
 
 // ── Entry Types ────────────────────────────────────────────
@@ -129,9 +130,29 @@ function encodeCwd(cwd: string): string {
 
 export class SessionManager {
   private sessionsDir: string;
+  private warnedPersistCodes = new Set<string>();
+  /** Called once per error code when session persistence fails (e.g. ENOSPC). */
+  onPersistError?: (error: NodeJS.ErrnoException) => void;
 
   constructor(sessionsDir: string) {
     this.sessionsDir = sessionsDir;
+  }
+
+  /**
+   * Session persistence must never crash a live session. Disk-full (ENOSPC),
+   * permission, or quota errors during transcript writes are reported once
+   * per error code and otherwise swallowed — the in-memory session keeps going.
+   */
+  private handlePersistError(error: unknown, op: string): void {
+    const err = error as NodeJS.ErrnoException;
+    const code = err?.code ?? "UNKNOWN";
+    if (this.warnedPersistCodes.has(code)) return;
+    this.warnedPersistCodes.add(code);
+    log("WARN", "session", `Session persistence failed (${op}); continuing without saving`, {
+      code,
+      message: err?.message ?? String(error),
+    });
+    this.onPersistError?.(err);
   }
 
   private dirForCwd(cwd: string): string {
@@ -299,11 +320,82 @@ export class SessionManager {
     return sessions.find((session) => session.id === sessionId)?.path ?? null;
   }
 
+  /**
+   * Delete session files older than `maxAgeDays` across ALL project dirs.
+   * Age is judged by file mtime, so a session that's still being appended to
+   * is never considered old. Best-effort: per-file errors are skipped so a
+   * locked or vanished file can't break startup. Empty project dirs left
+   * behind are removed. Returns what was freed for logging.
+   */
+  async pruneOldSessions(options: {
+    maxAgeDays: number;
+    keepPaths?: string[];
+  }): Promise<{ deletedFiles: number; freedBytes: number }> {
+    const result = { deletedFiles: 0, freedBytes: 0 };
+    if (options.maxAgeDays <= 0) return result;
+    const cutoffMs = Date.now() - options.maxAgeDays * 86_400_000;
+    const keep = new Set((options.keepPaths ?? []).map((p) => path.resolve(p)));
+
+    let cwdDirs: string[];
+    try {
+      cwdDirs = await fs.readdir(this.sessionsDir);
+    } catch {
+      return result;
+    }
+
+    for (const dirName of cwdDirs) {
+      const dir = path.join(this.sessionsDir, dirName);
+      let files: string[];
+      try {
+        const stat = await fs.stat(dir);
+        if (!stat.isDirectory()) continue;
+        files = await fs.readdir(dir);
+      } catch {
+        continue;
+      }
+
+      let remaining = files.length;
+      for (const file of files) {
+        if (!file.endsWith(".jsonl")) continue;
+        const filePath = path.join(dir, file);
+        if (keep.has(path.resolve(filePath))) continue;
+        try {
+          const stat = await fs.stat(filePath);
+          if (stat.mtimeMs >= cutoffMs) continue;
+          await fs.unlink(filePath);
+          result.deletedFiles += 1;
+          result.freedBytes += stat.size;
+          remaining -= 1;
+        } catch {
+          // Skip files we can't stat/delete — pruning is best-effort
+        }
+      }
+
+      if (remaining === 0) {
+        await fs.rmdir(dir).catch(() => {});
+      }
+    }
+
+    return result;
+  }
+
   async appendEntry(sessionPath: string, entry: SessionEntry): Promise<void> {
-    await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n", "utf-8");
+    try {
+      await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n", "utf-8");
+    } catch (error) {
+      this.handlePersistError(error, "appendEntry");
+    }
   }
 
   async updateLeaf(sessionPath: string, leafId: string): Promise<void> {
+    try {
+      await this.updateLeafUnsafe(sessionPath, leafId);
+    } catch (error) {
+      this.handlePersistError(error, "updateLeaf");
+    }
+  }
+
+  private async updateLeafUnsafe(sessionPath: string, leafId: string): Promise<void> {
     // Read only the first line (the header) instead of loading the entire file.
     // For large session files (100MB+), this avoids a full file read+write.
     const fd = await fs.open(sessionPath, "r+");

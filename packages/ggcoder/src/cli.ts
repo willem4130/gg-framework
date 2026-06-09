@@ -686,6 +686,29 @@ async function runInkTUI(opts: {
     checkpointRef.current = new CheckpointStore({ sessionId, cwd });
   }
 
+  // Prune old session transcripts in the background — they're append-only
+  // JSONL and can reach 100MB+ each, so without cleanup ~/.gg/sessions grows
+  // unbounded and eventually fills the disk. Fire-and-forget: pruning must
+  // never delay or break startup. The active session is explicitly protected.
+  {
+    const { sessionRetentionDays } = loadSavedSettings(paths.settingsFile);
+    if (sessionRetentionDays > 0) {
+      const keepPaths = sessionPath ? [sessionPath] : [];
+      void sessionManager
+        .pruneOldSessions({ maxAgeDays: sessionRetentionDays, keepPaths })
+        .then(({ deletedFiles, freedBytes }) => {
+          if (deletedFiles > 0) {
+            log("INFO", "session", `Pruned old sessions`, {
+              deletedFiles: String(deletedFiles),
+              freedMB: (freedBytes / 1024 / 1024).toFixed(1),
+              retentionDays: String(sessionRetentionDays),
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
   await renderApp({
     provider,
     model,
