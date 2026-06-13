@@ -54,10 +54,10 @@ const TARGETS = [
     }),
   },
   {
-    name: "moonshot / kimi-k2.6",
+    name: "moonshot / kimi-k2.7-code",
     options: () => ({
       provider: "moonshot",
-      model: "kimi-k2.6",
+      model: "kimi-k2.7-code",
       apiKey: auth.moonshot.accessToken,
       messages: [
         { role: "system", content: SYSTEM },

@@ -190,8 +190,8 @@ export const MODELS: ModelInfo[] = [
   },
   // ── Moonshot (Kimi) ────────────────────────────────────
   {
-    id: "kimi-k2.6",
-    name: "Kimi K2.6",
+    id: "kimi-k2.7-code",
+    name: "Kimi K2.7",
     provider: "moonshot",
     contextWindow: 262_144,
     maxOutputTokens: 262_144,
@@ -352,7 +352,7 @@ export function getDefaultModel(provider: Provider): ModelInfo {
   if (provider === "openai") return MODELS.find((m) => m.id === "gpt-5.5")!;
   if (provider === "gemini") return MODELS.find((m) => m.id === "gemini-3.1-flash-lite-preview")!;
   if (provider === "glm") return MODELS.find((m) => m.id === "glm-5.1")!;
-  if (provider === "moonshot") return MODELS.find((m) => m.id === "kimi-k2.6")!;
+  if (provider === "moonshot") return MODELS.find((m) => m.id === "kimi-k2.7-code")!;
   if (provider === "minimax") return MODELS.find((m) => m.id === "MiniMax-M3")!;
   if (provider === "deepseek") return MODELS.find((m) => m.id === "deepseek-v4-pro")!;
   if (provider === "openrouter") return MODELS.find((m) => m.id === "qwen/qwen3.6-plus")!;

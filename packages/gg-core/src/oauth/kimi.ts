@@ -173,14 +173,26 @@ function errorDetail(data: Record<string, unknown>): string {
   return typeof desc === "string" && desc.length > 0 ? desc : "unknown error";
 }
 
-function credsFromTokenResponse(data: Record<string, unknown>): OAuthCredentials {
+function credsFromTokenResponse(
+  data: Record<string, unknown>,
+  opts?: { fallbackRefreshToken?: string },
+): OAuthCredentials {
   const accessToken = data.access_token;
-  const refreshToken = data.refresh_token;
+  const responseRefreshToken = data.refresh_token;
   const expiresIn = Number(data.expires_in);
   if (typeof accessToken !== "string" || accessToken.length === 0) {
     throw new Error("Kimi OAuth response missing access_token.");
   }
-  if (typeof refreshToken !== "string" || refreshToken.length === 0) {
+  // OAuth servers may rotate the refresh token (returning a new one) OR keep
+  // the existing one (omitting it from the refresh response). Honor a rotated
+  // token when present, otherwise reuse the caller's existing refresh token so
+  // a non-rotating refresh never strands the credential. Only the initial
+  // device-code exchange (no fallback) hard-requires a refresh token.
+  const refreshToken =
+    typeof responseRefreshToken === "string" && responseRefreshToken.length > 0
+      ? responseRefreshToken
+      : (opts?.fallbackRefreshToken ?? "");
+  if (refreshToken.length === 0) {
     throw new Error("Kimi OAuth response missing refresh_token.");
   }
   if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
@@ -309,7 +321,7 @@ export async function refreshKimiToken(refreshToken: string): Promise<OAuthCrede
     refresh_token: refreshToken,
   });
   if (status === 200 && typeof data.access_token === "string") {
-    return credsFromTokenResponse(data);
+    return credsFromTokenResponse(data, { fallbackRefreshToken: refreshToken });
   }
   const errorCode = typeof data.error === "string" ? data.error : "";
   // Surface 401/403/invalid_grant in a shape AuthStorage's refresh-failure

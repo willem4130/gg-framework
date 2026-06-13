@@ -38,8 +38,8 @@ describe("thinking-level helpers", () => {
   });
 
   it("keeps non-cycling providers binary at their model max", () => {
-    expect(getSupportedThinkingLevels("moonshot", "kimi-k2.6")).toEqual(["high"]);
-    expect(getNextThinkingLevel("moonshot", "kimi-k2.6", undefined)).toBe("high");
-    expect(getNextThinkingLevel("moonshot", "kimi-k2.6", "high")).toBeUndefined();
+    expect(getSupportedThinkingLevels("moonshot", "kimi-k2.7-code")).toEqual(["high"]);
+    expect(getNextThinkingLevel("moonshot", "kimi-k2.7-code", undefined)).toBe("high");
+    expect(getNextThinkingLevel("moonshot", "kimi-k2.7-code", "high")).toBeUndefined();
   });
 });

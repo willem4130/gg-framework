@@ -64,7 +64,7 @@ beforeEach(async () => {
     anthropic: {
       accessToken: "test-access-token",
       refreshToken: "test-refresh-token",
-      expiresAt: Date.now() + 60_000,
+      expiresAt: Date.now() + 3_600_000,
     },
   });
   await writeJson(path.join(tmpHome, ".gg", "settings.json"), {

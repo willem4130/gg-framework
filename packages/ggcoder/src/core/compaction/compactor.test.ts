@@ -108,7 +108,7 @@ describe("shouldCompact", () => {
     const estimated = estimateConversationTokens(messages);
 
     const opusContext = getContextWindow("claude-opus-4-8");
-    const kimiContext = getContextWindow("kimi-k2.6");
+    const kimiContext = getContextWindow("kimi-k2.7-code");
 
     // Sanity: Opus has 1M, Kimi has 256k
     expect(opusContext).toBe(1_000_000);
@@ -201,7 +201,7 @@ describe("compaction thresholds across all models", () => {
     { model: "glm-5.1", contextWindow: 204_800 },
     { model: "glm-4.7", contextWindow: 200_000 },
     { model: "glm-4.7-flash", contextWindow: 200_000 },
-    { model: "kimi-k2.6", contextWindow: 262_144 },
+    { model: "kimi-k2.7-code", contextWindow: 262_144 },
   ];
 
   it("model registry returns correct context windows for all models", () => {

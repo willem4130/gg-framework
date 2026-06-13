@@ -18,6 +18,15 @@ type AuthData = Record<string, OAuthCredentials>;
  */
 export const MOONSHOT_OAUTH_KEY = "moonshot-oauth";
 
+/**
+ * Refresh refreshable OAuth tokens this long BEFORE their hard expiry. Renewing
+ * proactively keeps the credential (and its refresh token) alive across
+ * sessions instead of waiting until a request fails with 401 — which, for
+ * providers like Kimi, is otherwise misread as a dead credential and triggers a
+ * silent fall back to a static API key.
+ */
+const REFRESH_SKEW_MS = 60_000;
+
 /** Providers whose credentials are static API keys (no refresh mechanism). */
 const STATIC_API_KEY_PROVIDERS = new Set([
   "glm",
@@ -154,8 +163,17 @@ export class AuthStorage {
         return await this.resolveCredentials(MOONSHOT_OAUTH_KEY, opts);
       } catch (err) {
         // OAuth refresh token is dead and was wiped. Fall back to the
-        // Moonshot API key if the user also configured one.
+        // Moonshot API key if the user also configured one. This is a billing
+        // switch (OAuth → paid API key), so make it loud in the debug log
+        // rather than silent — the user expects OAuth to stay active and
+        // should know a re-login is needed to restore it.
         if (err instanceof NotLoggedInError && this.data["moonshot"]) {
+          log(
+            "WARN",
+            "auth",
+            "Kimi OAuth credential is no longer valid — falling back to the Moonshot API key. " +
+              'Run "ggcoder login" and choose Kimi OAuth to restore OAuth auth.',
+          );
           return this.data["moonshot"];
         }
         throw err;
@@ -173,8 +191,8 @@ export class AuthStorage {
       return creds;
     }
 
-    // Return if not expired and not force-refreshing
-    if (!opts?.forceRefresh && Date.now() < creds.expiresAt) {
+    // Return if not expired (with a safety skew) and not force-refreshing
+    if (!opts?.forceRefresh && Date.now() < creds.expiresAt - REFRESH_SKEW_MS) {
       return creds;
     }
 
@@ -188,7 +206,11 @@ export class AuthStorage {
         const content = await fs.readFile(this.filePath, "utf-8");
         const freshData = JSON.parse(content) as AuthData;
         const freshCreds = freshData[provider];
-        if (freshCreds && !opts?.forceRefresh && Date.now() < freshCreds.expiresAt) {
+        if (
+          freshCreds &&
+          !opts?.forceRefresh &&
+          Date.now() < freshCreds.expiresAt - REFRESH_SKEW_MS
+        ) {
           // Another process already refreshed — use their token
           this.data[provider] = freshCreds;
           return freshCreds;
@@ -230,6 +252,9 @@ export class AuthStorage {
       }
       if (!refreshed.projectId && creds.projectId) {
         refreshed.projectId = creds.projectId;
+      }
+      if (!refreshed.baseUrl && creds.baseUrl) {
+        refreshed.baseUrl = creds.baseUrl;
       }
       this.data[provider] = refreshed;
       // Write atomically (we already hold the file lock)

@@ -342,7 +342,7 @@ function main(): void {
     if (p === "openai") return "gpt-5.5";
     if (p === "gemini") return "gemini-3.1-flash-lite-preview";
     if (p === "glm") return "glm-5.1";
-    if (p === "moonshot") return "kimi-k2.6";
+    if (p === "moonshot") return "kimi-k2.7-code";
     if (p === "minimax") return "MiniMax-M3";
     if (p === "deepseek") return "deepseek-v4-pro";
     if (p === "openrouter") return "qwen/qwen3.6-plus";
@@ -784,7 +784,7 @@ async function runSessions(): Promise<void> {
     if (p === "openai") return "gpt-5.5";
     if (p === "gemini") return "gemini-3.1-flash-lite-preview";
     if (p === "glm") return "glm-5.1";
-    if (p === "moonshot") return "kimi-k2.6";
+    if (p === "moonshot") return "kimi-k2.7-code";
     if (p === "minimax") return "MiniMax-M3";
     if (p === "deepseek") return "deepseek-v4-pro";
     return "claude-opus-4-8";
