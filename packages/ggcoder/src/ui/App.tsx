@@ -2866,6 +2866,43 @@ export function App(props: AppProps) {
     resetToken: scrollResetToken,
   });
 
+  // Mid-run bottom-anchor gap reclaim. While the agent runs, the patched ink
+  // anchor converts every live-frame SHRINK into pad debt — blank rows emitted
+  // above the frame so the footer never jumps up during tool/status churn.
+  // Growth normally consumes those pads, but across a long quiet stretch (e.g.
+  // extended thinking with no streamed output after a tool batch) nothing
+  // consumes them and they sit on screen as a blank gap between the flushed
+  // scrollback transcript and the live frame — the very whitespace users see.
+  // Previously that debt was only reclaimed at idle (run end), so the gap
+  // "fixed itself" only once the turn landed in history.
+  //
+  // Once the live frame has been visually stable for a beat, pulse the anchor
+  // off→on: the off transition reclaims the pad debt via the backfill repaint
+  // (footer stays bottom-pinned, the gap fills with the transcript tail) and
+  // the immediate on transition restores pad protection for the next burst of
+  // churn. The pulse is synchronous so no unpadded frame renders between, and
+  // it is a cheap no-op when there is no debt. Skipped in fullscreen, which
+  // owns the whole screen and never pads.
+  useEffect(() => {
+    if (props.fullscreen) return;
+    if (!setFrameAnchorActive) return;
+    if (!agentLoop.isRunning) return;
+    const timer = setTimeout(() => {
+      setFrameAnchorActive(false);
+      setFrameAnchorActive(true);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [
+    props.fullscreen,
+    setFrameAnchorActive,
+    agentLoop.isRunning,
+    agentLoop.activityPhase,
+    liveItems,
+    visibleStreamingText,
+    liveToolFeed,
+    measuredLiveAreaRows,
+  ]);
+
   const visibleQueuedCount = liveItems.filter((item) => item.kind === "queued").length;
   const hiddenQueuedCount = Math.max(0, agentLoop.queuedCount - visibleQueuedCount);
   const shouldTopSpaceQueueIndicator =

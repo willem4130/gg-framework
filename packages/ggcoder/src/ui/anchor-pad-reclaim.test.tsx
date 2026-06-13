@@ -113,4 +113,84 @@ describe("anchor pad reclaim on run end", () => {
 
     mounted.unmount();
   });
+
+  it("reclaims the leftover pads MID-RUN via an off→on pulse (no blank gap during a quiet stretch)", async () => {
+    const recorder = new ScreenRecorder({ columns: COLUMNS, rows: ROWS });
+    const stdout = makeRecordingStdout(recorder);
+
+    const transcriptRows = Array.from({ length: ROWS }, (_, i) => `SIM_HISTORY_${i + 1}`);
+
+    const mounted = render(<Frame liveRows={2} />, {
+      stdout,
+      patchConsole: false,
+      maxFps: 1000,
+      anchorFrameToBottom: true,
+      clipFrameToTerminalHeight: true,
+    } as Parameters<typeof render>[1]) as unknown as PatchedInstance;
+
+    if (!mounted.setFrameAnchorActive || !mounted.insertBeforeFrame) {
+      mounted.unmount();
+      return;
+    }
+    mounted.setFrameShrinkBackfill?.((needRows: number) => {
+      const lines = transcriptRows.slice(-needRows);
+      while (lines.length < needRows) lines.unshift("");
+      return `${lines.join("\n")}\n`;
+    });
+    await tick();
+
+    // Turn starts: anchor on, transcript flushed, frame grows tall.
+    mounted.setFrameAnchorActive(true);
+    mounted.insertBeforeFrame(`${transcriptRows.join("\n")}\n`);
+    mounted.rerender(<Frame liveRows={12} />);
+    await tick();
+
+    // Tool batch finished, frame shrinks with NO compensating insert: pad debt
+    // forms (correct mid-run). Then the agent goes quiet (long thinking phase)
+    // — nothing grows the frame to consume the pads, so the blank gap lingers.
+    mounted.rerender(<Frame liveRows={2} />);
+    await tick();
+
+    // App's mid-run debounce fires while the run is STILL active: an off→on
+    // pulse. The off transition reclaims the pad debt (gap closes, footer stays
+    // pinned); the on transition immediately restores pad protection.
+    mounted.setFrameAnchorActive(false);
+    mounted.setFrameAnchorActive(true);
+    await tick(150);
+
+    const lines = recorder.viewportLines().map((line) => stripAnsi(line));
+    const frameTopIdx = lines.findIndex((line) => line.includes(FRAME_TOP));
+    const footerIdx = lines.findIndex((line) => line.includes(FOOTER));
+    expect(frameTopIdx, "live frame visible").toBeGreaterThanOrEqual(0);
+    expect(footerIdx, "footer visible").toBeGreaterThan(frameTopIdx);
+
+    const lastNonBlank = lines.reduce((acc, line, i) => (line.trim().length > 0 ? i : acc), -1);
+    expect(lastNonBlank, "nothing below the footer").toBe(footerIdx);
+
+    const blanksAboveFrame = lines.slice(0, frameTopIdx).filter((line) => line.trim() === "");
+    expect(blanksAboveFrame.length, "no blank gap above the live frame after mid-run pulse").toBe(
+      0,
+    );
+
+    // The pulse left the anchor ACTIVE: a further shrink must still pad so the
+    // footer does not move UP, proving protection was restored, not disabled.
+    mounted.rerender(<Frame liveRows={1} />);
+    await tick();
+    const afterLines = recorder.viewportLines().map((line) => stripAnsi(line));
+    const afterFooterIdx = afterLines.findIndex((line) => line.includes(FOOTER));
+    expect(afterFooterIdx, "footer still visible after a post-pulse shrink").toBeGreaterThan(0);
+    expect(
+      afterFooterIdx,
+      "footer did not rise after a post-pulse shrink (anchor still active)",
+    ).toBeGreaterThanOrEqual(footerIdx);
+    const afterLastNonBlank = afterLines.reduce(
+      (acc, line, i) => (line.trim().length > 0 ? i : acc),
+      -1,
+    );
+    expect(afterLastNonBlank, "nothing below the footer after a post-pulse shrink").toBe(
+      afterFooterIdx,
+    );
+
+    mounted.unmount();
+  });
 });
