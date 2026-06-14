@@ -25,6 +25,32 @@ fn sidecar_base(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// Gracefully terminate a sidecar child so its SIGINT/SIGTERM handler can run
+/// `session.dispose()` (process/LSP/MCP shutdown) before exit. On Unix we send
+/// SIGTERM synchronously (non-blocking), then poll `try_wait()` for up to ~3s off
+/// the calling thread, SIGKILL as a fallback, and `wait()` to reap the zombie
+/// (std `Child` never auto-reaps). On Windows there is no SIGTERM, so the
+/// fallback `kill()` is the only step.
+fn terminate_child(mut child: Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    std::thread::spawn(move || {
+        #[cfg(unix)]
+        {
+            for _ in 0..30 {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        let _ = child.kill(); // SIGKILL fallback (and the only step on Windows)
+        let _ = child.wait(); // reap
+    });
+}
+
 /// Resolve the sidecar port for the window that issued a command.
 fn port_for(webview: &WebviewWindow) -> Option<u16> {
     let state: State<Sidecars> = webview.state();
@@ -40,9 +66,14 @@ fn sidecar_port(webview: WebviewWindow) -> Option<u16> {
 
 /// Proxy: current agent/session state.
 #[tauri::command]
-async fn agent_state(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_state(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/state", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/state", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -53,11 +84,11 @@ async fn agent_state(webview: WebviewWindow) -> Result<serde_json::Value, String
 #[tauri::command]
 async fn agent_prompt(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     text: String,
     attachments: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     client
         .post(format!("{}/prompt", sidecar_base(port)))
         .json(&serde_json::json!({
@@ -72,9 +103,14 @@ async fn agent_prompt(
 
 /// Proxy: resumed conversation history (user + assistant text) for hydration.
 #[tauri::command]
-async fn agent_history(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_history(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/history", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/history", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -82,9 +118,11 @@ async fn agent_history(webview: WebviewWindow) -> Result<serde_json::Value, Stri
 
 /// Proxy: start a fresh session (clears history) for this window's project.
 #[tauri::command]
-async fn agent_new_session(webview: WebviewWindow) -> Result<(), String> {
+async fn agent_new_session(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<(), String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     client
         .post(format!("{}/new-session", sidecar_base(port)))
         .send()
@@ -95,9 +133,14 @@ async fn agent_new_session(webview: WebviewWindow) -> Result<(), String> {
 
 /// Proxy: provider auth status (which providers are connected).
 #[tauri::command]
-async fn agent_auth_status(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_auth_status(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/auth/status", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/auth/status", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -107,11 +150,11 @@ async fn agent_auth_status(webview: WebviewWindow) -> Result<serde_json::Value, 
 #[tauri::command]
 async fn agent_auth_apikey(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     provider: String,
     key: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/auth/apikey", sidecar_base(port)))
         .json(&serde_json::json!({ "provider": provider, "key": key }))
@@ -126,10 +169,10 @@ async fn agent_auth_apikey(
 #[tauri::command]
 async fn agent_auth_oauth_start(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     provider: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/auth/oauth/start", sidecar_base(port)))
         .json(&serde_json::json!({ "provider": provider }))
@@ -143,10 +186,10 @@ async fn agent_auth_oauth_start(
 #[tauri::command]
 async fn agent_auth_oauth_code(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     code: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/auth/oauth/code", sidecar_base(port)))
         .json(&serde_json::json!({ "code": code }))
@@ -160,10 +203,10 @@ async fn agent_auth_oauth_code(
 #[tauri::command]
 async fn agent_auth_logout(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     provider: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/auth/logout", sidecar_base(port)))
         .json(&serde_json::json!({ "provider": provider }))
@@ -177,10 +220,10 @@ async fn agent_auth_logout(
 #[tauri::command]
 async fn agent_kill_task(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/kill", sidecar_base(port)))
         .json(&serde_json::json!({ "id": id }))
@@ -192,9 +235,11 @@ async fn agent_kill_task(
 
 /// Proxy: cancel the in-flight run.
 #[tauri::command]
-async fn agent_cancel(webview: WebviewWindow) -> Result<(), String> {
+async fn agent_cancel(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<(), String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     client
         .post(format!("{}/cancel", sidecar_base(port)))
         .send()
@@ -205,9 +250,14 @@ async fn agent_cancel(webview: WebviewWindow) -> Result<(), String> {
 
 /// Proxy: list workflow (prompt-template) slash commands.
 #[tauri::command]
-async fn agent_commands(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_commands(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/commands", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/commands", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -215,9 +265,14 @@ async fn agent_commands(webview: WebviewWindow) -> Result<serde_json::Value, Str
 
 /// Proxy: list models available to the logged-in providers.
 #[tauri::command]
-async fn agent_models(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_models(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/models", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/models", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -227,10 +282,10 @@ async fn agent_models(webview: WebviewWindow) -> Result<serde_json::Value, Strin
 #[tauri::command]
 async fn agent_switch_model(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     model: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/model", sidecar_base(port)))
         .json(&serde_json::json!({ "model": model }))
@@ -243,9 +298,11 @@ async fn agent_switch_model(
 /// Proxy: cycle the reasoning/thinking level to the next supported value.
 /// Returns the new `{ thinkingLevel, supportedThinkingLevels }`.
 #[tauri::command]
-async fn agent_cycle_thinking(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_cycle_thinking(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/thinking", sidecar_base(port)))
         .send()
@@ -256,9 +313,14 @@ async fn agent_cycle_thinking(webview: WebviewWindow) -> Result<serde_json::Valu
 
 /// Proxy: read gg-app settings (e.g. the projects root folder).
 #[tauri::command]
-async fn agent_settings(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_settings(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/settings", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/settings", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -268,10 +330,10 @@ async fn agent_settings(webview: WebviewWindow) -> Result<serde_json::Value, Str
 #[tauri::command]
 async fn agent_save_settings(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     projects_root: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/settings", sidecar_base(port)))
         .json(&serde_json::json!({ "projectsRoot": projects_root }))
@@ -286,10 +348,10 @@ async fn agent_save_settings(
 #[tauri::command]
 async fn agent_create_project(
     webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
     name: String,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/create-project", sidecar_base(port)))
         .json(&serde_json::json!({ "name": name }))
@@ -313,9 +375,14 @@ async fn agent_create_project(
 
 /// Proxy: discover known projects across ggcoder/Claude Code/Codex stores.
 #[tauri::command]
-async fn agent_projects(webview: WebviewWindow) -> Result<serde_json::Value, String> {
+async fn agent_projects(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
-    let res = reqwest::get(format!("{}/projects", sidecar_base(port)))
+    let res = client
+        .get(format!("{}/projects", sidecar_base(port)))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -323,10 +390,16 @@ async fn agent_projects(webview: WebviewWindow) -> Result<serde_json::Value, Str
 
 /// Proxy: list recent sessions for a project cwd.
 #[tauri::command]
-async fn agent_sessions(webview: WebviewWindow, cwd: String) -> Result<serde_json::Value, String> {
+async fn agent_sessions(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+    cwd: String,
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("sidecar not ready")?;
     let encoded = urlencoding(&cwd);
-    let res = reqwest::get(format!("{}/sessions?cwd={}", sidecar_base(port), encoded))
+    let res = client
+        .get(format!("{}/sessions?cwd={}", sidecar_base(port), encoded))
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
@@ -394,8 +467,8 @@ fn select_project(
         let mut map = state.map.lock().unwrap();
         if let Some(inst) = map.get_mut(&label) {
             inst.port = None;
-            if let Some(mut child) = inst.child.take() {
-                let _ = child.kill();
+            if let Some(child) = inst.child.take() {
+                terminate_child(child);
             }
         }
     }
@@ -471,6 +544,9 @@ fn label_rank(label: &str) -> (u8, u32) {
 /// each other's agent activity. Rust has no mixed-content restriction, so the
 /// webview never touches plain HTTP directly. Reconnects on stream end.
 fn start_event_bridge(app: tauri::AppHandle, label: String, port: u16) {
+    // Reuse the app's shared HTTP client (cheap Arc clone) so the SSE connect
+    // shares the connection pool with the proxy commands.
+    let client = app.state::<reqwest::Client>().inner().clone();
     tauri::async_runtime::spawn(async move {
         loop {
             // Stop once this window's active sidecar port has moved on (project
@@ -485,7 +561,7 @@ fn start_event_bridge(app: tauri::AppHandle, label: String, port: u16) {
                 }
             }
             let url = format!("{}/events", sidecar_base(port));
-            match reqwest::get(&url).await {
+            match client.get(&url).send().await {
                 Ok(res) => {
                     let mut stream = res.bytes_stream();
                     let mut buf = String::new();
@@ -659,6 +735,7 @@ pub fn run() {
                 .build(),
         )
         .manage(Sidecars::default())
+        .manage(reqwest::Client::new())
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             agent_state,
@@ -699,8 +776,8 @@ pub fn run() {
                     .unwrap()
                     .remove(window.label())
                     .and_then(|mut i| i.child.take());
-                if let Some(mut child) = child {
-                    let _ = child.kill();
+                if let Some(child) = child {
+                    terminate_child(child);
                 }
             }
         })

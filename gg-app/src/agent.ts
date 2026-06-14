@@ -367,9 +367,11 @@ export async function waitForReady(): Promise<void> {
   if (typeof immediate === "number") return;
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let unlisten: (() => void) | undefined;
     const timeout = setTimeout(() => {
       if (!settled) {
         clearInterval(poll);
+        unlisten?.();
         reject(new Error("sidecar did not start in time"));
       }
     }, 30000);
@@ -378,9 +380,16 @@ export async function waitForReady(): Promise<void> {
       settled = true;
       clearTimeout(timeout);
       clearInterval(poll);
+      unlisten?.();
       resolve();
     };
-    appWindow.listen<number>("sidecar-ready", finish).catch(() => {});
+    appWindow
+      .listen<number>("sidecar-ready", finish)
+      .then((u) => {
+        if (settled) u();
+        else unlisten = u;
+      })
+      .catch(() => {});
     const poll = setInterval(() => {
       void invoke<number | null>("sidecar_port").then((p) => {
         if (typeof p === "number") finish();

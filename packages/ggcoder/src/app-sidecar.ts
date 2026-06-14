@@ -344,17 +344,28 @@ async function main(): Promise<void> {
 
   // Background tasks have no event source (the bash tool just spawns them), so
   // poll the process manager and broadcast only when the snapshot changes. This
-  // keeps the webview footer live without a busy render loop.
+  // keeps the webview footer live without a busy render loop. Adaptive cadence:
+  // tasks can only change while a run is active (the bash tool spawns them), so
+  // poll fast (1500ms) while running or while tasks exist, and back off to
+  // 5000ms when fully idle — fewer wakeups per idle window.
   let lastTasksJson = "[]";
-  const tasksPoll = setInterval(() => {
-    const tasks = session.listBackgroundProcesses();
-    const next = JSON.stringify(tasks);
-    if (next !== lastTasksJson) {
-      lastTasksJson = next;
-      broadcast("tasks", { tasks });
-    }
-  }, 1500);
-  tasksPoll.unref?.();
+  let tasksPoll: NodeJS.Timeout | undefined;
+  let tasksPollStopped = false;
+  const scheduleTasksPoll = (delay: number): void => {
+    if (tasksPollStopped) return;
+    tasksPoll = setTimeout(() => {
+      const tasks = session.listBackgroundProcesses();
+      const next = JSON.stringify(tasks);
+      if (next !== lastTasksJson) {
+        lastTasksJson = next;
+        broadcast("tasks", { tasks });
+      }
+      const active = running || tasks.length > 0;
+      scheduleTasksPoll(active ? 1500 : 5000);
+    }, delay);
+    tasksPoll.unref?.();
+  };
+  scheduleTasksPoll(1500);
 
   function readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -925,7 +936,8 @@ async function main(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
-    clearInterval(tasksPoll);
+    tasksPollStopped = true;
+    if (tasksPoll) clearTimeout(tasksPoll);
     for (const c of clients) c.res.end();
     server.close();
     await session.dispose().catch(() => {});
