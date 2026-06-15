@@ -43,7 +43,10 @@ jobs:
           - platform: windows-latest
             args: ""
           - platform: ubuntu-latest
-            args: ""
+            # Skip AppImage: linuxdeploy reliably hangs on CI runners for apps
+            # that bundle a Node runtime + many resources. deb + rpm cover the
+            # mainstream Linux install paths without the hang.
+            args: "--bundles deb,rpm"
     runs-on: ${{ matrix.platform }}
     # Hoisted to job level so the certificate-import step's own `if` can read it
     # (a step cannot reference env it defines in the same step's `if`).
