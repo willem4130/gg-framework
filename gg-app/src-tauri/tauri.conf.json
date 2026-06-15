@@ -10,17 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "GG Coder",
-        "width": 1024,
-        "height": 720,
-        "minWidth": 480,
-        "minHeight": 360,
-        "backgroundColor": "#0f1115",
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

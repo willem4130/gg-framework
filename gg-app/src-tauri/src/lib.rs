@@ -460,6 +460,26 @@ fn apply_mac_overlay<'a, R: tauri::Runtime, M: tauri::Manager<R>>(
     builder
 }
 
+/// Build an app window with the standard chrome. On macOS this includes the
+/// Overlay title bar + `hidden_title(true)` so the native title text never
+/// shows — the in-app `chat-head-title` is the ONLY title. Building via the
+/// builder (rather than the config + a runtime patch) is the only way to hide
+/// the native title, since there's no runtime `set_hidden_title` setter.
+fn build_app_window(app: &tauri::AppHandle, label: &str) -> Result<WebviewWindow, String> {
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .title("GG Coder")
+        .inner_size(1024.0, 720.0)
+        .min_inner_size(480.0, 360.0)
+        .background_color(APP_BG)
+        // Let the webview's HTML drop handler receive files (Tauri's native
+        // drag-drop would otherwise intercept them).
+        .disable_drag_drop_handler();
+    if matches!(window_chrome(), WindowChrome::MacOverlay) {
+        builder = apply_mac_overlay(builder);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
 /// Open enough new project windows to reach `count` total (each with its own
 /// agent sidecar at the default cwd), then tile the first `count` windows across
 /// the work area like macOS fill&arrange. Project selection per window happens
@@ -470,23 +490,11 @@ fn setup_windows(app: tauri::AppHandle, count: usize) -> Result<(), String> {
     let to_create = count.saturating_sub(existing);
     for _ in 0..to_create {
         let label = next_window_label(&app);
-        let mut builder =
-            WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
-                .title("GG Coder")
-                .inner_size(1024.0, 720.0)
-                .min_inner_size(480.0, 360.0)
-                .background_color(APP_BG)
-                // Let the webview's HTML drop handler receive files (Tauri's native
-                // drag-drop would otherwise intercept them).
-                .disable_drag_drop_handler();
         // macOS-only chrome: the Overlay title bar + hidden title lets the
         // webview draw under the traffic lights. Windows/Linux keep native
         // chrome (Overlay is a no-op / unsupported there) and the webview CSS
         // drops the mac traffic-light insets via the `.platform-*` class.
-        if matches!(window_chrome(), WindowChrome::MacOverlay) {
-            builder = apply_mac_overlay(builder);
-        }
-        let win = builder.build().map_err(|e| e.to_string())?;
+        let win = build_app_window(&app, &label)?;
         spawn_sidecar(app.clone(), label, default_cwd());
         let _ = win.set_focus();
     }
@@ -882,15 +890,13 @@ pub fn run() {
             agent_create_project
         ])
         .setup(|app| {
-            // The main window is created from config (which no longer carries a
-            // mac-only titleBarStyle). Apply the Overlay chrome at runtime on
-            // macOS only; other OSes keep native decorations.
-            if matches!(window_chrome(), WindowChrome::MacOverlay) {
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_title_bar_style(tauri::TitleBarStyle::Overlay);
-                }
-            }
-            // The config's main window gets its sidecar at the default cwd.
+            // Build the main window in code (not from config) so macOS gets
+            // `hidden_title(true)` via the builder — there's no runtime setter,
+            // and without it the native "GG Coder" title would linger alongside
+            // the in-app title. `build_app_window` applies the same chrome as
+            // secondary windows.
+            build_app_window(&app.handle().clone(), "main")?;
+            // The main window gets its sidecar at the default cwd.
             spawn_sidecar(app.handle().clone(), "main".into(), default_cwd());
             Ok(())
         })

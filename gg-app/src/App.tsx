@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { theme } from "./theme";
 import {
   waitForReady,
@@ -22,6 +22,7 @@ import {
 } from "./agent";
 import { ActivityBar, formatTokenCount } from "./ActivityBar";
 import { LiveToolPanel, type LiveToolEntry, LIVE_TOOL_PANEL_ROWS } from "./LiveToolPanel";
+import { SubAgentFeed, type SubAgentLine } from "./SubAgentFeed";
 import { ModelMenu } from "./ModelMenu";
 import { SlashMenu } from "./SlashMenu";
 import { ContextMeter } from "./ContextMeter";
@@ -76,7 +77,9 @@ type Item =
   // Images produced by a tool (screenshot / read of an image file).
   | { kind: "images"; id: number; images: TranscriptImage[]; caption?: string }
   // Plan-mode entry banner (ASCII logo + optional reason).
-  | { kind: "plan"; id: number; reason: string };
+  | { kind: "plan"; id: number; reason: string }
+  // Sub-agents delegated in a turn — a live, in-chat feed of each one's tools.
+  | { kind: "subagent_group"; id: number; agents: SubAgentLine[]; aborted?: boolean };
 
 export interface TranscriptImage {
   /** data: URL (base64) ready to drop into <img src>. */
@@ -281,6 +284,10 @@ function App(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const streamingIdRef = useRef<number | null>(null);
+  // Transcript id of the active sub-agent group for this run (null until the
+  // first subagent spawns). Lets later parallel agents join the same in-chat
+  // feed instead of each opening a fresh block.
+  const subagentGroupIdRef = useRef<number | null>(null);
   const runStartRef = useRef<number>(0);
   const toolsUsedRef = useRef<Set<string>>(new Set());
   const tokensRef = useRef<number>(0);
@@ -301,9 +308,18 @@ function App(): React.ReactElement {
     if (el) el.scrollTo({ top: el.scrollHeight });
   }, []);
 
-  useEffect(() => {
+  // Re-pin to the bottom before every paint. The live tool panel + activity bar
+  // (.liveregion) grow/shrink below the transcript as tools run and finish;
+  // since the transcript is a flexible sibling, that growth steals height from
+  // it and would leave the newest content (often the just-sent user prompt)
+  // scrolled under the fold. Keying this layout effect on the live-region's
+  // height inputs (tool feed, run state, done status) AND `items` re-pins
+  // synchronously after layout but before paint, so the prompt is never hidden.
+  // useLayoutEffect (not a ResizeObserver) avoids the post-paint flash and the
+  // RO's unreliable timing relative to the flex re-layout.
+  useLayoutEffect(() => {
     scrollToBottom();
-  }, [items, scrollToBottom]);
+  }, [items, liveToolFeed, running, doneStatus, scrollToBottom]);
 
   useEffect(() => {
     stateRef.current = state;
@@ -400,6 +416,7 @@ function App(): React.ReactElement {
         case "run_start":
           setRunning(true);
           streamingIdRef.current = null;
+          subagentGroupIdRef.current = null;
           runStartRef.current = Date.now();
           toolsUsedRef.current = new Set();
           tokensRef.current = 0;
@@ -456,6 +473,63 @@ function App(): React.ReactElement {
               -(LIVE_TOOL_PANEL_ROWS * 2),
             ),
           );
+          // Sub-agents also get a persistent, live feed in the transcript so the
+          // user can watch parallel delegations by name + what each is doing.
+          if (name === "subagent") {
+            const newAgent: SubAgentLine = {
+              toolCallId,
+              agentName: typeof args.agent === "string" ? args.agent : undefined,
+              status: "running",
+              activities: [],
+              toolUseCount: 0,
+            };
+            const groupId = subagentGroupIdRef.current;
+            if (groupId !== null) {
+              setItems((prev) =>
+                prev.map((it) =>
+                  it.kind === "subagent_group" && it.id === groupId
+                    ? { ...it, agents: [...it.agents, newAgent] }
+                    : it,
+                ),
+              );
+            } else {
+              const id = nextId();
+              subagentGroupIdRef.current = id;
+              streamingIdRef.current = null;
+              pushItem({ kind: "subagent_group", id, agents: [newAgent] });
+            }
+          }
+          break;
+        }
+        case "tool_call_update": {
+          // Live progress from a running sub-agent (toolUseCount + the tool it's
+          // currently running). Append distinct activities into its feed.
+          const id = String(d.toolCallId ?? "");
+          const update = d.update as
+            | { toolUseCount?: number; currentActivity?: string }
+            | undefined;
+          const groupId = subagentGroupIdRef.current;
+          if (!update || groupId === null) break;
+          const activity = update.currentActivity;
+          setItems((prev) =>
+            prev.map((it) => {
+              if (it.kind !== "subagent_group" || it.id !== groupId) return it;
+              return {
+                ...it,
+                agents: it.agents.map((a) => {
+                  if (a.toolCallId !== id) return a;
+                  const last = a.activities[a.activities.length - 1];
+                  const activities =
+                    activity && activity !== last ? [...a.activities, activity] : a.activities;
+                  return {
+                    ...a,
+                    toolUseCount: update.toolUseCount ?? a.toolUseCount,
+                    activities: activities.slice(-12),
+                  };
+                }),
+              };
+            }),
+          );
           break;
         }
         case "tool_call_end": {
@@ -463,6 +537,31 @@ function App(): React.ReactElement {
           const isError = Boolean(d.isError);
           const result = typeof d.result === "string" ? d.result : undefined;
           const details = d.details;
+          // Finalize a sub-agent's in-chat row: flip status + record duration.
+          const groupId = subagentGroupIdRef.current;
+          if (groupId !== null) {
+            const durationMs = (details as { durationMs?: number } | undefined)?.durationMs;
+            setItems((prev) =>
+              prev.map((it) => {
+                // Only the active group, and only when the ended tool is actually
+                // one of its agents (tool_call_end carries no name to filter on).
+                if (it.kind !== "subagent_group" || it.id !== groupId) return it;
+                if (!it.agents.some((a) => a.toolCallId === id)) return it;
+                return {
+                  ...it,
+                  agents: it.agents.map((a) =>
+                    a.toolCallId === id
+                      ? {
+                          ...a,
+                          status: isError ? ("error" as const) : ("done" as const),
+                          durationMs: durationMs ?? a.durationMs,
+                        }
+                      : a,
+                  ),
+                };
+              }),
+            );
+          }
           // Update the entry in place to its done state — it stays in the pinned
           // panel (mirrors ggcoder), it does NOT move into the transcript.
           setLiveToolFeed((prev) =>
@@ -541,6 +640,26 @@ function App(): React.ReactElement {
           finalizeThinking();
           // Final response is in; exit the tool panel (mirrors ggcoder).
           setLiveToolFeed([]);
+          // Mark any still-running sub-agents in this run's group as aborted.
+          const saGroupId = subagentGroupIdRef.current;
+          if (saGroupId !== null) {
+            setItems((prev) =>
+              prev.map((it) =>
+                it.kind === "subagent_group" && it.id === saGroupId
+                  ? {
+                      ...it,
+                      aborted: d.cancelled ? true : it.aborted,
+                      agents: it.agents.map((a) =>
+                        a.status === "running"
+                          ? { ...a, status: d.cancelled ? ("error" as const) : ("done" as const) }
+                          : a,
+                      ),
+                    }
+                  : it,
+              ),
+            );
+          }
+          subagentGroupIdRef.current = null;
           if (d.cancelled) {
             setDoneStatus(null);
             setStatus("cancelled");
@@ -613,6 +732,7 @@ function App(): React.ReactElement {
           setAttachments([]);
           setQueuedCount(0);
           streamingIdRef.current = null;
+          subagentGroupIdRef.current = null;
           break;
         case "session_title":
           setSessionTitle(String(d.title ?? "") || null);
@@ -746,6 +866,9 @@ function App(): React.ReactElement {
   const slashOpen = slashMatches.length > 0;
   // Clamp so a shrinking match list never points past the end.
   const clampedSlashIndex = slashMatches.length > 0 ? slashIndex % slashMatches.length : 0;
+  // Footer background-tasks indicator only shows while something is actually
+  // running (exited tasks shouldn't keep the bar item around).
+  const runningTaskCount = tasks.filter((t) => t.exitCode === null).length;
 
   // True when `text` is a known workflow command invocation (first token).
   function isWorkflowCommand(text: string): boolean {
@@ -965,7 +1088,13 @@ function App(): React.ReactElement {
             present, so collapsing the nav below never moves the title up into
             the traffic lights. */}
         <div className="chat-head-strip" data-tauri-drag-region>
-          <span className="chat-head-title">{sessionTitle ?? "GG Coder"}</span>
+          {/* The title fills the strip (flex:1), so it must carry the drag
+              attribute itself — Tauri only drags when the element directly under
+              the cursor has it, and a bare child would otherwise block dragging
+              across the whole bar. */}
+          <span className="chat-head-title" data-tauri-drag-region>
+            {sessionTitle ?? "GG Coder"}
+          </span>
           <button
             className="nav-toggle"
             title={navHidden ? "Show nav buttons" : "Hide nav buttons"}
@@ -1179,7 +1308,7 @@ function App(): React.ReactElement {
                   <span style={{ color: theme.secondary }}>{`\u2387 ${state.gitBranch}`}</span>
                 </>
               )}
-              {tasks.length > 0 && (
+              {runningTaskCount > 0 && (
                 <>
                   {(state?.cwd || state?.gitBranch) && <FooterSep />}
                   <BackgroundTasksButton tasks={tasks} />
@@ -1187,7 +1316,7 @@ function App(): React.ReactElement {
               )}
               {state?.planMode && (
                 <>
-                  {(state?.cwd || state?.gitBranch || tasks.length > 0) && <FooterSep />}
+                  {(state?.cwd || state?.gitBranch || runningTaskCount > 0) && <FooterSep />}
                   <span className="footer-plan">
                     <ShimmerText base={theme.secondary} bright="#ddd6fe">
                       {"\u25C6 plan mode"}
@@ -1421,6 +1550,8 @@ function TranscriptRow({
       );
     case "plan":
       return <PlanModeLogo reason={item.reason} />;
+    case "subagent_group":
+      return <SubAgentFeed agents={item.agents} aborted={item.aborted} />;
     default:
       return null;
   }
