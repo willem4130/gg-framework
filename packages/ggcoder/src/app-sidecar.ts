@@ -15,7 +15,9 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { parseArgs } from "node:util";
 import type { AddressInfo } from "node:net";
+import { runJsonMode } from "./modes/json-mode.js";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "./core/agent-session.js";
 import { AuthStorage } from "./core/auth-storage.js";
@@ -348,7 +350,50 @@ interface SseClient {
   res: http.ServerResponse;
 }
 
+/**
+ * Sub-agents spawn the ggcoder CLI in JSON mode to run a delegated task. In the
+ * packaged desktop app the only runnable entry is THIS bundle (there's no
+ * sibling `cli.js`), so the subagent tool ends up spawning the sidecar itself.
+ * Without this guard that would boot a second HTTP server, emit no NDJSON, and
+ * hang until the 10-minute hard timeout. So when invoked with `--json`, behave
+ * exactly like `ggcoder --json …`: stream the sub-agent run as NDJSON and exit,
+ * never starting the HTTP/SSE server. Mirrors the `values.json` branch in cli.ts.
+ */
+async function runJsonModeIfRequested(): Promise<boolean> {
+  if (!process.argv.includes("--json")) return false;
+  const { values, positionals } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      json: { type: "boolean" },
+      provider: { type: "string" },
+      model: { type: "string" },
+      "max-turns": { type: "string" },
+      "system-prompt": { type: "string" },
+      "prompt-cache-key": { type: "string" },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  const maxTurnsRaw = values["max-turns"];
+  await runJsonMode({
+    message: positionals[0] ?? "",
+    provider: (values.provider ?? "anthropic") as Provider,
+    model: values.model ?? "claude-opus-4-8",
+    cwd: process.cwd(),
+    systemPrompt: values["system-prompt"],
+    maxTurns: maxTurnsRaw ? parseInt(maxTurnsRaw, 10) : undefined,
+    promptCacheKey: values["prompt-cache-key"],
+  }).catch((err: unknown) => {
+    process.stderr.write((err instanceof Error ? err.message : String(err)) + "\n");
+    process.exit(1);
+  });
+  return true;
+}
+
 async function main(): Promise<void> {
+  // Sub-agent JSON-mode dispatch must win before any sidecar/server setup.
+  if (await runJsonModeIfRequested()) return;
+
   const cwd = process.env.GG_APP_CWD ?? process.cwd();
   // Default to an ephemeral port (0) so concurrent/orphaned instances never
   // collide on a fixed port. The actual port is reported via the
