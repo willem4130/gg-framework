@@ -149,5 +149,7 @@ jobs:
           releaseBody: "See the assets to download and install this version."
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: true
+          # Renamed from the old `uploadUpdaterJson` (tauri-action dropped it) —
+          # generates + uploads `latest.json` for the updater endpoint.
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
