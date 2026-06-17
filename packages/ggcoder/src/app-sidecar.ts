@@ -69,9 +69,22 @@ const ALL_PROVIDERS: Provider[] = [
 // App-specific, separate from the shared ggcoder settings file so the desktop
 // app's preferences never collide with the CLI's.
 
+/** Per-project model + thinking preferences. Persisted so each window (one
+ *  project cwd) restores its OWN model across app restarts — instead of every
+ *  window reading the same single global slot that the last writer clobbered. */
+interface ProjectModelPrefs {
+  provider: Provider;
+  model: string;
+  thinkingEnabled?: boolean;
+  thinkingLevel?: ThinkingLevel;
+}
+
 interface AppSettings {
   /** Folder new projects are created inside. Defaults to ~/gg-projects. */
   projectsRoot: string;
+  /** Model + thinking prefs keyed by normalized project cwd. A window restores
+   *  its own entry on boot; absent → global settings.json → provider default. */
+  projectModels?: Record<string, ProjectModelPrefs>;
 }
 
 function appSettingsFile(): string {
@@ -82,6 +95,12 @@ function defaultProjectsRoot(): string {
   return path.join(os.homedir(), "gg-projects");
 }
 
+/** Normalize a project cwd to a stable settings key so trailing slashes /
+ *  relative segments collapse — the same project always maps to one entry. */
+function projectModelKey(cwd: string): string {
+  return path.resolve(cwd);
+}
+
 async function loadAppSettings(): Promise<AppSettings> {
   try {
     const raw = JSON.parse(await fs.readFile(appSettingsFile(), "utf-8")) as Partial<AppSettings>;
@@ -90,6 +109,10 @@ async function loadAppSettings(): Promise<AppSettings> {
         typeof raw.projectsRoot === "string" && raw.projectsRoot.trim()
           ? raw.projectsRoot
           : defaultProjectsRoot(),
+      // Preserve the per-project map verbatim (validated + written by the
+      // model/thinking handlers below).
+      projectModels:
+        raw.projectModels && typeof raw.projectModels === "object" ? raw.projectModels : undefined,
     };
   } catch {
     return { projectsRoot: defaultProjectsRoot() };
@@ -99,6 +122,21 @@ async function loadAppSettings(): Promise<AppSettings> {
 async function saveAppSettings(settings: AppSettings): Promise<void> {
   await fs.mkdir(path.dirname(appSettingsFile()), { recursive: true });
   await fs.writeFile(appSettingsFile(), JSON.stringify(settings, null, 2), "utf-8");
+}
+
+/** Read this project's persisted model/thinking prefs, if any. */
+async function loadProjectModelPrefs(cwd: string): Promise<ProjectModelPrefs | undefined> {
+  const s = await loadAppSettings();
+  return s.projectModels?.[projectModelKey(cwd)];
+}
+
+/** Persist this project's model/thinking prefs via read-modify-write so the rest
+ *  of the settings file (projectsRoot, other projects' entries) is preserved. */
+async function saveProjectModelPrefs(cwd: string, prefs: ProjectModelPrefs): Promise<void> {
+  const s = await loadAppSettings();
+  const key = projectModelKey(cwd);
+  s.projectModels = { ...(s.projectModels ?? {}), [key]: prefs };
+  await saveAppSettings(s);
 }
 
 /**
@@ -381,7 +419,13 @@ async function main(): Promise<void> {
   await auth.load();
 
   const saved = loadSavedSettings(paths.settingsFile);
-  const preferred: Provider = saved.provider ?? "anthropic";
+  // Per-project model/thinking prefs win over the shared global settings.json:
+  // each window (one project cwd) restores its own selection instead of every
+  // window reading the same single global slot that the last writer clobbered
+  // (the old bug — switching models in one window reset every other window).
+  const projectPrefs = await loadProjectModelPrefs(cwd);
+  const preferred: Provider = projectPrefs?.provider ?? saved.provider ?? "anthropic";
+  const savedModel = projectPrefs?.model ?? saved.model;
   // Boot-tolerant: when no provider is configured this returns a logged-out
   // fallback instead of throwing, so the sidecar still listens and the login
   // endpoints are reachable for a fresh user (throwing here used to kill the
@@ -390,7 +434,7 @@ async function main(): Promise<void> {
     auth,
     ALL_PROVIDERS,
     preferred,
-    saved.model,
+    savedModel,
   );
   if (!loggedIn) {
     log("WARN", "app-sidecar", "no provider configured — booting logged-out for login", {
@@ -398,8 +442,10 @@ async function main(): Promise<void> {
     });
   }
 
-  const thinkingLevel: ThinkingLevel | undefined = saved.thinkingEnabled
-    ? (saved.thinkingLevel ?? getMaxThinkingLevel(model))
+  // Per-project thinking prefs win over the global settings.json fallback.
+  const thinkEnabled = projectPrefs?.thinkingEnabled ?? saved.thinkingEnabled;
+  const thinkingLevel: ThinkingLevel | undefined = thinkEnabled
+    ? (projectPrefs?.thinkingLevel ?? saved.thinkingLevel ?? getMaxThinkingLevel(model))
     : undefined;
 
   // ── SSE fan-out (declared before the session so plan callbacks can use it) ─
@@ -736,7 +782,9 @@ async function main(): Promise<void> {
         } catch {
           configured = false;
         }
-        json(res, 200, { ...s, configured });
+        // Only projectsRoot + configured flag are webview-facing; the
+        // per-project model map is internal persistence, never shipped out.
+        json(res, 200, { projectsRoot: s.projectsRoot, configured });
       })();
       return;
     }
@@ -754,7 +802,11 @@ async function main(): Promise<void> {
           json(res, 400, { error: "projectsRoot is required" });
           return;
         }
-        await saveAppSettings({ projectsRoot });
+        // Read-modify-write so the per-project model map survives a projectsRoot
+        // change (a naive overwrite would drop every window's saved model).
+        const s = await loadAppSettings();
+        s.projectsRoot = projectsRoot;
+        await saveAppSettings(s);
         json(res, 200, { projectsRoot });
       });
       return;
@@ -1098,7 +1150,16 @@ async function main(): Promise<void> {
         if (prevLevel && !isThinkingLevelSupported(target.provider, target.id, prevLevel)) {
           session.setThinkingLevel(getNextThinkingLevel(target.provider, target.id, undefined));
         }
-        // Persist so the selection (and clamped thinking level) survives restarts.
+        // Persist per-project so THIS window/project restores its own model on
+        // restart (not the single global slot every window shares). Keep the
+        // global write too as a "last used" fallback for never-opened projects
+        // and so the CLI stays in sync.
+        await saveProjectModelPrefs(cwd, {
+          provider: target.provider,
+          model: target.id,
+          thinkingEnabled: !!session.getThinkingLevel(),
+          thinkingLevel: session.getThinkingLevel() ?? undefined,
+        });
         await persistModelSelection(paths.settingsFile, target.provider, target.id);
         await persistThinkingLevel(paths.settingsFile, session.getThinkingLevel());
         const payload = {
@@ -1141,8 +1202,14 @@ async function main(): Promise<void> {
       const st = session.getState();
       const next = getNextThinkingLevel(st.provider, st.model, session.getThinkingLevel());
       session.setThinkingLevel(next);
-      // Persist so the thinking level survives app restarts (mirrors the CLI).
-      void persistThinkingLevel(paths.settingsFile, next);
+      // Persist per-project so THIS window restores its thinking state on
+      // restart; keep the global write as a fallback (mirrors the CLI).
+      void saveProjectModelPrefs(cwd, {
+        provider: st.provider,
+        model: st.model,
+        thinkingEnabled: !!next,
+        thinkingLevel: next ?? undefined,
+      }).then(() => persistThinkingLevel(paths.settingsFile, next));
       const payload = {
         thinkingLevel: next ?? null,
         supportedThinkingLevels: getSupportedThinkingLevels(st.provider, st.model),
