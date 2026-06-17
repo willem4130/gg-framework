@@ -108,11 +108,16 @@ fn terminate_child(mut child: Child) {
 // ── Startup orphan sweeper ─────────────────────────────────────────────────
 // When the app is force-quit, crashes, or is killed during a dev run, the
 // sidecar process tree (Node sidecar + MCP stdio children + LSP servers) is
-// orphaned — reparented to init (pid 1). Rust only kills the direct sidecar
-// PID, so children survive. Without a startup sweep these accumulate forever.
-// We run once at the top of `.setup`, before new sidecars are spawned.
+// orphaned — reparented to init (pid 1) or an orphan-reaper. Rust only kills
+// the direct sidecar PID, so children survive. Without a startup sweep these
+// accumulate forever. We run once at the top of `.setup`, before new sidecars
+// are spawned.
+//
+// Cross-platform: the pure classifier (`orphan_killset`) is OS-agnostic; only
+// the process-table snapshot and the force-kill primitive differ between
+// Unix (`ps` + `libc::kill`) and Windows (PowerShell CIM + `taskkill`).
 
-/// One process row from `ps -eo pid=,ppid=,command=`.
+/// One process row from the OS process table (pid, parent pid, full command).
 struct ProcInfo {
     pid: i32,
     ppid: i32,
@@ -187,29 +192,13 @@ fn orphan_killset(snapshot: &[ProcInfo], self_pid: i32) -> Vec<i32> {
     result
 }
 
-/// OS action (Unix only): snapshot the process table, classify orphans, and
-/// SIGKILL each. Best-effort + logged; never panics. Runs once at startup before
-/// any sidecar is spawned.
-#[cfg(unix)]
-fn sweep_orphan_sidecars() {
-    let output = match Command::new("ps")
-        .args(["-eo", "pid=,ppid=,command="])
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("orphan sweep: failed to run ps: {e}");
-            return;
-        }
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let self_pid = std::process::id() as i32;
-
-    let snapshot: Vec<ProcInfo> = stdout
+/// Pure parser for `ps -eo pid=,ppid=,command=` output (one row per line).
+/// Column padding (multiple spaces) is collapsed by `split_whitespace`.
+/// Available on all platforms so the parsing can be unit-tested.
+fn parse_ps_output(stdout: &str) -> Vec<ProcInfo> {
+    stdout
         .lines()
         .filter_map(|line| {
-            // split_whitespace collapses the column padding (multiple spaces)
-            // ps emits between pid/ppid/command fields into single delimiters.
             let mut parts = line.split_whitespace();
             let pid: i32 = parts.next()?.parse().ok()?;
             let ppid: i32 = parts.next()?.parse().ok()?;
@@ -219,7 +208,95 @@ fn sweep_orphan_sidecars() {
             let command = parts.collect::<Vec<_>>().join(" ");
             Some(ProcInfo { pid, ppid, command })
         })
-        .collect();
+        .collect()
+}
+
+/// Pure parser for PowerShell CIM output: one line per process as
+/// `pid|ppid|command` (see `process_snapshot` on Windows). The command field
+/// may contain `|` and spaces — `splitn(3, '|')` captures it verbatim.
+/// Available on all platforms so the parsing can be unit-tested.
+/// `allow(dead_code)`: on Unix its only caller is `#[cfg(not(unix))]`, so the
+/// compiler flags it as dead; on Windows it IS used by `process_snapshot`.
+#[allow(dead_code)]
+fn parse_cim_output(stdout: &str) -> Vec<ProcInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            // splitn(3, '|') — the command field may itself contain '|',
+            // but only the first two fields matter and the third captures
+            // everything else verbatim.
+            let mut parts = line.splitn(3, '|');
+            let pid: i32 = parts.next()?.trim().parse().ok()?;
+            let ppid: i32 = parts.next()?.trim().parse().ok()?;
+            let command = parts.next()?.trim().to_string();
+            Some(ProcInfo { pid, ppid, command })
+        })
+        .collect()
+}
+
+/// Snapshot the OS process table into `ProcInfo` rows (pid, ppid, command).
+/// Returns `None` if the process-listing command is unavailable — the sweep
+/// then silently does nothing.
+#[cfg(unix)]
+fn process_snapshot() -> Option<Vec<ProcInfo>> {
+    let output = Command::new("ps")
+        .args(["-eo", "pid=,ppid=,command="])
+        .output()
+        .ok()?;
+    Some(parse_ps_output(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Windows snapshot via PowerShell CIM — the modern replacement for the
+/// deprecated `wmic`. Emits one line per process: `pid|ppid|command`, using
+/// `|` as a field delimiter. CommandLine may be empty for kernel processes;
+/// those won't match any pattern so they're harmless.
+#[cfg(not(unix))]
+fn process_snapshot() -> Option<Vec<ProcInfo>> {
+    // Single-quoted '|' inside the script is a literal separator, not a pipe.
+    // The script string uses Rust line continuations (\) so it reads as one
+    // logical line of PowerShell.
+    let script = "Get-CimInstance Win32_Process | ForEach-Object { \
+        [string]$_.ProcessId + '|' + [string]$_.ParentProcessId + '|' + [string]$_.CommandLine \
+    }";
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .ok()?;
+    Some(parse_cim_output(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Force-kill a single PID (best-effort, errors ignored).
+#[cfg(unix)]
+fn force_kill_pid(pid: i32) {
+    unsafe {
+        let _ = libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+/// Force-kill a single PID via `taskkill /F` (no descendant tree walk needed —
+/// the sweeper kills every orphan-tree member individually from the snapshot).
+#[cfg(not(unix))]
+fn force_kill_pid(pid: i32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Snapshot the process table, classify orphaned sidecar trees, and force-kill
+/// each. Best-effort + logged; never panics. Runs once at startup before any
+/// sidecar is spawned.
+fn sweep_orphan_sidecars() {
+    let Some(snapshot) = process_snapshot() else {
+        log::warn!("orphan sweep: process listing unavailable, skipping");
+        return;
+    };
+    let self_pid = std::process::id() as i32;
 
     let killset = orphan_killset(&snapshot, self_pid);
     if killset.is_empty() {
@@ -234,12 +311,8 @@ fn sweep_orphan_sidecars() {
             .find(|p| &p.pid == pid)
             .map(|p| p.command.as_str())
             .unwrap_or("?");
-        log::info!("orphan sweep: SIGKILL pid {pid}: {cmd}");
-        // Per-PID SIGKILL (not group) — works for both old non-leader orphans
-        // from prior builds and new group-leader orphans.
-        unsafe {
-            let _ = libc::kill(*pid, libc::SIGKILL);
-        }
+        log::info!("orphan sweep: killing pid {pid}: {cmd}");
+        force_kill_pid(*pid);
     }
 }
 
@@ -2093,7 +2166,7 @@ pub fn run() {
             // Sweep orphaned sidecars from previous (crashed/force-quit) app
             // instances BEFORE spawning any new sidecars — they'd otherwise
             // accumulate forever across launches. Best-effort + logged.
-            #[cfg(unix)]
+            // Cross-platform: uses `ps` on Unix, PowerShell CIM on Windows.
             sweep_orphan_sidecars();
             // Restore the previous session's windows (each at its project +
             // session) when a workspace snapshot exists; otherwise build the
@@ -2586,5 +2659,102 @@ mod tests {
         assert!(orphan_killset(&snap, 100).is_empty());
         // Instance 2 sweeps.
         assert!(orphan_killset(&snap, 300).is_empty());
+    }
+
+    // ── Output parser tests (cross-platform) ────────────────────────────────
+    // These verify the parsing of real OS process-listing output so the Windows
+    // CIM path is exercised on macOS (where the Windows snapshot command can't
+    // run, but the parser can).
+
+    #[test]
+    fn parse_ps_handles_column_padding_and_spaces_in_command() {
+        // Real `ps -eo pid=,ppid=,command=` output: multiple spaces between fields.
+        let raw = "    1     0 /sbin/launchd\n\
+                   11541     1 /Applications/GG Coder.app/Contents/MacOS/gg-app\n\
+                   11553 11541 /Applications/GG Coder.app/Contents/MacOS/ggnode app-sidecar.mjs";
+        let rows = parse_ps_output(raw);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].pid, 1);
+        assert_eq!(rows[0].ppid, 0);
+        assert_eq!(rows[0].command, "/sbin/launchd");
+        // Command with spaces is rejoined correctly.
+        assert!(rows[2].command.contains("app-sidecar.mjs"));
+        assert!(rows[2].command.contains("ggnode"));
+    }
+
+    #[test]
+    fn parse_ps_skips_unparseable_lines() {
+        let raw = "pid ppid command\n\
+                   abc def not-a-number\n\
+                   42 1 node";
+        let rows = parse_ps_output(raw);
+        // Header + garbage lines are skipped; only the valid row survives.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 42);
+    }
+
+    #[test]
+    fn parse_cim_handles_pipe_delimited_output() {
+        // Real PowerShell CIM output: pid|ppid|CommandLine.
+        let raw = "4|0|\n\
+                   5204|5200|C:\\Program Files\\nodejs\\node.exe app-sidecar.mjs\n\
+                   5300|5204|C:\\Program Files\\nodejs\\node.exe kencode-search";
+        let rows = parse_cim_output(raw);
+        assert_eq!(rows.len(), 3);
+        // Kernel process with empty CommandLine.
+        assert_eq!(rows[0].pid, 4);
+        assert_eq!(rows[0].ppid, 0);
+        assert_eq!(rows[0].command, "");
+        // Sidecar with full path.
+        assert!(rows[1].command.contains("app-sidecar.mjs"));
+        // kencode grandchild.
+        assert_eq!(rows[2].ppid, 5204);
+        assert!(rows[2].command.contains("kencode-search"));
+    }
+
+    #[test]
+    fn parse_cim_command_with_pipe_is_preserved() {
+        // A command line containing a pipe character must not be split further.
+        let raw = "100|1|cmd /c echo hi | findstr foo";
+        let rows = parse_cim_output(raw);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 100);
+        assert_eq!(rows[0].ppid, 1);
+        // The third field captures everything after the second '|'.
+        assert_eq!(rows[0].command, "cmd /c echo hi | findstr foo");
+    }
+
+    #[test]
+    fn parse_cim_skips_blank_and_garbage_lines() {
+        let raw = "\n\
+                   \r\n\
+                   abc|def|garbage\n\
+                   42|1|node app-sidecar.mjs";
+        let rows = parse_cim_output(raw);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 42);
+    }
+
+    #[test]
+    fn full_windows_sweep_pipeline() {
+        // End-to-end: CIM output → parse → classify → killset. Simulates a
+        // Windows machine where a previous gg-app instance was force-quit,
+        // orphaning its sidecar tree (parent PIDs absent from the snapshot).
+        let raw = "4|0|\n\
+                   1000|4|C:\\Windows\\System32\\cmd.exe\n\
+                   5000|9999|C:\\nodejs\\node.exe app-sidecar.mjs\n\
+                   5001|5000|C:\\nodejs\\node.exe kencode-search\n\
+                   6000|4|C:\\Program Files\\GG Coder\\gg-app.exe\n\
+                   6001|6000|C:\\nodejs\\node.exe app-sidecar.mjs";
+        let snapshot = parse_cim_output(raw);
+        assert_eq!(snapshot.len(), 6);
+        // Self = the new gg-app (pid 6000). Its sidecar (6001) has a live parent.
+        let killset = orphan_killset(&snapshot, 6000);
+        // Orphaned sidecar (5000, parent 9999 dead) + its kencode child (5001).
+        assert!(killset.contains(&5000));
+        assert!(killset.contains(&5001));
+        // Live sidecar (6001) must NOT be killed.
+        assert!(!killset.contains(&6001));
+        assert_eq!(killset.len(), 2);
     }
 }
