@@ -1,5 +1,11 @@
 # @kenkaiiii/gg-ai
 
+## 4.12.0
+
+### Minor Changes
+
+- Add generate_image tool: generate and edit images via OpenAI gpt-image-2 through the Codex backend. Conditionally registered when OpenAI is connected. Includes inline image preview in transcript, shimmering skeleton placeholder during generation, 1:1 history reconstruction for tool-produced images and sub-agent groups on session resume, and image path exposure for multi-turn editing.
+
 ## 4.11.3
 
 ## 4.11.2
