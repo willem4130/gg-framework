@@ -58,6 +58,17 @@ import path from "node:path";
 
 // ── Options ────────────────────────────────────────────────
 
+/** A chat attachment (image / video / other file) prepared for the model. The
+ *  raw base64 `data` rides native blocks; `path` (when persisted to disk) lets
+ *  the agent's tools open the file directly. */
+export interface SessionAttachment {
+  kind: "image" | "video" | "file";
+  mediaType: string;
+  data: string;
+  name: string;
+  path?: string;
+}
+
 export interface AgentSessionOptions {
   provider: Provider;
   model: string;
@@ -153,8 +164,9 @@ export class AgentSession {
   private originalRequest = "";
   // Messages queued by the user while a run is in flight. Drained at the
   // mid-loop steering boundary (user steering wins over the hooks), mirroring
-  // the TUI's getSteeringMessages.
-  private userQueue: string[] = [];
+  // the TUI's getSteeringMessages. Each entry carries its own attachments so a
+  // user can queue media (images/video/files) mid-run, not just plain text.
+  private userQueue: Array<{ text: string; attachments: SessionAttachment[] }> = [];
   private processManager?: ProcessManager;
   private lspManager?: LspManager;
   private mcpManager?: MCPClientManager;
@@ -433,16 +445,25 @@ export class AgentSession {
    * agent can open them with its tools. Slash-command parsing is skipped —
    * attachments are always a direct conversational turn.
    */
-  async promptWithAttachments(
+  async promptWithAttachments(text: string, attachments: SessionAttachment[]): Promise<void> {
+    const parts = this.buildAttachmentParts(text, attachments);
+    if (parts.length === 0) return;
+    const userMessage: Message = { role: "user", content: parts };
+    this.messages.push(userMessage);
+    await this.persistMessage(userMessage);
+    this.lastPersistedIndex = this.messages.length;
+    await this.runLoop();
+  }
+
+  /**
+   * Build the native content blocks (text + image/video notes + file notes) for
+   * a user message with attachments. Shared by {@link promptWithAttachments} and
+   * the mid-run steering drain so queued media is delivered identically.
+   */
+  private buildAttachmentParts(
     text: string,
-    attachments: Array<{
-      kind: "image" | "video" | "file";
-      mediaType: string;
-      data: string;
-      name: string;
-      path?: string;
-    }>,
-  ): Promise<void> {
+    attachments: SessionAttachment[],
+  ): Array<TextContent | ImageContent | VideoContent> {
     const parts: Array<TextContent | ImageContent | VideoContent> = [];
     const fileNotes: string[] = [];
     const modelSupportsVideo = getModel(this.model)?.supportsVideo ?? false;
@@ -490,13 +511,7 @@ export class AgentSession {
       textParts.push(`Attached files (inspect with your tools):\n${fileNotes.join("\n")}`);
     }
     if (textParts.length > 0) parts.unshift({ type: "text", text: textParts.join("\n\n") });
-    if (parts.length === 0) return;
-
-    const userMessage: Message = { role: "user", content: parts };
-    this.messages.push(userMessage);
-    await this.persistMessage(userMessage);
-    this.lastPersistedIndex = this.messages.length;
-    await this.runLoop();
+    return parts;
   }
 
   /**
@@ -587,8 +602,17 @@ export class AgentSession {
     // User steering wins: drain any messages queued during this run first so the
     // agent sees them mid-loop instead of after it stops.
     if (this.userQueue.length > 0) {
-      const merged = this.userQueue.splice(0).join("\n\n");
-      return [{ role: "user", content: merged }];
+      const queued = this.userQueue.splice(0);
+      // Plain-text-only queue: keep the simple merged-string message.
+      if (queued.every((m) => m.attachments.length === 0)) {
+        const merged = queued.map((m) => m.text).join("\n\n");
+        return [{ role: "user", content: merged }];
+      }
+      // Any queued attachments → deliver one user message with text + media
+      // blocks built the same way as a non-queued attachment prompt.
+      const parts: Array<TextContent | ImageContent | VideoContent> = [];
+      for (const m of queued) parts.push(...this.buildAttachmentParts(m.text, m.attachments));
+      return [{ role: "user", content: parts }];
     }
     if (!this.settingsManager.get("idealReviewEnabled")) return null;
     if (!this.loopBreakInjected) {
@@ -964,10 +988,11 @@ export class AgentSession {
     return this.planModeRef.current;
   }
 
-  /** Queue a user message to be injected mid-run as steering. Returns the new
-   *  queue length. No-op semantics are the caller's concern. */
-  queueMessage(text: string): number {
-    this.userQueue.push(text);
+  /** Queue a user message (optionally with attachments) to be injected mid-run
+   *  as steering. Returns the new queue length. No-op semantics are the caller's
+   *  concern. */
+  queueMessage(text: string, attachments: SessionAttachment[] = []): number {
+    this.userQueue.push({ text, attachments });
     return this.userQueue.length;
   }
 
@@ -976,9 +1001,13 @@ export class AgentSession {
     return this.userQueue.length;
   }
 
-  /** Clear the queue, returning the combined text (to restore to the composer). */
+  /** Clear the queue, returning the combined text (to restore to the composer).
+   *  Queued attachments are dropped on cancel — the composer only restores text. */
   drainQueue(): string {
-    return this.userQueue.splice(0).join("\n\n");
+    return this.userQueue
+      .splice(0)
+      .map((m) => m.text)
+      .join("\n\n");
   }
 
   /** Snapshot of background processes (bash run_in_background), newest-state. */

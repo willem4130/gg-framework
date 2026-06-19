@@ -1174,13 +1174,11 @@ async function main(): Promise<void> {
           return;
         }
         if (running) {
-          // Queue text prompts as mid-run steering (mirrors the CLI). Attachments
-          // aren't supported mid-run — reject those so the user resends after.
-          if (attachments.length > 0) {
-            json(res, 409, { error: "cannot attach files while the agent is running" });
-            return;
-          }
-          const count = session.queueMessage(text);
+          // Queue prompts as mid-run steering (mirrors the CLI). Attachments are
+          // persisted to .gg/uploads first so the queued media rides the same
+          // native-block path as a non-queued attachment prompt when it drains.
+          const prepared = attachments.length > 0 ? await prepareAttachments(cwd, attachments) : [];
+          const count = session.queueMessage(text, prepared);
           broadcast("queued", { count });
           json(res, 202, { queued: true, count });
           return;

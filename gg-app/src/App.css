@@ -1483,6 +1483,33 @@ body {
   word-break: break-word;
 }
 
+/* ── Queued steering message: still waiting to be injected mid-run. Dim it
+   and pulse a soft "queued" pill so it reads as not-yet-sent vs a live send. ── */
+.user-msg.queued {
+  position: relative;
+  opacity: 0.5;
+  border: 1px dashed var(--border, rgba(255, 255, 255, 0.18));
+  animation: ggqueuedpulse 2s ease-in-out infinite;
+}
+.queued-pill {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  margin-bottom: 6px;
+}
+@keyframes ggqueuedpulse {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
 /* ── Shimmer sweep: a bright spot rides across text (mirrors TUI ShimmerLabel).
    Drives both the workflow-command chip and footer "full power" labels (plan
    mode, max-tier thinking) via two color vars. ── */

@@ -91,6 +91,9 @@ type Item =
       label?: string;
       images?: string[];
       files?: string[];
+      // True while this message is still waiting in the mid-run steering queue.
+      // Rendered dimmed; cleared at run_end once the agent has consumed it.
+      queued?: boolean;
     }
   | { kind: "assistant"; id: number; text: string }
   | { kind: "info"; id: number; text: string }
@@ -414,7 +417,7 @@ function App(): React.ReactElement {
   // scrolled up reading mid-stream.
   useLayoutEffect(() => {
     maybeScrollToBottom();
-  }, [items, liveToolFeed, running, doneStatus, maybeScrollToBottom]);
+  }, [items, liveToolFeed, running, doneStatus, queuedCount, maybeScrollToBottom]);
 
   useEffect(() => {
     stateRef.current = state;
@@ -888,6 +891,11 @@ function App(): React.ReactElement {
           setRunning(false);
           streamingIdRef.current = null;
           finalizeThinking();
+          // The queue drained into this run — un-dim any messages that were
+          // waiting, since the agent has now consumed them.
+          setItems((prev) =>
+            prev.map((it) => (it.kind === "user" && it.queued ? { ...it, queued: false } : it)),
+          );
           // Exit the tool panel (mirrors ggcoder).
           setLiveToolFeed([]);
           // Safety: clear any lingering image-generation placeholders in case
@@ -1365,22 +1373,28 @@ function App(): React.ReactElement {
     // knows which paths to read; they aren't shown in the user's bubble text.
     const prompt =
       mentionedPaths.length > 0 ? appendReferencedFiles(trimmed, mentionedPaths) : trimmed;
-    // While a run is in flight, a plain text message is QUEUED as steering (the
-    // sidecar injects it mid-loop). Attachments can't be queued — block those.
+    // While a run is in flight, the message is QUEUED as steering (the sidecar
+    // injects it mid-loop). Attachments queue too — they're persisted and ride
+    // the same native-block path when the queue drains. Queued rows render
+    // dimmed until run_end clears the flag.
     if (running) {
-      if (attachments.length > 0) return;
+      const queuedWire = attachments.map(toWire);
+      const queuedImgs = attachments.filter((a) => a.previewUrl).map((a) => a.previewUrl!);
       pushItem({
         kind: "user",
         id: nextId(),
         text: trimmed,
         command: isWorkflowCommand(trimmed),
+        images: queuedImgs.length > 0 ? queuedImgs : undefined,
         files: mentionedPaths.length > 0 ? mentionedPaths : undefined,
+        queued: true,
       });
       setInput("");
+      setAttachments([]);
       setSlashIndex(0);
       setMention(null);
       setMentionedPaths([]);
-      void sendPrompt(prompt);
+      void sendPrompt(prompt, queuedWire);
       return;
     }
     const wire = attachments.map(toWire);
@@ -2038,7 +2052,8 @@ function TranscriptRow({
         );
       }
       return (
-        <div className="user-msg">
+        <div className={`user-msg${item.queued ? " queued" : ""}`}>
+          {item.queued && <span className="queued-pill">queued</span>}
           {item.images && item.images.length > 0 && (
             <div className="user-img-row">
               {item.images.map((src, i) => (
