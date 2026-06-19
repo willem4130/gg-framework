@@ -1701,8 +1701,15 @@ fn build_app_window(app: &tauri::AppHandle, label: &str) -> Result<WebviewWindow
 /// agent sidecar at the default cwd), then tile the first `count` windows across
 /// the work area like macOS fill&arrange. Project selection per window happens
 /// in-app via the picker; windows open immediately.
+///
+/// MUST be `async`: on Windows, `WebviewWindowBuilder::build()` deadlocks when
+/// called from a SYNCHRONOUS command (WebView2 runs window creation on the
+/// event loop the sync command is blocking). The symptom was a blank,
+/// unresponsive, uncloseable window. An async command runs off that thread, so
+/// creation completes normally. See the docs.rs WebviewWindowBuilder "Known
+/// issues" note.
 #[tauri::command]
-fn setup_windows(app: tauri::AppHandle, count: usize) -> Result<(), String> {
+async fn setup_windows(app: tauri::AppHandle, count: usize) -> Result<(), String> {
     let existing = app.webview_windows().len();
     let to_create = count.saturating_sub(existing);
     for _ in 0..to_create {
@@ -1723,8 +1730,11 @@ fn setup_windows(app: tauri::AppHandle, count: usize) -> Result<(), String> {
 /// Open a single new project window with its own agent sidecar (default cwd) and
 /// focus it. Unlike `setup_windows`, this never re-tiles existing windows — it's
 /// the Cmd/Ctrl+N "new window" shortcut. Project selection happens per-window.
+///
+/// `async` for the same reason as `setup_windows`: a synchronous window-building
+/// command deadlocks WebView2 on Windows.
 #[tauri::command]
-fn new_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn new_window(app: tauri::AppHandle) -> Result<(), String> {
     let label = next_window_label(&app);
     let win = build_app_window(&app, &label)?;
     spawn_sidecar(app.clone(), label, default_cwd());

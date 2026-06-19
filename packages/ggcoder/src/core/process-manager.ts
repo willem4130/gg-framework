@@ -6,6 +6,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { killProcessTree } from "../utils/process.js";
 import { getSafeToolEnv } from "../tools/safe-env.js";
+import { resolveShell } from "./shell.js";
 
 export interface BackgroundProcess {
   id: string;
@@ -62,7 +63,10 @@ export class ProcessManager {
     const logFile = path.join(BG_DIR, `${id}.log`);
     const fd = fs.openSync(logFile, "w");
 
-    const child = spawn("bash", ["-c", command], {
+    // Cross-platform shell (see core/shell.ts): bash on POSIX, Git Bash on
+    // Windows, cmd.exe fallback. Same resolution as the foreground bash tool.
+    const shell = resolveShell(command);
+    const child = spawn(shell.file, shell.args, {
       cwd,
       detached: true,
       // stdin is a pipe so callers can drive interactive processes (REPLs,

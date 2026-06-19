@@ -39,6 +39,33 @@ const ENV_ALLOWLIST = new Set([
   "RUBY_VERSION",
   "GEM_HOME",
   "RBENV_ROOT",
+  // Windows essentials. Without these, child processes (cmd.exe, Git Bash,
+  // node, npm, MCP stdio servers) misbehave or fail to spawn: SystemRoot +
+  // PATHEXT are required by the Windows loader/resolver, ComSpec is the
+  // cmd.exe path, and the USERPROFILE/APPDATA/TEMP family is where toolchains
+  // read and write. Stripping them was a silent cause of broken shell calls.
+  "SystemRoot",
+  "SystemDrive",
+  "windir",
+  "PATHEXT",
+  "ComSpec",
+  "COMSPEC",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramW6432",
+  "TEMP",
+  "TMP",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  // Git Bash override for the agent shell (see core/shell.ts).
+  "GG_BASH",
 ]);
 
 export function getSafeToolEnv(sourceEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
