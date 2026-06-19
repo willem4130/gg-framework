@@ -70,7 +70,7 @@ export interface RenderAppConfig {
   skills?: Skill[];
   checkpointStore?: CheckpointStore;
   initialOverlay?: "pixel";
-  rebuildToolsForCwd?: (cwd: string) => AgentTool[];
+  rebuildToolsForCwd?: (cwd: string) => Promise<AgentTool[]>;
   rebuildReadTool?: (model: string) => AgentTool;
   connectInitialMcpTools?: () => Promise<AgentTool[]>;
   planCallbacks?: {

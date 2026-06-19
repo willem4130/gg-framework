@@ -229,7 +229,7 @@ export interface AppProps {
   /** Per-session file checkpoint store backing the /rewind command. */
   checkpointStore?: CheckpointStore;
   initialOverlay?: "pixel";
-  rebuildToolsForCwd?: (cwd: string) => AgentTool[];
+  rebuildToolsForCwd?: (cwd: string) => Promise<AgentTool[]>;
   /** Rebuild the `read` tool for a model (reuses the read tracker). Used on
    *  model switch so the tool's video capability tracks the active model. */
   rebuildReadTool?: (model: string) => AgentTool;

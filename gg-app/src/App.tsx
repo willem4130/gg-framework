@@ -61,7 +61,7 @@ import { HomeScreen } from "./HomeScreen";
 import { Toaster } from "./Toaster";
 import { LoginScreen } from "./LoginScreen";
 import { Markdown } from "./Markdown";
-import { FooterSkeleton, TranscriptSkeleton } from "./Skeleton";
+import { FooterSkeleton, TranscriptSkeleton, Skeleton } from "./Skeleton";
 import { useAppUpdate } from "./update";
 import { recoverPromptLabel } from "./prompt-labels";
 import { playSound } from "./sounds";
@@ -100,6 +100,9 @@ type Item =
   | { kind: "hook"; id: number; hook: HookKind }
   // Images produced by a tool (screenshot / read of an image file).
   | { kind: "images"; id: number; images: TranscriptImage[]; caption?: string }
+  // Image generation in progress — a shimmering square placeholder that gets
+  // replaced by the final image when the tool result arrives.
+  | { kind: "generating_image"; id: number; prompt: string }
   // Plan-mode entry banner (ASCII logo + optional reason).
   | { kind: "plan"; id: number; reason: string }
   // A task kicked off from the Tasks modal (shown at the top of its session).
@@ -708,6 +711,13 @@ function App(): React.ReactElement {
               pushItem({ kind: "subagent_group", id, agents: [newAgent] });
             }
           }
+          // Image generation: show a shimmering square placeholder while the
+          // tool runs. It gets replaced by the real image on tool_call_end.
+          if (name === "generate_image") {
+            const prompt = typeof args.prompt === "string" ? args.prompt : "generating image…";
+            streamingIdRef.current = null;
+            pushItem({ kind: "generating_image", id: nextId(), prompt });
+          }
           break;
         }
         case "tool_call_update": {
@@ -790,6 +800,9 @@ function App(): React.ReactElement {
                 : entry,
             ),
           );
+          // Remove any generating_image placeholders — the tool has finished
+          // (success or failure). If it produced images, they're pushed below.
+          setItems((prev) => prev.filter((it) => it.kind !== "generating_image"));
           // Surface any image previews (screenshot / read of an image) inline in
           // the transcript — the tool panel is text-only.
           const previews = (details as { imagePreviews?: ImagePreview[] } | undefined)
@@ -875,8 +888,11 @@ function App(): React.ReactElement {
           setRunning(false);
           streamingIdRef.current = null;
           finalizeThinking();
-          // Final response is in; exit the tool panel (mirrors ggcoder).
+          // Exit the tool panel (mirrors ggcoder).
           setLiveToolFeed([]);
+          // Safety: clear any lingering image-generation placeholders in case
+          // tool_call_end didn't fire (e.g. hard cancel mid-fetch).
+          setItems((prev) => prev.filter((it) => it.kind !== "generating_image"));
           // Mark any still-running sub-agents in this run's group as aborted.
           const saGroupId = subagentGroupIdRef.current;
           if (saGroupId !== null) {
@@ -1051,6 +1067,30 @@ function App(): React.ReactElement {
         stickToBottomRef.current = true;
         setItems(
           history.map((h): Item => {
+            // Tool-produced images (screenshots, generate_image) — reconstructed
+            // from persisted ImageContent blocks, downsampled by the sidecar.
+            if (h.toolImages && h.toolImages.length > 0)
+              return {
+                kind: "images",
+                id: nextId(),
+                images: h.toolImages.map((img) => ({ src: img.src, path: img.path })),
+              };
+            // Sub-agent delegation group — reconstructed from persisted tool_call
+            // + tool_result pairing. toolUseCount/activities aren't persisted, so
+            // the resumed feed shows agent name + status only.
+            if (h.subagentGroup && h.subagentGroup.length > 0)
+              return {
+                kind: "subagent_group",
+                id: nextId(),
+                agents: h.subagentGroup.map((a, i) => ({
+                  toolCallId: `history-${i}`,
+                  agentName: a.agentName,
+                  status: a.status,
+                  activities: [],
+                  toolUseCount: a.toolUseCount,
+                  tokenUsage: { input: 0, output: 0 },
+                })),
+              };
             if (h.hook) return { kind: "hook", id: nextId(), hook: h.hook };
             // A resumed compacted session shows the quiet compaction notice in
             // place of the raw summary body (counts aren't persisted).
@@ -2113,6 +2153,17 @@ function TranscriptRow({
               </figure>
             );
           })}
+        </div>
+      );
+    case "generating_image":
+      return (
+        <div className="img-grid">
+          <div className="img-gen-placeholder">
+            <Skeleton width={200} height={200} radius={12} />
+            <span className="img-gen-label">
+              {item.prompt.length > 60 ? item.prompt.slice(0, 57) + "\u2026" : item.prompt}
+            </span>
+          </div>
         </div>
       );
     case "plan":

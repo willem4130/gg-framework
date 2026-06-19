@@ -242,12 +242,13 @@ export class AgentSession {
       globalAgentsDir: paths.agentsDir,
       projectDir: this.cwd,
     });
-    const { tools, processManager, rebuildReadTool, lspManager } = createTools(this.cwd, {
+    const { tools, processManager, rebuildReadTool, lspManager } = await createTools(this.cwd, {
       agents,
       skills: this.skills,
       provider: this.provider,
       model: this.model,
       lspDiagnostics: this.settingsManager.get("lspDiagnostics"),
+      authStorage: this.authStorage,
       // Lazy — sessionId/model/provider can change after createTools() runs, so
       // sub-agent spawns read the current parent state at execution time.
       getProvider: () => this.provider,
@@ -446,6 +447,9 @@ export class AgentSession {
     for (const a of attachments) {
       if (a.kind === "image") {
         parts.push({ type: "image", mediaType: a.mediaType, data: a.data });
+        if (a.path) {
+          parts.push({ type: "text", text: `[Image saved at ${a.path}]` });
+        }
       } else if (a.kind === "video") {
         // Mirror the CLI's buildUserContentWithAttachments: never send inline
         // VideoContent in the user message. Video-capable models (Kimi/Gemini/

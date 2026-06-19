@@ -40,15 +40,19 @@ export async function runInteractive(config: CliConfig): Promise<void> {
   await fs.mkdir(path.join(localGGDir, "commands"), { recursive: true });
   await fs.mkdir(path.join(localGGDir, "agents"), { recursive: true });
 
+  const authStorage = new AuthStorage(paths.authFile);
+  await authStorage.load();
+
   // Discover skills and create tools before building the prompt so tool names are accurate.
   const skills = await discoverSkills({
     globalSkillsDir: paths.skillsDir,
     projectDir: cwd,
   });
-  const { tools, processManager, lspManager } = createTools(cwd, {
+  const { tools, processManager, lspManager } = await createTools(cwd, {
     skills,
     provider,
     model,
+    authStorage,
   });
   const systemPrompt =
     config.systemPrompt ??
@@ -65,8 +69,6 @@ export async function runInteractive(config: CliConfig): Promise<void> {
     processManager.shutdownAll();
     lspManager?.shutdownAll();
   });
-  const authStorage = new AuthStorage(paths.authFile);
-  await authStorage.load();
 
   // Initialize messages and session
   const messages: Message[] = [];

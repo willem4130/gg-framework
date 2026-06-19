@@ -14,8 +14,8 @@ function toolContext(): { signal: AbortSignal; toolCallId: string } {
 }
 
 describe("plan mode", () => {
-  it("registers plan transition tools when callbacks are supplied", () => {
-    const { tools, processManager } = createTools(os.tmpdir(), {
+  it("registers plan transition tools when callbacks are supplied", async () => {
+    const { tools, processManager } = await createTools(os.tmpdir(), {
       onEnterPlan: () => {},
       onExitPlan: async () => "ok",
     });
@@ -47,7 +47,7 @@ describe("plan mode", () => {
   it("allows write only under .gg/plans while plan mode is active", async () => {
     const cwd = await makeTempDir();
     const planModeRef = { current: true };
-    const { tools, processManager } = createTools(cwd, { planModeRef });
+    const { tools, processManager } = await createTools(cwd, { planModeRef });
     const writeTool = tools.find((tool) => tool.name === "write");
     expect(writeTool).toBeDefined();
 
@@ -72,7 +72,7 @@ describe("plan mode", () => {
   it("blocks bash/edit/subagent while plan mode is active", async () => {
     const cwd = await makeTempDir();
     const planModeRef = { current: true };
-    const { tools, processManager } = createTools(cwd, {
+    const { tools, processManager } = await createTools(cwd, {
       planModeRef,
       agents: [
         {
@@ -108,7 +108,7 @@ describe("plan mode", () => {
   it("allows read-only bash while plan mode is active", async () => {
     const cwd = await makeTempDir();
     const planModeRef = { current: true };
-    const { tools, processManager } = createTools(cwd, { planModeRef });
+    const { tools, processManager } = await createTools(cwd, { planModeRef });
     const bashTool = tools.find((tool) => tool.name === "bash");
     expect(bashTool).toBeDefined();
 

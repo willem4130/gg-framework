@@ -28,7 +28,7 @@ interface UsePixelFixFlowOptions {
   cwd: string;
   currentProvider: Provider;
   currentModel: string;
-  rebuildToolsForCwd?: (cwd: string) => AgentTool[];
+  rebuildToolsForCwd?: (cwd: string) => Promise<AgentTool[]>;
   sessionStore?: PixelSessionStore;
   // Refs declared in App (created before useAgentLoop so its callbacks can read them).
   currentPixelFixRef: MutableRefObject<PreparedPixelFix | null>;
@@ -123,7 +123,7 @@ export function usePixelFixFlow({
           setDisplayedCwd(prep.projectPath);
           let toolsForPixelFix = currentToolsRef.current;
           if (rebuildToolsForCwd) {
-            toolsForPixelFix = rebuildToolsForCwd(prep.projectPath);
+            toolsForPixelFix = await rebuildToolsForCwd(prep.projectPath);
             currentToolsRef.current = toolsForPixelFix;
             setCurrentTools(toolsForPixelFix);
           }

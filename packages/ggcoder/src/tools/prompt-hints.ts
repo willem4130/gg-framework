@@ -26,6 +26,8 @@ export const TOOL_PROMPT_HINTS: Record<string, string> = {
   exit_plan: "Submit a .gg/plans/ markdown plan for user approval and leave plan mode.",
   subagent: "Delegate focused, isolated subtasks (research, parallel exploration).",
   skill: "Invoke a named skill for specialized instructions.",
+  generate_image:
+    "Generate or edit images using OpenAI's gpt-image-2 model. Only use when the user explicitly asks to create or edit an image — never generate images proactively. Requires OpenAI to be connected. Pass `image` with a file path to edit an existing image. Save with `out_path`.",
   "mcp__kencode-search__referenceSources":
     "Get curated, categorized reference repos for examples, inspiration, architecture, UI, agents, SaaS, workflows, and domain patterns. Repo-only starting points; fetch docs/source, then verify code with searchCode.",
   "mcp__kencode-search__discoverRepos":
@@ -77,6 +79,7 @@ export const DEFAULT_TOOL_NAMES: readonly string[] = [
   "exit_plan",
   "subagent",
   "skill",
+  "generate_image",
   "mcp__kencode-search__referenceSources",
   "mcp__kencode-search__discoverRepos",
   "mcp__kencode-search__searchCode",

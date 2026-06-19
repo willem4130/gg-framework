@@ -220,6 +220,15 @@ export interface HistoryEntry {
   /** True when this user message is a post-compaction summary marker, so the
    *  webview renders the quiet compaction notice instead of the summary body. */
   compacted?: boolean;
+  /** Tool-produced images rendered inline (same as live `images` items),
+   *  reconstructed from ImageContent blocks in persisted tool results. */
+  toolImages?: Array<{ src: string; path?: string }>;
+  /** Sub-agent delegation group (same as live `subagent_group` items). */
+  subagentGroup?: Array<{
+    agentName?: string;
+    status: "done" | "error";
+    toolUseCount: number;
+  }>;
 }
 
 /** Fetch the resumed session's prior messages so the transcript can hydrate. */

@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import type { ToolResultContent } from "@kenkaiiii/gg-ai";
 import type { AddressInfo } from "node:net";
 import { runJsonMode } from "./modes/json-mode.js";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
@@ -50,6 +51,7 @@ import {
 import { initLogger, log } from "./core/logger.js";
 import { RADIO_STATIONS, getCurrentStation, playRadio, stopRadio } from "./core/radio.js";
 import { enrichProcessPath } from "./core/shell-path.js";
+import { downscaleForPreview } from "./utils/image.js";
 import { startServeMode, type ServeController } from "./modes/serve-mode.js";
 import { loadTelegramConfig, saveTelegramConfig, verifyBotToken } from "./core/telegram-config.js";
 
@@ -179,6 +181,25 @@ async function persistThinkingLevel(
 /** Validate a project folder name: lowercase letters, digits, dashes only. */
 function isValidProjectName(name: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+}
+
+// ── History reconstruction types ──────────────────────────
+// Mirrors HistoryEntry in gg-app/src/agent.ts — the wire shape the webview
+// receives from GET /history. Fields beyond role/text carry the transcript
+// item kinds that are reconstructed from persisted session data.
+interface HistoryEntryForWire {
+  role: "user" | "assistant";
+  text: string;
+  images?: string[];
+  hook?: "ideal" | "loop_break" | "regrounding" | null;
+  command?: boolean;
+  compacted?: boolean;
+  toolImages?: Array<{ src: string; path?: string }>;
+  subagentGroup?: Array<{
+    agentName?: string;
+    status: "done" | "error";
+    toolUseCount: number;
+  }>;
 }
 
 // ── Chat attachments (images / videos / files dropped into the input) ──────
@@ -890,68 +911,148 @@ async function main(): Promise<void> {
     }
 
     if (method === "GET" && url === "/history") {
-      // Flatten the resumed conversation into the webview's transcript shape:
-      // user + assistant TEXT only (tools live in the live panel, never the
-      // transcript; system + tool-result messages are omitted). Self-correction
-      // hook prompts (injected as user messages) are tagged with their `hook`
-      // kind so the webview renders the short "Hook engaged" line, not the raw
-      // prompt body — matching how they appear live.
+      // Reconstruct the transcript from persisted messages so resume is 1:1 with
+      // the live SSE stream. Walks ALL message types (not just user/assistant):
+      // tool result messages carry ImageContent blocks (screenshots,
+      // generate_image) that must re-render inline, and assistant tool_call
+      // blocks carry sub-agent delegations that must re-appear as group items.
       //
-      // Prompt-template commands persist their FULL expanded body as the user
-      // message, so on resume we reverse the expansion (built-in + custom
-      // candidates) back to the short `/name [args]` chip the user saw live.
+      // The `details` object (imagePreviews with path + downscaled preview) is
+      // event-only and never persisted — we reconstruct from the raw
+      // ImageContent in the tool result, downsampling on the sidecar side and
+      // extracting the path from the text block ("Generated image → /path").
       void (async () => {
         const commandCandidates = [...PROMPT_COMMANDS, ...(await loadCustomCommands(cwd))];
-        const history = session
-          .getMessages()
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => {
-            // `m.content` is a union of differently-typed arrays (user vs
-            // assistant parts), so a type-predicate filter won't narrow cleanly.
-            // A structural `"text" in c` check extracts text from any text-bearing
-            // part regardless of the surrounding union.
-            const text =
-              typeof m.content === "string"
-                ? m.content
-                : m.content
-                    .map((c) =>
-                      c.type === "text" && "text" in c && typeof c.text === "string" ? c.text : "",
-                    )
-                    .join("");
-            // Reconstruct image attachments as data URLs so they re-render on
-            // resume — the webview only ever saw the live SSE stream, and the
-            // persisted message holds the base64 bytes. Without this, attached
-            // images vanish when returning to a session.
-            const images =
-              typeof m.content === "string"
-                ? []
-                : m.content.flatMap((c) =>
-                    c.type === "image" ? [`data:${c.mediaType};base64,${c.data}`] : [],
-                  );
-            const hook = m.role === "user" ? detectHookKind(text) : null;
-            // A compacted session persists its summary as a user message prefixed
-            // with this marker. Tag it so the webview renders the quiet "Compacted
-            // context" notice instead of dumping the full summary body.
-            const compacted =
-              m.role === "user" && !hook && text.startsWith("[Previous conversation summary]");
-            // Recover a `/name [args]` command invocation from its expanded body
-            // (skip messages already claimed as hooks or compaction summaries).
-            const command =
-              m.role === "user" && !hook && !compacted
-                ? detectPromptCommand(text, commandCandidates)
-                : null;
-            return {
-              role: m.role as "user" | "assistant",
+        const messages = session.getMessages();
+
+        // Pre-index tool results by toolCallId so we can pair tool calls with
+        // their results (for sub-agent status + image extraction).
+        const toolResultMap = new Map<string, { content: ToolResultContent; isError: boolean }>();
+        for (const msg of messages) {
+          if (msg.role !== "tool") continue;
+          for (const tr of msg.content) {
+            toolResultMap.set(tr.toolCallId, {
+              content: tr.content,
+              isError: tr.isError ?? false,
+            });
+          }
+        }
+
+        const history: HistoryEntryForWire[] = [];
+
+        for (const msg of messages) {
+          if (msg.role === "system") continue;
+
+          if (msg.role === "tool") {
+            // Tool result messages: check for ImageContent blocks (screenshots,
+            // generated images) and emit a toolImages entry.
+            for (const tr of msg.content) {
+              if (typeof tr.content === "string") continue;
+              const imageBlocks = tr.content.filter((c) => c.type === "image");
+              if (imageBlocks.length === 0) continue;
+              // Extract the path from the text block (e.g. "Generated image → /path").
+              const textBlock = tr.content.find(
+                (c) => c.type === "text" && "text" in c && typeof c.text === "string",
+              );
+              const textContent = textBlock && textBlock.type === "text" ? textBlock.text : "";
+              const pathMatch = textContent.match(/→\s*(\S+)/);
+              const imgPath = pathMatch?.[1];
+
+              // Downscale each image for the webview preview.
+              const toolImages: Array<{ src: string; path?: string }> = [];
+              for (const block of imageBlocks) {
+                if (block.type !== "image") continue;
+                try {
+                  const rawBuf = Buffer.from(block.data, "base64");
+                  const previewBuf = await downscaleForPreview(rawBuf);
+                  toolImages.push({
+                    src: `data:${block.mediaType};base64,${previewBuf.toString("base64")}`,
+                    path: imgPath,
+                  });
+                } catch {
+                  // Downscale failed — use the raw data.
+                  toolImages.push({
+                    src: `data:${block.mediaType};base64,${block.data}`,
+                    path: imgPath,
+                  });
+                }
+              }
+              if (toolImages.length > 0) {
+                history.push({
+                  role: "assistant",
+                  text: "",
+                  toolImages,
+                });
+              }
+            }
+            continue;
+          }
+
+          // User or assistant message — existing text/hook/command/compacted
+          // extraction, plus sub-agent group detection for assistant tool_calls.
+          const text =
+            typeof msg.content === "string"
+              ? msg.content
+              : msg.content
+                  .map((c) =>
+                    c.type === "text" && "text" in c && typeof c.text === "string" ? c.text : "",
+                  )
+                  .join("");
+          const images =
+            typeof msg.content === "string"
+              ? []
+              : msg.content.flatMap((c) =>
+                  c.type === "image" ? [`data:${c.mediaType};base64,${c.data}`] : [],
+                );
+          const hook = msg.role === "user" ? detectHookKind(text) : null;
+          const compacted =
+            msg.role === "user" && !hook && text.startsWith("[Previous conversation summary]");
+          const command =
+            msg.role === "user" && !hook && !compacted
+              ? detectPromptCommand(text, commandCandidates)
+              : null;
+
+          if (text.trim() || images.length > 0) {
+            history.push({
+              role: msg.role as "user" | "assistant",
               text: command ?? text,
               images,
               hook,
               command: command !== null,
               compacted,
-            };
-          })
-          // Keep messages with text OR images — an image-only user turn has empty
-          // text but must still appear.
-          .filter((m) => m.text.trim().length > 0 || m.images.length > 0);
+            });
+          }
+
+          // Assistant tool_call blocks: detect sub-agent delegations.
+          if (msg.role === "assistant" && typeof msg.content !== "string") {
+            const subagentCalls = msg.content.filter(
+              (
+                c,
+              ): c is typeof c & {
+                type: "tool_call";
+                id: string;
+                name: string;
+                args: Record<string, unknown>;
+              } => c.type === "tool_call" && c.name === "subagent",
+            );
+            if (subagentCalls.length > 0) {
+              const agents = subagentCalls.map((c) => {
+                const result = toolResultMap.get(c.id);
+                return {
+                  agentName: typeof c.args?.agent === "string" ? c.args.agent : undefined,
+                  status: result?.isError ? ("error" as const) : ("done" as const),
+                  toolUseCount: 0,
+                };
+              });
+              history.push({
+                role: "assistant",
+                text: "",
+                subagentGroup: agents,
+              });
+            }
+          }
+        }
+
         json(res, 200, { history });
       })();
       return;
