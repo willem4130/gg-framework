@@ -37,11 +37,31 @@ function getBase(sound: UiSound): HTMLAudioElement {
   return el;
 }
 
-let enabled = true;
+const STORAGE_KEY = "gg-sound-enabled";
 
-/** Toggle all UI sounds (e.g. a future settings switch). */
+function loadEnabled(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+let enabled = loadEnabled();
+
+/** Whether UI sounds are currently enabled. */
+export function isSoundEnabled(): boolean {
+  return enabled;
+}
+
+/** Toggle all UI sounds. Persisted per-machine in localStorage. */
 export function setSoundEnabled(on: boolean): void {
   enabled = on;
+  try {
+    localStorage.setItem(STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    // Storage unavailable — keep the in-memory toggle only.
+  }
 }
 
 /** Play a UI sound. Best-effort: autoplay rejections and decode errors are

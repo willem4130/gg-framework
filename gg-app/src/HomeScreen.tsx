@@ -7,6 +7,7 @@ import { MemeLayer } from "./MemeLayer";
 import { SettingsModal } from "./SettingsModal";
 import { TelegramSettingsModal } from "./TelegramSettingsModal";
 import { McpModal } from "./McpModal";
+import { SoundButton } from "./SoundButton";
 import {
   waitForReady,
   getSettings,
@@ -174,6 +175,7 @@ export function HomeScreen({ onProjects, onLogin }: Props): React.ReactElement {
           >
             Your Projects
           </button>
+          <SoundButton />
           <button
             className="btn btn-ghost btn-icon home-settings"
             title="Settings"
