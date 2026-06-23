@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 4.14.0
+
+### Minor Changes
+
+- Add Sakana Fugu provider (Fugu, Fugu Ultra) with API-key login, high/xhigh reasoning, and a silent-reasoning stream-timeout extension.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@4.14.0
+- @kenkaiiii/gg-agent@4.14.0
+- @kenkaiiii/gg-core@4.14.0
+
 ## 4.13.3
 
 ### Patch Changes
