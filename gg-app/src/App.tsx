@@ -46,6 +46,7 @@ import { ReferencedFiles, appendReferencedFiles, parseReferencedFiles } from "./
 import { ContextMeter } from "./ContextMeter";
 import { BackgroundTasksButton } from "./BackgroundTasksButton";
 import { TasksModal } from "./TasksModal";
+import { NotesModal } from "./NotesModal";
 import { ShimmerText } from "./ShimmerText";
 import { WakeScreen } from "./WakeScreen";
 import { ConfirmModal } from "./ConfirmModal";
@@ -301,6 +302,9 @@ function App(): React.ReactElement {
   // Updated live via the `tasks_list` SSE event while a run-all sweep advances.
   const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
   const [showTasks, setShowTasks] = useState(false);
+  // Free-form per-project notes, persisted to localStorage keyed by project cwd.
+  const [showNotes, setShowNotes] = useState(false);
+  const [notes, setNotes] = useState("");
   // Every window picks a project before connecting — on app load and on each new
   // window. The picker re-points this window's agent at the chosen cwd/session.
   const [needsProject, setNeedsProject] = useState(true);
@@ -1316,6 +1320,35 @@ function App(): React.ReactElement {
     void deleteTask(id).then(setProjectTasks);
   }, []);
 
+  // Per-project notes: load from localStorage whenever the active project (cwd)
+  // changes, and write back on every edit. Keyed by cwd so each project keeps
+  // its own notebook; windows pointed at the same project share one.
+  const notesKey = state?.cwd ? `gg-notes:${state.cwd}` : null;
+  useEffect(() => {
+    if (!notesKey) {
+      setNotes("");
+      return;
+    }
+    try {
+      setNotes(localStorage.getItem(notesKey) ?? "");
+    } catch {
+      setNotes("");
+    }
+  }, [notesKey]);
+
+  const handleNotesChange = useCallback(
+    (value: string) => {
+      setNotes(value);
+      if (!notesKey) return;
+      try {
+        localStorage.setItem(notesKey, value);
+      } catch {
+        // Storage full/unavailable — keep the in-memory value for this session.
+      }
+    },
+    [notesKey],
+  );
+
   function onSelectModel(modelId: string): void {
     setModelMenuOpen(false);
     if (state && modelId === state.model) return;
@@ -1866,6 +1899,13 @@ function App(): React.ReactElement {
               </button>
               <button
                 className="btn btn-sm btn-ghost"
+                title="Open your notes for this project"
+                onClick={() => setShowNotes(true)}
+              >
+                Notes
+              </button>
+              <button
+                className="btn btn-sm btn-ghost"
                 title="View and run this project's tasks"
                 onClick={openTasks}
               >
@@ -1873,6 +1913,14 @@ function App(): React.ReactElement {
                   ? `Tasks (${projectTasks.filter((t) => t.status !== "done").length})`
                   : "Tasks"}
               </button>
+              <RadioButton />
+              {/* <GazeButton /> */}
+              <WindowLayoutButton
+                onArrange={() => {
+                  setNavHiddenPersisted(true);
+                  setToolsHiddenPersisted(true);
+                }}
+              />
               {needsGitInit ? (
                 <button
                   className="btn btn-sm btn-ghost"
@@ -1899,14 +1947,6 @@ function App(): React.ReactElement {
                   </button>
                 )
               )}
-              <RadioButton />
-              {/* <GazeButton /> */}
-              <WindowLayoutButton
-                onArrange={() => {
-                  setNavHiddenPersisted(true);
-                  setToolsHiddenPersisted(true);
-                }}
-              />
             </span>
           </div>
         )}
@@ -2212,6 +2252,14 @@ function App(): React.ReactElement {
           onAccept={acceptPlan}
           onFeedback={sendPlanFeedback}
           onReject={rejectPlan}
+        />
+      )}
+
+      {showNotes && (
+        <NotesModal
+          value={notes}
+          onChange={handleNotesChange}
+          onClose={() => setShowNotes(false)}
         />
       )}
 

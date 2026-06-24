@@ -876,11 +876,43 @@ body {
   background: var(--border);
   border-radius: 4px;
 }
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
 .modal-title {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  margin-bottom: 20px;
+}
+.modal-close {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+  transition:
+    background var(--t-fast),
+    border-color var(--t-fast),
+    color var(--t-fast);
+}
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: var(--text);
 }
 .modal-label {
   display: block;
@@ -889,8 +921,8 @@ body {
   margin-top: 22px;
   margin-bottom: 10px;
 }
-/* The first label shouldn't double up the title's bottom margin. */
-.modal-title + .modal-label {
+/* The first label shouldn't double up the title row's bottom margin. */
+.modal-head + .modal-label {
   margin-top: 4px;
 }
 .modal-input {
@@ -984,6 +1016,29 @@ body {
 .modal-btn:disabled {
   cursor: default;
   opacity: 0.4;
+}
+
+/* ── Notes modal (free-form per-project notebook) ── */
+.notes-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  /* Fill most of the viewport so it reads as a full notebook, not a chat box.
+     Scrolls internally once the notes outgrow the area. */
+  height: min(72vh, 680px);
+  resize: none;
+  border: 1px solid;
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  outline: none;
+  overflow-y: auto;
+}
+/* The notes modal is a workspace, not a small dialog — give it room. */
+.notes-modal {
+  width: min(900px, 94vw);
 }
 
 /* ── Tasks modal (project task list → run one / run all) ── */
