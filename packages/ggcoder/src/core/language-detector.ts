@@ -231,6 +231,115 @@ export const LANGUAGE_DISPLAY_NAMES: Readonly<Record<LanguageId, string>> = {
   terraform: "Terraform",
 };
 
+// ── Framework detection (for the prompt enhancer's terminology hint) ─────────
+// High-signal framework markers keyed by the dependency name (JS/TS) found in
+// package.json. Mapped to a human display name. Order matters: more specific
+// meta-frameworks are listed first so e.g. Next.js wins over bare React.
+const JS_FRAMEWORK_DEPS: ReadonlyArray<readonly [dep: string, display: string]> = [
+  ["next", "Next.js"],
+  ["nuxt", "Nuxt"],
+  ["@remix-run/react", "Remix"],
+  ["@sveltejs/kit", "SvelteKit"],
+  ["astro", "Astro"],
+  ["expo", "React Native (Expo)"],
+  ["react-native", "React Native"],
+  ["@angular/core", "Angular"],
+  ["solid-js", "SolidJS"],
+  ["svelte", "Svelte"],
+  ["vue", "Vue"],
+  ["react", "React"],
+  ["@nestjs/core", "NestJS"],
+  ["@tauri-apps/api", "Tauri"],
+  ["electron", "Electron"],
+  ["hono", "Hono"],
+  ["fastify", "Fastify"],
+  ["express", "Express"],
+  ["tailwindcss", "Tailwind CSS"],
+];
+
+// Group meta-framework → the base lib it implies, so we don't list both
+// (e.g. "Next.js, React" → just "Next.js").
+const IMPLIES: Readonly<Record<string, string>> = {
+  "Next.js": "React",
+  Remix: "React",
+  "React Native": "React",
+  "React Native (Expo)": "React",
+  Nuxt: "Vue",
+  SvelteKit: "Svelte",
+};
+
+/** Read package.json deps once (best-effort) and return the matched frameworks. */
+function detectJsFrameworks(cwd: string): string[] {
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf-8"));
+  } catch {
+    return [];
+  }
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  const found = JS_FRAMEWORK_DEPS.filter(([dep]) => dep in deps).map(([, display]) => display);
+  // Drop a base lib when a meta-framework that implies it is also present.
+  const implied = new Set(found.map((f) => IMPLIES[f]).filter(Boolean));
+  return found.filter((f) => !implied.has(f));
+}
+
+/** Match a non-JS framework by scanning a manifest file's contents for a marker. */
+function detectFromManifest(
+  cwd: string,
+  file: string,
+  markers: ReadonlyArray<readonly [needle: string, display: string]>,
+): string[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(path.join(cwd, file), "utf-8").toLowerCase();
+  } catch {
+    return [];
+  }
+  return markers.filter(([needle]) => content.includes(needle)).map(([, display]) => display);
+}
+
+/**
+ * Detect a project's tech stack as a short, human-readable string
+ * (e.g. "Next.js, TypeScript, Tailwind CSS" or "Rust" or "Python, Django").
+ *
+ * Cheap + best-effort: reuses `detectLanguages` for the language base and adds a
+ * light framework sniff from package.json deps (JS/TS) plus a few manifest
+ * content checks (Rails, Django/Flask/FastAPI, Laravel). Returns "" when nothing
+ * recognizable is found. Used by the prompt enhancer to bias terminology toward
+ * the stack the user actually works in — facts only, never invented scope.
+ */
+export function detectProjectStack(cwd: string): string {
+  const langs = languagesToSortedArray(detectLanguages(cwd)).map((l) => LANGUAGE_DISPLAY_NAMES[l]);
+  const frameworks: string[] = [
+    ...detectJsFrameworks(cwd),
+    ...detectFromManifest(cwd, "Gemfile", [
+      ["rails", "Ruby on Rails"],
+      ["sinatra", "Sinatra"],
+    ]),
+    ...detectFromManifest(cwd, "requirements.txt", [
+      ["django", "Django"],
+      ["flask", "Flask"],
+      ["fastapi", "FastAPI"],
+    ]),
+    ...detectFromManifest(cwd, "pyproject.toml", [
+      ["django", "Django"],
+      ["flask", "Flask"],
+      ["fastapi", "FastAPI"],
+    ]),
+    ...detectFromManifest(cwd, "composer.json", [["laravel/framework", "Laravel"]]),
+  ];
+  // Frameworks first (most informative), then languages; de-dupe + cap length.
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const item of [...frameworks, ...langs]) {
+    if (item && !seen.has(item)) {
+      seen.add(item);
+      parts.push(item);
+    }
+  }
+  return parts.slice(0, 6).join(", ");
+}
+
 /**
  * Returns true iff `next` contains every member of `prev` plus at least one
  * additional language. Used to gate system-prompt rebuilds: we only re-inject

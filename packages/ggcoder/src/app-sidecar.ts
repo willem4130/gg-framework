@@ -52,7 +52,7 @@ import {
 import { initLogger, log } from "./core/logger.js";
 import { RADIO_STATIONS, getCurrentStation, playRadio, stopRadio } from "./core/radio.js";
 import { enrichProcessPath } from "./core/shell-path.js";
-import { downscaleForPreview } from "./utils/image.js";
+import { downscaleForPreview, validateVisionImage } from "./utils/image.js";
 import { startServeMode, type ServeController } from "./modes/serve-mode.js";
 import { loadTelegramConfig, saveTelegramConfig, verifyBotToken } from "./core/telegram-config.js";
 import {
@@ -242,11 +242,24 @@ async function prepareAttachments(
     const safe = a.name.replace(/[^\w.-]+/g, "_").slice(-80) || "file";
     const fileName = `${Date.now().toString(36)}-${safe}`;
     const filePath = path.join(dir, fileName);
+    const buf = Buffer.from(a.data, "base64");
+    // Validate image attachments before they become native image content blocks.
+    // A corrupt or unsupported-format image (e.g. a malformed .ico, or a .png
+    // with a bad IDAT) makes the provider reject the ENTIRE turn ("image data
+    // ... not a valid image") before the agent can respond. Downgrade such files
+    // to a plain "file" attachment so the model gets a path note and inspects
+    // them with its tools instead of the request 400ing.
+    let prepared: PreparedAttachment = { ...a };
+    if (a.kind === "image") {
+      const validatedType = await validateVisionImage(buf).catch(() => null);
+      if (validatedType) prepared = { ...a, mediaType: validatedType };
+      else prepared = { ...a, kind: "file" };
+    }
     try {
-      await fs.writeFile(filePath, Buffer.from(a.data, "base64"));
-      out.push({ ...a, path: filePath });
+      await fs.writeFile(filePath, buf);
+      out.push({ ...prepared, path: filePath });
     } catch {
-      out.push({ ...a });
+      out.push({ ...prepared });
     }
   }
   return out;
@@ -1418,6 +1431,33 @@ async function createSession(
       return;
     }
 
+    if (method === "POST" && url === "/enhance") {
+      void readBody(req).then(async (raw) => {
+        let text: string;
+        try {
+          text = (JSON.parse(raw) as { text?: string }).text ?? "";
+        } catch {
+          json(res, 400, { error: "invalid JSON body" });
+          return;
+        }
+        if (!text.trim()) {
+          json(res, 400, { error: "empty prompt" });
+          return;
+        }
+        // An independent read-only LLM call — touches no session state, so it's
+        // allowed even while a run is in flight.
+        try {
+          const result = await session.enhancePrompt(text);
+          json(res, 200, result);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log("ERROR", "app-sidecar", "enhance failed", { message });
+          json(res, 500, { error: message });
+        }
+      });
+      return;
+    }
+
     if (method === "GET" && url === "/tasks") {
       json(res, 200, { tasks: loadTasksSync(cwd) });
       return;
@@ -1648,9 +1688,15 @@ async function createSession(
       return;
     }
 
-    // Bake an approved plan into the system prompt before the implementation
-    // prompt runs, so the model is told to emit `[DONE:n]` markers and the
-    // webview's plan-progress widget advances (mirrors the CLI accept flow).
+    // Accept an approved plan and begin implementation in a FRESH session
+    // (mirrors the CLI's handleApprovePlan). The plan-mode conversation — all the
+    // research, file reads, and exploration done while drafting — must NOT bleed
+    // into the build, or it bloats the context and distracts the model. So:
+    //   1. newSession() wipes history + starts a new session file.
+    //   2. setApprovedPlan() bakes the plan into the fresh system prompt so the
+    //      model emits `[DONE:n]` markers the plan-progress widget reads.
+    //   3. session_reset tells the webview to clear its transcript; it then runs
+    //      the "implement it now" prompt in the clean session.
     if (method === "POST" && url === "/plan/accept") {
       void readBody(req).then(async (raw) => {
         let planPath: string | undefined;
@@ -1660,8 +1706,15 @@ async function createSession(
           json(res, 400, { error: "invalid JSON body" });
           return;
         }
+        if (running) {
+          json(res, 409, { error: "cannot accept a plan while the agent is running" });
+          return;
+        }
         try {
+          await session.newSession();
+          titleGenerated = false;
           await session.setApprovedPlan(planPath);
+          broadcast("session_reset", {});
           json(res, 200, { ok: true });
         } catch (err) {
           json(res, 500, { error: err instanceof Error ? err.message : String(err) });

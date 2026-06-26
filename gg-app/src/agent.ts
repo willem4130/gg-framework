@@ -148,6 +148,33 @@ export async function getState(): Promise<AgentState> {
   return invoke<AgentState>("agent_state");
 }
 
+/**
+ * One piece of an enhanced prompt. A `text` segment is verbatim prose; a `term`
+ * segment is a corrected technical term the model swapped in, carrying the
+ * user's `original` phrasing (and an optional `note`) so the UI can teach the
+ * difference via a tooltip. Mirrors the sidecar's PromptSegment.
+ */
+export type PromptSegment =
+  | { kind: "text"; text: string }
+  | { kind: "term"; text: string; original: string; note?: string };
+
+export interface EnhanceResult {
+  /** The plain rewritten prompt — exactly what gets sent to the agent. */
+  enhanced: string;
+  /** The same prompt split into prose + corrected-term segments for the UI. */
+  segments: PromptSegment[];
+}
+
+/**
+ * Rewrite the current draft into a tighter, terminology-correct prompt using
+ * the active model. Throws with a user-facing message on failure (the caller
+ * surfaces it via toast).
+ */
+export async function enhancePrompt(text: string): Promise<EnhanceResult> {
+  await waitForReady();
+  return invoke<EnhanceResult>("agent_enhance_prompt", { text });
+}
+
 export async function openProjectPath(path: string): Promise<void> {
   let decoded = path;
   try {

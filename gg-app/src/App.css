@@ -2194,6 +2194,276 @@ body {
   background: var(--surface-2);
 }
 
+/* Chat-input stack: the textarea plus (transiently) the enhance animation layer.
+   Highlights for enhanced terms are NOT drawn over the input — an overlay can't
+   reliably track a native textarea's text metrics. They live in the sent bubble
+   (a clean div) instead, where they align perfectly + keep their tooltips. */
+.input-stack {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.input-stack .input {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+/* Dissolve→skeleton→decode animation layer. While it plays it becomes the input
+   row's height driver: the textarea is pulled OUT of flow (.input-anim) so the
+   box collapses to this layer's content height — shrinking as the old text
+   dissolves, holding at one line for the skeleton, then growing as the new text
+   decodes in. Metrics mirror .input exactly so wrapping matches 1:1. */
+.input.input-anim {
+  position: absolute;
+  /* Out of flow + invisible so the .enh-diss layer alone drives the row height. */
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.enh-diss {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  /* At least one text line tall so the collapsed/skeleton state matches an empty
+     input's default height (14px × 1.5 = 21px). */
+  min-height: 1.5em;
+  /* Match the textarea's growth cap so a long decoded prompt scrolls inside the
+     input box instead of overflowing past it (mirrors .input max-height). */
+  max-height: 40vh;
+  overflow-y: auto;
+  /* Explicit: without this, setting only overflow-y makes overflow-x compute to
+     `auto` (CSS spec), turning the box into a horizontal scroll container that
+     sizes to its content — so the text stops wrapping and runs off on one line.
+     Pinning overflow-x hidden (like the textarea) restores normal wrapping. */
+  overflow-x: hidden;
+  z-index: 3;
+  pointer-events: none;
+  /* Match .input exactly so the text wraps identically to the textarea. */
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 0;
+  margin: 0;
+  /* Wrap exactly like the textarea (default overflow-wrap) so the decoded text
+     occupies the same lines the real input will once it's committed. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  color: var(--user-text);
+}
+.enh-diss::-webkit-scrollbar {
+  width: 8px;
+}
+.enh-diss::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+/* Smooth dissolve: the whole old draft fades + blurs into mist + drifts up while
+   its height (set inline by JS) collapses to one line. One CSS tween, no
+   character deletion — it just "vanishes" softly. */
+.enh-diss-fade {
+  overflow: hidden;
+  /* JS drives an explicit height tween here, so drop the shared one-line floor. */
+  min-height: 0;
+  transition:
+    opacity 460ms ease,
+    filter 460ms ease,
+    transform 460ms ease,
+    height 460ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: opacity, filter, transform, height;
+}
+.enh-diss-fade.dissolving {
+  opacity: 0;
+  filter: blur(7px);
+  transform: translateY(-6px) scale(0.985);
+}
+@media (prefers-reduced-motion: reduce) {
+  .enh-diss-fade {
+    transition: none;
+  }
+}
+.enh-diss-skeleton {
+  display: flex;
+  align-items: center;
+}
+/* The enhancer skeleton stands in for a full line of prompt text: full width,
+   clearly visible, with a seamless single-pass sheen. A flat surface-2 base with
+   a translating ::after band (clipped by overflow:hidden) loops without the
+   abrupt re-entry the shared background-position sweep shows at high contrast. */
+.enh-diss-skeleton .skeleton {
+  width: 100%;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  /* Override the shared background-position sweep — we sweep via ::after below. */
+  animation: none;
+  overflow: hidden;
+}
+.enh-diss-skeleton .skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 30%,
+    color-mix(in srgb, var(--secondary) 38%, var(--surface-2)) 50%,
+    transparent 70%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: enh-skeleton-sweep 1.5s ease-in-out infinite;
+}
+@keyframes enh-skeleton-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .enh-diss-skeleton .skeleton::after {
+    animation: none;
+  }
+}
+/* The bright resolving "lead" glyph at the active edge (decode front / dissolve
+   tail) — brand periwinkle, mirroring the Matrix decode head. */
+.enh-diss-lead {
+  color: #c4b5fd;
+}
+
+/* Floating "Enhance" pill — appears bottom-right of the input box after the
+   user pauses typing. Themed like a subtle secondary-accent chip. */
+.enhance-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  /* Match the "+ New" button: glossy primary pill so it's clearly visible. */
+  background: var(--gloss-primary);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: var(--gloss-shadow-primary);
+  border-radius: var(--radius-pill);
+  color: #f4f8ff;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  animation: enhance-pill-in var(--t-fast) ease-out;
+  transition: filter var(--t-fast);
+}
+.enhance-pill:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.enhance-pill:disabled {
+  cursor: default;
+}
+.enhance-pill.enhancing {
+  animation: enhance-pulse 1s ease-in-out infinite;
+}
+@keyframes enhance-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 3px));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+@keyframes enhance-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* A corrected technical term — highlighted, with a teaching tooltip on hover.
+   Shared by the preview card and the sent user bubble. A custom CSS tooltip is
+   used instead of the native `title=` attribute, which is unreliable / never
+   appears inside the Tauri webview. */
+.enh-term {
+  position: relative;
+  background: color-mix(in srgb, var(--secondary) 20%, transparent);
+  color: var(--text);
+  /* text-decoration hugs the glyphs (and each wrapped fragment) instead of
+     floating at the bottom of the line box the way border-bottom does. */
+  text-decoration: underline dashed color-mix(in srgb, var(--secondary) 70%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: help;
+  outline: none;
+}
+.enh-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: max-content;
+  max-width: 280px;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-button);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  text-align: left;
+  color: var(--text-secondary);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--t-fast),
+    transform var(--t-fast),
+    visibility var(--t-fast);
+}
+/* Little arrow pointing down at the term. */
+.enh-tip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--surface-2);
+}
+.enh-term:hover .enh-tip,
+.enh-term:focus .enh-tip,
+.enh-term:focus-visible .enh-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+.enh-tip-said {
+  color: var(--text-dim);
+}
+.enh-tip-orig {
+  color: var(--text);
+}
+.enh-tip-note {
+  color: var(--text-muted);
+}
+
 /* Staged attachment chips above the input. */
 .attach-bar {
   display: flex;

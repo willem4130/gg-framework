@@ -817,6 +817,26 @@ async fn agent_switch_model(
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
+/// Proxy: rewrite a draft prompt into a tighter, terminology-correct version
+/// using the active model. Returns `{ enhanced, segments }`.
+#[tauri::command]
+async fn agent_enhance_prompt(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    let port = port_for(&webview).ok_or("daemon not ready")?;
+    let gg_sid = session_for(&webview).ok_or("session not ready")?;
+    let res = client
+        .post(format!("{}/enhance", sidecar_base(port)))
+        .header("x-gg-session", &gg_sid)
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 /// Proxy: cycle the reasoning/thinking level to the next supported value.
 /// Returns the new `{ thinkingLevel, supportedThinkingLevels }`.
 #[tauri::command]
@@ -2763,6 +2783,7 @@ pub fn run() {
             agent_cycle_thinking,
             agent_models,
             agent_switch_model,
+            agent_enhance_prompt,
             agent_commands,
             setup_windows,
             new_window,

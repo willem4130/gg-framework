@@ -34,6 +34,8 @@ import {
   type ProjectTask,
   type FileHit,
   searchFiles,
+  enhancePrompt,
+  type PromptSegment,
 } from "./agent";
 import { ActivityBar, formatTokenCount } from "./ActivityBar";
 import { LiveToolPanel, type LiveToolEntry, LIVE_TOOL_PANEL_ROWS } from "./LiveToolPanel";
@@ -75,6 +77,9 @@ import {
 } from "./plan-steps";
 import { Paperclip, AtSign } from "lucide-react";
 import { AttachmentBar } from "./AttachmentBar";
+import { EnhancedSegments } from "./PromptEnhancement";
+import { EnhanceDissolve } from "./EnhanceDissolve";
+import { toast } from "./toast";
 import { fileToPending, toWire, type PendingAttachment } from "./attachments";
 import "./App.css";
 
@@ -93,6 +98,9 @@ type Item =
       label?: string;
       images?: string[];
       files?: string[];
+      // Corrected-term segments from the prompt enhancer, when this message was
+      // sent unedited straight after an enhance. Drives the highlighted bubble.
+      enhancements?: PromptSegment[];
       // True while this message is still waiting in the mid-run steering queue.
       // Rendered dimmed; cleared at run_end once the agent has consumed it.
       queued?: boolean;
@@ -255,6 +263,28 @@ function App(): React.ReactElement {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // The most recent prompt-enhancement result. `plain` is the text now in the
+  // textarea; `segments` drive the inline highlight overlay + the sent bubble.
+  // It's dropped the moment the textarea diverges from `plain` so highlights
+  // never misalign. `enhancing` shows the pulse on the Enhance pill mid-call.
+  const [enhancement, setEnhancement] = useState<{
+    plain: string;
+    segments: PromptSegment[];
+  } | null>(null);
+  const [enhancing, setEnhancing] = useState(false);
+  // The floating "Enhance" pill is shown only after the user pauses typing for
+  // ~1s (and hidden again on the next keystroke / send / empty input).
+  const [enhanceHintVisible, setEnhanceHintVisible] = useState(false);
+  // Drives the Matrix dissolve→decode animation over the input while enhancing.
+  // `newText` is null until the enhancer returns (dissolve/scramble), then the
+  // enhanced text (decode). Null when no animation is playing.
+  const [enhanceAnim, setEnhanceAnim] = useState<{
+    oldText: string;
+    newText: string | null;
+  } | null>(null);
+  // Holds the resolved enhancement so the animation's onDone can apply it once
+  // the decode settles (rather than popping the text in mid-animation).
+  const pendingEnhanceRef = useRef<{ enhanced: string; segments: PromptSegment[] } | null>(null);
   // Number of messages queued mid-run (injected as steering by the sidecar).
   const [queuedCount, setQueuedCount] = useState(0);
   const [state, setState] = useState<AgentState | null>(null);
@@ -278,6 +308,11 @@ function App(): React.ReactElement {
   // which intentionally does not re-capture React state on every render.
   const planTotalRef = useRef(0);
   const planDoneRef = useRef<Set<number>>(new Set());
+  // Plan step count to (re)apply right after an accept-driven session_reset.
+  // Accepting a plan starts a fresh session whose session_reset clears the
+  // counters; this carries the approved plan's step total across that reset so
+  // the Plan Steps widget doesn't get stuck at 0. Null when no accept is pending.
+  const pendingPlanTotalRef = useRef<number | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingStartTs, setThinkingStartTs] = useState<number | null>(null);
   const [thinkingAccumMs, setThinkingAccumMs] = useState(0);
@@ -509,7 +544,13 @@ function App(): React.ReactElement {
 
   // Auto-grow the chat textarea to fit its content (up to a CSS max-height,
   // after which it scrolls). Runs whenever the input value changes.
-  useEffect(() => {
+  //
+  // useLayoutEffect (not useEffect) so the height is recomputed BEFORE the
+  // browser paints. This matters most when the enhance animation tears down and
+  // hands its multi-line text back to the textarea: with a post-paint effect the
+  // textarea would flash at its default height for one frame, then resize — a
+  // visible layout shift. Sizing pre-paint makes the handoff seamless.
+  useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
@@ -1134,10 +1175,16 @@ function App(): React.ReactElement {
           setContextTokens(0);
           setSessionTitle(null);
           setPlanReview(null);
-          planTotalRef.current = 0;
-          planDoneRef.current = new Set();
-          setPlanTotal(0);
-          setPlanDone(new Set());
+          {
+            // On an accept-driven reset, restore the approved plan's step count
+            // instead of zeroing it (the widget tracks the implementation run).
+            const carriedTotal = pendingPlanTotalRef.current ?? 0;
+            pendingPlanTotalRef.current = null;
+            planTotalRef.current = carriedTotal;
+            planDoneRef.current = new Set();
+            setPlanTotal(carriedTotal);
+            setPlanDone(new Set());
+          }
           setAttachments([]);
           setQueuedCount(0);
           endStreamingText();
@@ -1577,6 +1624,84 @@ function App(): React.ReactElement {
     return true;
   }
 
+  // Apply a finished enhancement to the input: fill the textarea with the plain
+  // text, stash the highlighted segments (drives the inline highlight overlay +
+  // sent bubble), and park the caret at the end.
+  function applyEnhanceResult(r: { enhanced: string; segments: PromptSegment[] }): void {
+    setInput(r.enhanced);
+    setEnhancement({ plain: r.enhanced, segments: r.segments });
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      }
+    });
+  }
+
+  // Run the prompt enhancer: rewrite the current draft via the active model into
+  // a tighter, terminology-correct prompt. The result plays in over the input as
+  // a Matrix dissolve→decode animation (unless reduced-motion), then fills it.
+  async function runEnhance(): Promise<void> {
+    const draft = input.trim();
+    if (!draft || enhancing) return;
+    setEnhanceHintVisible(false);
+    setEnhancing(true);
+
+    const reduced =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (reduced) {
+      try {
+        applyEnhanceResult(await enhancePrompt(draft));
+      } catch {
+        toast("Couldn't enhance the prompt", "error");
+      } finally {
+        setEnhancing(false);
+      }
+      return;
+    }
+
+    // Start the dissolve immediately (newText null), then flip to decode when the
+    // enhancer returns. applyEnhanceResult + cleanup run in the animation's
+    // onDone so the text never pops in before the decode settles.
+    setEnhanceAnim({ oldText: draft, newText: null });
+    try {
+      const r = await enhancePrompt(draft);
+      pendingEnhanceRef.current = r;
+      setEnhanceAnim((a) => (a ? { ...a, newText: r.enhanced } : null));
+    } catch {
+      toast("Couldn't enhance the prompt", "error");
+      setEnhanceAnim(null);
+      setEnhancing(false);
+    }
+  }
+
+  // The dissolve→decode animation finished: apply the result + tear down.
+  function onEnhanceAnimDone(): void {
+    const r = pendingEnhanceRef.current;
+    pendingEnhanceRef.current = null;
+    setEnhanceAnim(null);
+    setEnhancing(false);
+    if (r) applyEnhanceResult(r);
+  }
+
+  // Reveal the floating "Enhance" pill ~1s after the user stops typing, for a
+  // non-trivial sendable draft. Every keystroke resets `input`, which re-runs
+  // this and hides the pill immediately, so it only surfaces on a real pause.
+  // Skipped while running/enhancing, with a menu open, or when the draft is
+  // already the current enhancement (nothing left to improve).
+  useEffect(() => {
+    setEnhanceHintVisible(false);
+    if (running || enhancing || !hydrated) return;
+    if (input.trim().length < 8) return;
+    if (slashOpen || mentionOpen) return;
+    if (enhancement && enhancement.plain === input) return;
+    const t = setTimeout(() => setEnhanceHintVisible(true), 1000);
+    return () => clearTimeout(t);
+  }, [input, running, enhancing, hydrated, slashOpen, mentionOpen, enhancement]);
+
   // Submit the current input together with any staged attachments. Images are
   // echoed inline in the user's bubble; all media is sent to the agent.
   function submit(): void {
@@ -1590,6 +1715,10 @@ function App(): React.ReactElement {
     // knows which paths to read; they aren't shown in the user's bubble text.
     const prompt =
       mentionedPaths.length > 0 ? appendReferencedFiles(trimmed, mentionedPaths) : trimmed;
+    // Carry the enhancer's highlighted segments into the sent bubble ONLY when
+    // the message is the unedited enhanced text (the bubble shows `trimmed`).
+    const sentEnhancements =
+      enhancement && enhancement.plain === trimmed ? enhancement.segments : undefined;
     // While a run is in flight, the message is QUEUED as steering (the sidecar
     // injects it mid-loop). Attachments queue too — they're persisted and ride
     // the same native-block path when the queue drains. Queued rows render
@@ -1604,6 +1733,7 @@ function App(): React.ReactElement {
         command: isWorkflowCommand(trimmed),
         images: queuedImgs.length > 0 ? queuedImgs : undefined,
         files: mentionedPaths.length > 0 ? mentionedPaths : undefined,
+        enhancements: sentEnhancements,
         queued: true,
       });
       setInput("");
@@ -1611,6 +1741,7 @@ function App(): React.ReactElement {
       setSlashIndex(0);
       setMention(null);
       setMentionedPaths([]);
+      setEnhancement(null);
       void sendPrompt(prompt, queuedWire);
       return;
     }
@@ -1623,6 +1754,7 @@ function App(): React.ReactElement {
       command: isWorkflowCommand(trimmed),
       images: imgPreviews.length > 0 ? imgPreviews : undefined,
       files: mentionedPaths.length > 0 ? mentionedPaths : undefined,
+      enhancements: sentEnhancements,
     });
     // Warn the user when a video attachment is sent to a model without native
     // video analysis — the agent can still use ffmpeg to extract frames/audio,
@@ -1639,6 +1771,7 @@ function App(): React.ReactElement {
     setSlashIndex(0);
     setMention(null);
     setMentionedPaths([]);
+    setEnhancement(null);
     endStreamingText();
     void sendPrompt(prompt, wire);
   }
@@ -1700,17 +1833,25 @@ function App(): React.ReactElement {
   }
 
   async function acceptPlan(): Promise<void> {
-    // Start activity-bar progress tracking from the approved plan's step count.
+    // Capture the approved plan's step count BEFORE the IPC — accepting starts a
+    // fresh session on the sidecar, whose session_reset broadcast nulls
+    // planReview (and clears the transcript + counters) here.
     const nextPlanTotal = planReview ? countPlanSteps(planReview) : 0;
+    // Stash it so the accept-driven session_reset restores the count instead of
+    // zeroing it (session_reset arrives over SSE — a different channel than the
+    // acceptPlanIPC response — so it may land before OR after the await resolves).
+    pendingPlanTotalRef.current = nextPlanTotal;
+    // Accept the plan: the sidecar wipes the planning conversation into a FRESH
+    // session (so the build doesn't carry all the plan-mode research) and bakes
+    // the approved plan into the new system prompt, so the model emits `[DONE:n]`
+    // markers the Plan Steps widget reads.
+    await acceptPlanIPC(planReviewPathRef.current);
+    // Fallback seed for the case session_reset hasn't been processed yet (it
+    // consumes pendingPlanTotalRef, so whichever runs second is a no-op).
     planTotalRef.current = nextPlanTotal;
     planDoneRef.current = new Set();
     setPlanTotal(nextPlanTotal);
     setPlanDone(new Set());
-    // Bake the approved plan into the agent's system prompt FIRST, so it's told
-    // to emit `[DONE:n]` markers as it implements — without this the activity
-    // bar's Plan Steps widget would never advance past 0. Must complete before
-    // the implement prompt runs (the prompt picks up the rebuilt system message).
-    await acceptPlanIPC(planReviewPathRef.current);
     runPlanPrompt(
       "The plan has been approved. Implement it now, following each step in order.",
       "\u2713 Plan accepted. Implementing.",
@@ -2038,79 +2179,111 @@ function App(): React.ReactElement {
           <span className="prompt" style={{ color: theme.primary }}>
             {">"}
           </span>
-          <textarea
-            ref={inputRef}
-            className="input"
-            rows={1}
-            value={input}
-            placeholder={
-              running
-                ? "Agent is working \u2014 queue a follow-up…"
-                : "Type your message, / for commands, @ to add files"
-            }
-            onPaste={(e) => {
-              const files = Array.from(e.clipboardData.files);
-              if (files.length > 0) {
-                e.preventDefault();
-                void addFiles(files);
+          <div className="input-stack">
+            {enhanceAnim && (
+              <EnhanceDissolve
+                oldText={enhanceAnim.oldText}
+                newText={enhanceAnim.newText}
+                onDone={onEnhanceAnimDone}
+              />
+            )}
+            <textarea
+              ref={inputRef}
+              className={`input${enhanceAnim ? " input-anim" : ""}`}
+              rows={1}
+              // Lock the input while the dissolve→decode animation plays: the caret
+              // is invisible, so typing would be silently discarded and Enter would
+              // submit the un-enhanced draft mid-animation.
+              readOnly={enhanceAnim !== null}
+              value={input}
+              placeholder={
+                running
+                  ? "Agent is working \u2014 queue a follow-up…"
+                  : "Type your message, / for commands, @ to add files"
               }
-            }}
-            onChange={(e) => {
-              setInput(e.target.value);
-              setSlashIndex(0);
-              // Typing exits history-recall mode so ↑/↓ start fresh next time.
-              if (historyIndex !== null) setHistoryIndex(null);
-              updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-            }}
-            onClick={(e) => {
-              const el = e.currentTarget;
-              updateMention(el.value, el.selectionStart ?? el.value.length);
-            }}
-            onKeyUp={(e) => {
-              if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  void addFiles(files);
+                }
+              }}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setSlashIndex(0);
+                // Typing exits history-recall mode so ↑/↓ start fresh next time.
+                if (historyIndex !== null) setHistoryIndex(null);
+                // Drop the enhancement the instant the text diverges from it, so
+                // the highlighted preview/bubble never misalign with edited text.
+                if (enhancement && e.target.value !== enhancement.plain) setEnhancement(null);
+                updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+              }}
+              onClick={(e) => {
                 const el = e.currentTarget;
                 updateMention(el.value, el.selectionStart ?? el.value.length);
-              }
-            }}
-            onKeyDown={(e) => {
-              if (mentionOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-                e.preventDefault();
-                const delta = e.key === "ArrowDown" ? 1 : -1;
-                setFileIndex((i) => (i + delta + fileMatches.length) % fileMatches.length);
-              } else if (mentionOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
-                e.preventDefault();
-                const file = fileMatches[clampedFileIndex];
-                if (file) pickMentionFile(file);
-              } else if (mentionOpen && e.key === "Escape") {
-                e.preventDefault();
-                setMention(null);
-              } else if (slashOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-                e.preventDefault();
-                const delta = e.key === "ArrowDown" ? 1 : -1;
-                setSlashIndex((i) => (i + delta + slashMatches.length) % slashMatches.length);
-              } else if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
-                e.preventDefault();
-                const cmd = slashMatches[clampedSlashIndex];
-                if (cmd) pickSlashCommand(cmd);
-              } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-                // Menus are closed here (handled above), so arrows recall sent
-                // prompts shell-style — unless the caret is mid-text in a
-                // multi-line draft, where navigateHistory declines and the
-                // cursor moves normally.
-                if (navigateHistory(e.key === "ArrowUp" ? -1 : 1, e.currentTarget)) {
-                  e.preventDefault();
+              }}
+              onKeyUp={(e) => {
+                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                  const el = e.currentTarget;
+                  updateMention(el.value, el.selectionStart ?? el.value.length);
                 }
-              } else if (e.key === "Enter" && !e.shiftKey) {
-                // Enter sends; Shift+Enter inserts a newline (textarea default).
-                e.preventDefault();
-                submit();
-              } else if (e.key === "Escape") {
-                if (slashOpen) setInput("");
-                else if (running) void cancel();
-              }
-            }}
-            autoFocus
-          />
+              }}
+              onKeyDown={(e) => {
+                // While the dissolve→decode animation plays the input is locked;
+                // swallow keys so Enter can't submit the un-enhanced draft.
+                if (enhanceAnim) {
+                  e.preventDefault();
+                  return;
+                }
+                if (mentionOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault();
+                  const delta = e.key === "ArrowDown" ? 1 : -1;
+                  setFileIndex((i) => (i + delta + fileMatches.length) % fileMatches.length);
+                } else if (mentionOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+                  e.preventDefault();
+                  const file = fileMatches[clampedFileIndex];
+                  if (file) pickMentionFile(file);
+                } else if (mentionOpen && e.key === "Escape") {
+                  e.preventDefault();
+                  setMention(null);
+                } else if (slashOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault();
+                  const delta = e.key === "ArrowDown" ? 1 : -1;
+                  setSlashIndex((i) => (i + delta + slashMatches.length) % slashMatches.length);
+                } else if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+                  e.preventDefault();
+                  const cmd = slashMatches[clampedSlashIndex];
+                  if (cmd) pickSlashCommand(cmd);
+                } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                  // Menus are closed here (handled above), so arrows recall sent
+                  // prompts shell-style — unless the caret is mid-text in a
+                  // multi-line draft, where navigateHistory declines and the
+                  // cursor moves normally.
+                  if (navigateHistory(e.key === "ArrowUp" ? -1 : 1, e.currentTarget)) {
+                    e.preventDefault();
+                  }
+                } else if (e.key === "Enter" && !e.shiftKey) {
+                  // Enter sends; Shift+Enter inserts a newline (textarea default).
+                  e.preventDefault();
+                  submit();
+                } else if (e.key === "Escape") {
+                  if (slashOpen) setInput("");
+                  else if (running) void cancel();
+                }
+              }}
+              autoFocus
+            />
+          </div>
+          {enhanceHintVisible && (
+            <button
+              className={`enhance-pill${enhancing ? " enhancing" : ""}`}
+              title="Enhance prompt — clearer wording + correct terms"
+              disabled={enhancing}
+              onClick={() => void runEnhance()}
+            >
+              {enhancing ? "Enhancing…" : "Enhance?"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -2315,7 +2488,11 @@ const TranscriptRow = memo(function TranscriptRow({
               ))}
             </div>
           )}
-          {item.text}
+          {item.enhancements && item.enhancements.some((s) => s.kind === "term") ? (
+            <EnhancedSegments segments={item.enhancements} />
+          ) : (
+            item.text
+          )}
           {item.files && item.files.length > 0 && (
             <div className="user-files-row">
               {item.files.map((p) => (

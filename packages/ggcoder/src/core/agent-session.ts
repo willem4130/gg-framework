@@ -41,6 +41,8 @@ import { log } from "./logger.js";
 import { setEstimatorModel } from "./compaction/token-estimator.js";
 import { discoverAgents } from "./agents.js";
 import { generateSessionTitle } from "../utils/session-title.js";
+import { enhancePrompt, type EnhanceResult } from "../utils/prompt-enhancer.js";
+import { detectProjectStack } from "./language-detector.js";
 import {
   type IdealReviewStats,
   evaluateIdealReview,
@@ -1157,6 +1159,36 @@ export class AgentSession {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Rewrite a draft prompt into a tighter, terminology-correct version using
+   * the ACTIVE provider/model. A stateless one-off LLM call (no agent loop, no
+   * tools, no session mutation) — safe to run even mid-run. Returns the plain
+   * enhanced text plus typed segments marking each corrected term. Errors throw
+   * so the caller can surface them (unlike best-effort title generation).
+   */
+  async enhancePrompt(text: string): Promise<EnhanceResult> {
+    if (!text.trim()) return { enhanced: text, segments: [{ kind: "text", text }] };
+    const creds = await this.authStorage.resolveCredentials(this.provider);
+    // Cheap, best-effort stack detection from the project root so terminology is
+    // idiomatic to the user's stack. Never throws (returns "" on any failure).
+    let stack = "";
+    try {
+      stack = detectProjectStack(this.cwd);
+    } catch {
+      /* detection is best-effort — fall back to no stack hint */
+    }
+    return enhancePrompt({
+      provider: this.provider,
+      model: this.model,
+      prompt: text,
+      stack,
+      apiKey: creds.accessToken,
+      baseUrl: this.baseUrl ?? creds.baseUrl,
+      accountId: creds.accountId,
+      signal: this.opts.signal,
+    });
   }
 
   /** Current reasoning/thinking level, or undefined when thinking is off. */

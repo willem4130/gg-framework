@@ -321,6 +321,45 @@ const SHARP_FORMAT_TO_MEDIA: Record<string, string> = {
   webp: "image/webp",
 };
 
+/** Media types the Anthropic + OpenAI vision APIs actually accept as image
+ *  blocks. Anything else (.ico, .bmp, .svg, .tiff, …) must NOT be sent as an
+ *  image or the provider rejects the whole request. */
+const VISION_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * Validate that a base64-decoded buffer is a REAL, fully-decodable image in a
+ * format the vision APIs accept. Returns the corrected media type on success,
+ * or `null` when the data is corrupt or an unsupported format.
+ *
+ * Why this exists: an image content block with corrupt or unsupported bytes
+ * (e.g. a malformed `.ico`, or a `.png` with a bad IDAT/CRC) makes the provider
+ * reject the ENTIRE turn with "The image data you provided does not represent a
+ * valid image" — the agent never gets to respond. Callers use the `null` return
+ * to downgrade such an attachment to a plain file note (saved to disk, inspected
+ * with tools) so the request still succeeds and the model can diagnose the file.
+ *
+ * The header sniff alone is insufficient (a corrupt PNG still has PNG magic), so
+ * this forces a full pixel decode — resized small to bound memory — which makes
+ * libvips surface mid-stream corruption here instead of at the provider.
+ */
+export async function validateVisionImage(buffer: Buffer): Promise<string | null> {
+  try {
+    const sharp = await loadSharp();
+    const meta = await sharp(buffer).metadata();
+    const mediaType = meta.format ? SHARP_FORMAT_TO_MEDIA[meta.format] : undefined;
+    if (!mediaType || !VISION_MEDIA_TYPES.has(mediaType)) return null;
+    // Force a full decode (failOn: "error") so a corrupt payload the header check
+    // misses is caught here. Resize small so a huge image doesn't balloon memory.
+    await sharp(buffer, { failOn: "error" })
+      .resize(256, 256, { fit: "inside", withoutEnlargement: true })
+      .raw()
+      .toBuffer();
+    return mediaType;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Downscale an image buffer so it fits within both MAX_IMAGE_DIMENSION per side
  * (Anthropic's hard pixel cap for many-image requests) and MAX_IMAGE_BYTES.
@@ -489,12 +528,28 @@ export async function readImageFile(filePath: string): Promise<ImageAttachment> 
   try {
     const mediaType = MEDIA_TYPES[ext] ?? "image/png";
     const rawBuffer = await fs.readFile(filePath);
-    const { buffer, mediaType: finalMediaType } = await shrinkToFit(rawBuffer, mediaType);
+    const { buffer } = await shrinkToFit(rawBuffer, mediaType);
+    // Final guard: confirm the (possibly shrunk) buffer is a real, fully-decodable
+    // image in a vision-supported format. shrinkToFit short-circuits without a
+    // full decode when the image is already within size limits, so a corrupt or
+    // unsupported file (e.g. a malformed .ico) could slip through and make the
+    // provider reject the whole turn. On failure, degrade to a text placeholder
+    // the model can still read as <file> context — never break the turn.
+    const validatedType = await validateVisionImage(buffer);
+    if (!validatedType) {
+      return {
+        kind: "text",
+        fileName,
+        filePath,
+        mediaType: "text/plain",
+        data: `[image ${fileName} is not a valid/supported image (corrupt or unsupported format); saved at ${filePath} — inspect it with your tools if needed]`,
+      };
+    }
     return {
       kind: "image",
       fileName,
       filePath,
-      mediaType: finalMediaType,
+      mediaType: validatedType,
       data: buffer.toString("base64"),
     };
   } catch (err) {
