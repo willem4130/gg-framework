@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIdealReviewMessage, evaluateIdealReview } from "./ideal-review.js";
+import { buildIdealReviewMessage, detectTestDrift, evaluateIdealReview } from "./ideal-review.js";
 
 describe("evaluateIdealReview", () => {
   it("skips tiny text-only changes", () => {
@@ -64,5 +64,59 @@ describe("buildIdealReviewMessage", () => {
 
     expect(message.content).toContain("do NOT run builds, typechecks, linters, or test suites now");
     expect(message.content).toContain("/commit");
+  });
+
+  it("calls out drifted files and their stale tests", () => {
+    const message = buildIdealReviewMessage([], ["src/foo.ts"]);
+
+    expect(message.content).toContain("src/foo.ts");
+    expect(message.content).toContain("matching test file was not updated");
+  });
+});
+
+describe("detectTestDrift", () => {
+  const cwd = "/proj";
+  const exists = (files: string[]) => {
+    const set = new Set(files);
+    return (p: string) => set.has(p);
+  };
+
+  it("flags a changed source whose sibling test exists but was not touched", () => {
+    const drift = detectTestDrift(["src/foo.ts"], cwd, exists(["/proj/src/foo.test.ts"]));
+    expect(drift).toEqual(["src/foo.ts"]);
+  });
+
+  it("stays silent when the sibling test was updated in the same run", () => {
+    const drift = detectTestDrift(
+      ["src/foo.ts", "src/foo.test.ts"],
+      cwd,
+      exists(["/proj/src/foo.test.ts"]),
+    );
+    expect(drift).toEqual([]);
+  });
+
+  it("stays silent when no sibling test exists on disk", () => {
+    const drift = detectTestDrift(["src/foo.ts"], cwd, exists([]));
+    expect(drift).toEqual([]);
+  });
+
+  it("ignores test files that are themselves the change", () => {
+    const drift = detectTestDrift(["src/foo.test.ts"], cwd, exists(["/proj/src/foo.test.ts"]));
+    expect(drift).toEqual([]);
+  });
+
+  it("ignores non-code files", () => {
+    const drift = detectTestDrift(["README.md"], cwd, exists(["/proj/README.test.md"]));
+    expect(drift).toEqual([]);
+  });
+
+  it("matches .spec siblings and resolves absolute paths", () => {
+    const drift = detectTestDrift(["/proj/src/bar.tsx"], cwd, exists(["/proj/src/bar.spec.tsx"]));
+    expect(drift).toEqual(["/proj/src/bar.tsx"]);
+  });
+
+  it("matches a .test.ts sibling for a .tsx source (test drops the x)", () => {
+    const drift = detectTestDrift(["src/Button.tsx"], cwd, exists(["/proj/src/Button.test.ts"]));
+    expect(drift).toEqual(["src/Button.tsx"]);
   });
 });

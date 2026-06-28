@@ -120,7 +120,7 @@ export interface AgentLoopOptions {
     messages: Message[],
     options?: { force?: boolean },
   ) => Message[] | Promise<Message[]>;
-  getIdealReviewMessage?: (stats: IdealReviewStats) => Message | null;
+  getIdealReviewMessage?: (stats: IdealReviewStats, touchedFiles: string[]) => Message | null;
   /** Polled mid-loop when the agent appears stuck (repeated failures / calls /
    *  edits, or degenerate output). Return a user message to break the loop. */
   getLoopBreakMessage?: (stats: LoopBreakStats) => Message | null;
@@ -663,9 +663,10 @@ export function useAgentLoop(
               const followUp = (await getFollowUpMessages?.()) ?? null;
               if (followUp && followUp.length > 0) return followUp;
               if (idealReviewInjectedRef.current || !options.getIdealReviewMessage) return null;
-              const idealReviewMessage = options.getIdealReviewMessage({
-                ...idealReviewStatsRef.current,
-              });
+              const idealReviewMessage = options.getIdealReviewMessage(
+                { ...idealReviewStatsRef.current },
+                [...fileEditCountsRef.current.keys()],
+              );
               if (!idealReviewMessage) return null;
               idealReviewInjectedRef.current = true;
               return [idealReviewMessage];

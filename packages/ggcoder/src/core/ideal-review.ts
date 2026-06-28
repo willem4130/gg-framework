@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { Message } from "@kenkaiiii/gg-ai";
 
 export interface IdealReviewStats {
@@ -69,12 +71,66 @@ export function evaluateIdealReview(stats: IdealReviewStats): IdealReviewDecisio
   return { shouldReview: score >= 4, score, reasons };
 }
 
-export function buildIdealReviewMessage(reasons: readonly string[]): Message {
+export function buildIdealReviewMessage(
+  reasons: readonly string[],
+  driftedFiles: readonly string[] = [],
+): Message {
   const reasonText = reasons.length > 0 ? ` Triggered because: ${reasons.join(", ")}.` : "";
+  const driftText =
+    driftedFiles.length > 0
+      ? ` Also: you changed ${driftedFiles.join(", ")} but the matching test file was not updated. ` +
+        `Update the test to match the new behavior, or state plainly why the existing test is still valid. ` +
+        `Edit the test only \u2014 do not run the suite now.`
+      : "";
   return {
     role: "user",
-    content: `${IDEAL_REVIEW_PROMPT}${reasonText}`,
+    content: `${IDEAL_REVIEW_PROMPT}${reasonText}${driftText}`,
   };
+}
+
+// A test file: foo.test.ts, foo.spec.tsx, foo.test.mjs, etc.
+const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+// A source code file we can pair with a sibling test.
+const CODE_EXT_RE = /\.([cm]?[jt]sx?)$/;
+
+/**
+ * Test-drift detector \u2014 the one stranding signal a typechecker is blind to.
+ * Given the set of files the run mutated, return the source files whose sibling
+ * test exists on disk but was NOT touched this run (a green-but-stale test).
+ *
+ * Pure structural check: no sibling test on disk \u2192 no signal, so it stays
+ * silent on projects (or files) without co-located tests. `fileExists` is
+ * injectable for tests; paths are resolved against `cwd` so relative tool paths
+ * and absolute ones compare consistently.
+ */
+export function detectTestDrift(
+  touchedFiles: Iterable<string>,
+  cwd: string,
+  fileExists: (p: string) => boolean = existsSync,
+): string[] {
+  const resolved = new Map<string, string>(); // absolute -> original (as the model wrote it)
+  for (const f of touchedFiles) resolved.set(path.resolve(cwd, f), f);
+  const touchedSet = new Set(resolved.keys());
+
+  const drifted: string[] = [];
+  for (const [abs, original] of resolved) {
+    const base = path.basename(abs);
+    if (TEST_FILE_RE.test(base)) continue; // the file itself is a test
+    const match = base.match(CODE_EXT_RE);
+    if (!match) continue; // not a code file
+    const ext = match[1];
+    const dir = path.dirname(abs);
+    const stem = base.slice(0, base.length - ext.length - 1);
+    // Tests commonly drop the JSX `x` (Button.tsx -> Button.test.ts), so try the
+    // source ext and its non-JSX variant against both .test and .spec.
+    const testExts = ext.endsWith("x") ? [ext, ext.slice(0, -1)] : [ext];
+    const candidates = testExts
+      .flatMap((e) => [`${stem}.test.${e}`, `${stem}.spec.${e}`])
+      .map((c) => path.join(dir, c));
+    if (candidates.some((c) => touchedSet.has(c))) continue; // sibling test was updated
+    if (candidates.some((c) => fileExists(c))) drifted.push(original);
+  }
+  return drifted;
 }
 
 export function shouldCountAsRiskyTool(toolName: string): boolean {

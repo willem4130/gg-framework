@@ -47,6 +47,7 @@ import {
   type IdealReviewStats,
   evaluateIdealReview,
   buildIdealReviewMessage,
+  detectTestDrift,
 } from "./ideal-review.js";
 import {
   evaluateLoopBreak,
@@ -701,10 +702,13 @@ export class AgentSession {
     if (!this.settingsManager.get("idealReviewEnabled")) return null;
     if (this.idealReviewInjected) return null;
     const decision = evaluateIdealReview(this.hookStats);
-    if (!decision.shouldReview) return null;
+    // Test drift fires the review even on a small change the score would skip:
+    // a green-but-stale test is exactly what the volume gate sleeps through.
+    const driftedFiles = detectTestDrift(this.hookFileEditCounts.keys(), this.cwd).slice(0, 5);
+    if (!decision.shouldReview && driftedFiles.length === 0) return null;
     this.idealReviewInjected = true;
     this.eventBus.emit("hook", { kind: "ideal" });
-    return [buildIdealReviewMessage(decision.reasons)];
+    return [buildIdealReviewMessage(decision.reasons, driftedFiles)];
   }
 
   /** Auto-compact if needed, run agent loop with auth retry, and persist messages. */

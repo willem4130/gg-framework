@@ -93,7 +93,11 @@ import type { TerminalHistoryPrinter } from "./terminal-history.js";
 import { buildUserContentWithAttachments } from "./prompt-routing.js";
 import { submitPromptCommand } from "./submit-prompt-command.js";
 import { handleUiSlashCommand } from "./submit-slash-commands.js";
-import { buildIdealReviewMessage, evaluateIdealReview } from "../core/ideal-review.js";
+import {
+  buildIdealReviewMessage,
+  evaluateIdealReview,
+  detectTestDrift,
+} from "../core/ideal-review.js";
 import { buildLoopBreakMessage, evaluateLoopBreak } from "../core/loop-breaker.js";
 import { buildRegroundingMessage } from "../core/regrounding.js";
 import { getNextThinkingLevel, isThinkingLevelSupported } from "./thinking-level.js";
@@ -916,19 +920,23 @@ export function App(props: AppProps) {
       projectId: activeProjectId,
       resolveCredentials,
       transformContext,
-      getIdealReviewMessage: (stats) => {
+      getIdealReviewMessage: (stats, touchedFiles) => {
         if (!idealReviewEnabledRef.current) return null;
         const decision = evaluateIdealReview(stats);
-        if (!decision.shouldReview) return null;
+        // Test drift fires the review even when the volume score is too low to
+        // trigger on its own \u2014 a stale sibling test is invisible to typecheck.
+        const driftedFiles = detectTestDrift(touchedFiles, process.cwd()).slice(0, 5);
+        if (!decision.shouldReview && driftedFiles.length === 0) return null;
         log("INFO", "ideal", "Injecting ideal review before final response", {
           score: String(decision.score),
           reasons: decision.reasons.join(", "),
+          testDrift: driftedFiles.join(", "),
         });
         setLiveItems((prev) => [
           ...prev,
           { kind: "ideal_hook", text: IDEAL_HOOK_NOTICE_TEXT, tone: "review", id: getId() },
         ]);
-        return buildIdealReviewMessage(decision.reasons);
+        return buildIdealReviewMessage(decision.reasons, driftedFiles);
       },
       getLoopBreakMessage: (stats) => {
         if (!idealReviewEnabledRef.current) return null;
