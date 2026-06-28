@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.0.0
+
+### Major Changes
+
+- Remove the `ggcoder pixel` error-tracking command and all gg-pixel SDK packages (breaking CLI change), and add test-drift detection to the ideal-review hook so editing a source file whose sibling test was left untouched now prompts the agent to update the stale test.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.0.0
+- @kenkaiiii/gg-agent@5.0.0
+- @kenkaiiii/gg-core@5.0.0
+
 ## 4.15.0
 
 ### Minor Changes
