@@ -1,4 +1,5 @@
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
+import { XIAOMI_CREDITS_KEY } from "./auth-storage.js";
 
 export interface ModelInfo {
   id: string;
@@ -41,6 +42,22 @@ export interface ModelInfo {
    *   - DeepSeek V4: `xhigh` (DeepSeek maps `xhigh` → its internal `max`)
    */
   maxThinkingLevel: ThinkingLevel;
+  /**
+   * Ordered preference of auth-storage keys this model resolves credentials
+   * from, for providers that split auth across multiple distinct
+   * endpoints/keys (currently only Xiaomi: the Token Plan endpoint vs. the
+   * API Credits endpoint). The first key with stored credentials wins, so a
+   * model can both prefer one endpoint AND fall back to another the user has
+   * configured instead:
+   *   - `mimo-v2.5-pro` / `mimo-v2.5`: `["xiaomi", XIAOMI_CREDITS_KEY]` —
+   *     prefer the Token Plan, fall back to API Credits (API Credits serves
+   *     every MiMo model, so a Credits-only user still reaches these).
+   *   - `mimo-v2.5-pro-ultraspeed`: `[XIAOMI_CREDITS_KEY]` only — not served
+   *     over the Token Plan endpoint, so there's no fallback to it.
+   * Falls back to `[provider]` — the normal single-credential case — when
+   * unset. Read via `getAuthStorageKeys()` / `getAuthStorageKey()`.
+   */
+  authStorageKeys?: string[];
 }
 
 // Provider display order — mirrors `PROVIDERS` in ui/login.tsx so the
@@ -315,6 +332,24 @@ export const MODELS: ModelInfo[] = [
     supportsVideo: false,
     costTier: "medium",
     maxThinkingLevel: "high",
+    authStorageKeys: ["xiaomi", XIAOMI_CREDITS_KEY],
+  },
+  // UltraSpeed: lower-latency sibling of the Pro coding flagship, same
+  // text-only capability surface, premium-priced for the throughput gain.
+  // API-only — not served over the Token Plan endpoint, so credentials
+  // resolve from the distinct API Credits key only (see authStorageKeys doc).
+  {
+    id: "mimo-v2.5-pro-ultraspeed",
+    name: "MiMo-V2.5-Pro-UltraSpeed",
+    provider: "xiaomi",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    supportsThinking: true,
+    supportsImages: false,
+    supportsVideo: false,
+    costTier: "high",
+    maxThinkingLevel: "high",
+    authStorageKeys: [XIAOMI_CREDITS_KEY],
   },
   // Omni series: native full-modal understanding (image + audio + video).
   // Video/image ride the OpenAI-compatible transport as base64 data URLs
@@ -331,6 +366,7 @@ export const MODELS: ModelInfo[] = [
     maxVideoBytes: 36 * 1024 * 1024,
     costTier: "medium",
     maxThinkingLevel: "high",
+    authStorageKeys: ["xiaomi", XIAOMI_CREDITS_KEY],
   },
   // ── DeepSeek ───────────────────────────────────────────
   {
@@ -379,6 +415,24 @@ export function getModel(id: string): ModelInfo | undefined {
 
 export function getModelsForProvider(provider: Provider): ModelInfo[] {
   return MODELS.filter((m) => m.provider === provider);
+}
+
+/**
+ * Ordered auth-storage keys to try resolving credentials from for
+ * `(provider, model)`, first match wins. Almost every model just uses its
+ * provider id (one credential per provider). Models with `authStorageKeys`
+ * set (currently only Xiaomi) can prefer one endpoint and fall back to
+ * another — e.g. `mimo-v2.5-pro` prefers the Token Plan but falls back to API
+ * Credits, while the API-only `mimo-v2.5-pro-ultraspeed` has no fallback.
+ */
+export function getAuthStorageKeys(provider: Provider, modelId: string): string[] {
+  const model = MODELS.find((m) => m.id === modelId && m.provider === provider);
+  return model?.authStorageKeys ?? [provider];
+}
+
+/** The preferred (first) auth-storage key for `(provider, model)` — see `getAuthStorageKeys()`. */
+export function getAuthStorageKey(provider: Provider, modelId: string): string {
+  return getAuthStorageKeys(provider, modelId)[0]!;
 }
 
 /** Default video payload cap (bytes) when a video model doesn't declare one. */

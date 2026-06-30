@@ -12,7 +12,11 @@ import {
   getCompactionReserveTokens,
 } from "../../core/compaction/compactor.js";
 import { estimateConversationTokens } from "../../core/compaction/token-estimator.js";
-import { getContextWindow, type ContextWindowOptions } from "../../core/model-registry.js";
+import {
+  getAuthStorageKeys,
+  getContextWindow,
+  type ContextWindowOptions,
+} from "../../core/model-registry.js";
 import { log } from "../../core/logger.js";
 import type { AuthStorage } from "../../core/auth-storage.js";
 import type { SettingsManager } from "../../core/settings-manager.js";
@@ -98,7 +102,9 @@ export function useContextCompaction({
         let compactProjectId = activeProjectId;
         let compactBaseUrl = activeBaseUrl;
         if (authStorage) {
-          const creds = await authStorage.resolveCredentials(currentProvider);
+          const creds = await authStorage.resolveCredentials(currentProvider, {
+            storageKeys: getAuthStorageKeys(currentProvider, currentModel),
+          });
           compactApiKey = creds.accessToken;
           compactAccountId = creds.accountId;
           compactProjectId = creds.projectId;

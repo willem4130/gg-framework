@@ -9,7 +9,7 @@ import { loginAnthropic } from "../core/oauth/anthropic.js";
 import { loginOpenAI } from "../core/oauth/openai.js";
 import { loginGemini } from "../core/oauth/gemini.js";
 import { loginKimi } from "../core/oauth/kimi.js";
-import { MOONSHOT_OAUTH_KEY } from "@kenkaiiii/gg-core";
+import { MOONSHOT_OAUTH_KEY, XIAOMI_CREDITS_KEY } from "@kenkaiiii/gg-core";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "../core/oauth/types.js";
 import {
   CLI_VERSION,
@@ -78,6 +78,21 @@ export async function runLogin(): Promise<void> {
       kimiViaOAuth = choice === "" || choice === "1";
     }
 
+    // Xiaomi splits API-key auth across two distinct endpoints: the Token Plan
+    // (default, current behavior) and API Credits (required for models like
+    // mimo-v2.5-pro-ultraspeed that aren't served over the Token Plan).
+    let xiaomiCredits = false;
+    if (provider === "xiaomi") {
+      const choice = (
+        await rl.question(
+          chalk.hex("#60a5fa")(
+            "Use (1) Token Plan [default] or (2) API Credits (required for UltraSpeed)? ",
+          ),
+        )
+      ).trim();
+      xiaomiCredits = choice === "2";
+    }
+
     let creds;
     let storageKey: string = provider;
     if (provider === "moonshot" && kimiViaOAuth) {
@@ -115,8 +130,17 @@ export async function runLogin(): Promise<void> {
         accessToken: apiKey.trim(),
         refreshToken: "",
         expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 * 100, // ~100 years
-        ...(provider === "xiaomi" ? { baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" } : {}),
+        ...(provider === "xiaomi"
+          ? {
+              baseUrl: xiaomiCredits
+                ? "https://api.xiaomimimo.com/v1"
+                : "https://token-plan-sgp.xiaomimimo.com/v1",
+            }
+          : {}),
       } satisfies OAuthCredentials;
+      if (provider === "xiaomi" && xiaomiCredits) {
+        storageKey = XIAOMI_CREDITS_KEY;
+      }
     } else {
       creds =
         provider === "anthropic"

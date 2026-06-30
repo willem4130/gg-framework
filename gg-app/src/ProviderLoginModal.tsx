@@ -13,6 +13,10 @@ import {
   type SidecarEvent,
 } from "./agent";
 
+function defaultVariantKey(provider: AuthProvider): string | undefined {
+  return provider.apiKeyVariants?.[0]?.key;
+}
+
 interface Props {
   provider: AuthProvider;
   onClose: () => void;
@@ -30,6 +34,9 @@ export function ProviderLoginModal({ provider, onClose, onChanged }: Props): Rea
   const single = provider.methods.length === 1 ? provider.methods[0] : null;
   const [method, setMethod] = useState<AuthMethod | null>(single);
   const [apiKey, setApiKey] = useState("");
+  const [variantKey, setVariantKey] = useState<string | undefined>(() =>
+    defaultVariantKey(provider),
+  );
   const [code, setCode] = useState("");
   const [needCode, setNeedCode] = useState(false);
   const [codePrompt, setCodePrompt] = useState("");
@@ -79,7 +86,7 @@ export function ProviderLoginModal({ provider, onClose, onChanged }: Props): Rea
     setBusy(true);
     setError(null);
     try {
-      await authApiKey(provider.value, apiKey.trim());
+      await authApiKey(provider.value, apiKey.trim(), variantKey);
       onChanged();
       onClose();
     } catch (e) {
@@ -146,6 +153,24 @@ export function ProviderLoginModal({ provider, onClose, onChanged }: Props): Rea
       {/* API key entry. */}
       {method === "apikey" && (
         <>
+          {provider.apiKeyVariants && provider.apiKeyVariants.length > 1 && (
+            <>
+              <div className="modal-label" style={{ color: theme.textMuted }}>
+                Endpoint
+              </div>
+              <div className="login-method-row">
+                {provider.apiKeyVariants.map((v) => (
+                  <button
+                    key={v.key}
+                    className={"modal-btn" + (variantKey === v.key ? " primary" : "")}
+                    onClick={() => setVariantKey(v.key)}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <div className="modal-label" style={{ color: theme.textMuted }}>
             {apiKeyLabel} API key
           </div>

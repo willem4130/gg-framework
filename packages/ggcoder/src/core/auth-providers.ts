@@ -3,7 +3,25 @@
 // so the desktop app and the terminal stay in lockstep. The app fetches this
 // (plus live connection status) from the sidecar's /auth/status endpoint.
 
+import { XIAOMI_CREDITS_KEY } from "@kenkaiiii/gg-core";
+
 export type AuthMethod = "oauth" | "apikey";
+
+/**
+ * One API-key option for a provider that splits auth across multiple distinct
+ * endpoints/credentials (currently only Xiaomi: Token Plan vs. API Credits).
+ * Each variant stores under its own auth.json key so a user can hold both at
+ * once — the model registry picks which one a given model resolves via
+ * `getAuthStorageKeys()`.
+ */
+export interface ApiKeyVariant {
+  /** Storage key in auth.json (distinct from `value` when multiple variants exist). */
+  key: string;
+  /** Display label, e.g. "Token Plan" or "API Credits". */
+  label: string;
+  /** Base URL stored alongside this variant's credential. */
+  baseUrl?: string;
+}
 
 export interface AuthProviderMeta {
   /** Stable provider id (matches the gg-ai Provider union, plus storage keys). */
@@ -18,6 +36,12 @@ export interface AuthProviderMeta {
   apiKeyLabel?: string;
   /** Fixed base URL stored alongside an API key (e.g. Xiaomi's token plan). */
   apiKeyBaseUrl?: string;
+  /**
+   * When a provider's API-key auth splits across multiple endpoints, the
+   * choices to present (in order). The first variant is the default. Absent
+   * for every provider with a single API-key credential.
+   */
+  apiKeyVariants?: ApiKeyVariant[];
 }
 
 export const AUTH_PROVIDERS: AuthProviderMeta[] = [
@@ -63,10 +87,22 @@ export const AUTH_PROVIDERS: AuthProviderMeta[] = [
   {
     value: "xiaomi",
     label: "Xiaomi (MiMo)",
-    description: "MiMo-V2-Pro",
+    description: "MiMo-V2.5-Pro, MiMo-V2.5-Pro-UltraSpeed, MiMo-V2.5 · Token Plan or API Credits",
     methods: ["apikey"],
     apiKeyLabel: "Xiaomi MiMo",
     apiKeyBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+    apiKeyVariants: [
+      {
+        key: "xiaomi",
+        label: "Token Plan",
+        baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+      },
+      {
+        key: XIAOMI_CREDITS_KEY,
+        label: "API Credits (required for UltraSpeed)",
+        baseUrl: "https://api.xiaomimimo.com/v1",
+      },
+    ],
   },
   {
     value: "deepseek",

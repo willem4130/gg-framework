@@ -27,7 +27,7 @@ import { buildKenDigest } from "./core/ken-context.js";
 import { collectProjectContext } from "./system-prompt.js";
 import type { KenTurnPayload } from "./core/session-manager.js";
 import { AuthStorage } from "./core/auth-storage.js";
-import { MOONSHOT_OAUTH_KEY } from "@kenkaiiii/gg-core";
+import { MOONSHOT_OAUTH_KEY, XIAOMI_CREDITS_KEY } from "@kenkaiiii/gg-core";
 import { loginAnthropic } from "./core/oauth/anthropic.js";
 import { loginOpenAI } from "./core/oauth/openai.js";
 import { loginGemini } from "./core/oauth/gemini.js";
@@ -1952,10 +1952,12 @@ async function createSession(
       void readBody(req).then(async (raw) => {
         let provider = "";
         let key: string;
+        let variant: string | undefined;
         try {
-          const body = JSON.parse(raw) as { provider?: string; key?: string };
+          const body = JSON.parse(raw) as { provider?: string; key?: string; variant?: string };
           provider = body.provider ?? "";
           key = (body.key ?? "").trim();
+          variant = body.variant;
         } catch {
           json(res, 400, { error: "invalid JSON body" });
           return;
@@ -1969,13 +1971,21 @@ async function createSession(
           json(res, 400, { error: "API key is required" });
           return;
         }
+        // Providers with multiple API-key variants (currently only Xiaomi: Token
+        // Plan vs. API Credits) store under the chosen variant's key/baseUrl,
+        // defaulting to the first variant. Single-variant providers fall back to
+        // the legacy provider-id storage key + flat apiKeyBaseUrl.
+        const chosenVariant =
+          meta.apiKeyVariants?.find((v) => v.key === variant) ?? meta.apiKeyVariants?.[0];
+        const storageKey = chosenVariant?.key ?? provider;
+        const baseUrl = chosenVariant?.baseUrl ?? meta.apiKeyBaseUrl;
         const creds: OAuthCredentials = {
           accessToken: key,
           refreshToken: "",
           expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 * 100, // ~100y
-          ...(meta.apiKeyBaseUrl ? { baseUrl: meta.apiKeyBaseUrl } : {}),
+          ...(baseUrl ? { baseUrl } : {}),
         };
-        await auth.setCredentials(provider, creds);
+        await auth.setCredentials(storageKey, creds);
         broadcast("auth_done", { provider });
         json(res, 200, { ok: true });
       });
@@ -2065,6 +2075,9 @@ async function createSession(
         // Moonshot's OAuth credential lives under a distinct key — clear both so
         // "disconnect" fully removes Kimi OAuth and the API key.
         if (provider === "moonshot") await auth.clearCredentials(MOONSHOT_OAUTH_KEY);
+        // Xiaomi's API Credits credential lives under a distinct key — clear it
+        // too so "disconnect" fully removes both the Token Plan and Credits keys.
+        if (provider === "xiaomi") await auth.clearCredentials(XIAOMI_CREDITS_KEY);
         broadcast("auth_done", { provider });
         json(res, 200, { ok: true });
       });

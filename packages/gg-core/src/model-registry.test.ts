@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { XIAOMI_CREDITS_KEY } from "./auth-storage.js";
 import {
   MODELS,
+  getAuthStorageKey,
+  getAuthStorageKeys,
   getContextWindow,
   getDefaultModel,
   getModelsForProvider,
@@ -106,6 +109,23 @@ describe("model registry context windows", () => {
     });
     expect(getModelsForProvider("minimax").map((model) => model.id)).toEqual(["MiniMax-M3"]);
     expect(getContextWindow("MiniMax-M3", { provider: "minimax" })).toBe(1_000_000);
+  });
+
+  it("every other provider defaults to a single-entry [provider] auth-storage key", () => {
+    expect(getAuthStorageKeys("anthropic", "claude-sonnet-5")).toEqual(["anthropic"]);
+    expect(getAuthStorageKey("anthropic", "claude-sonnet-5")).toBe("anthropic");
+  });
+
+  it("mimo-v2.5-pro / mimo-v2.5 prefer the Token Plan key but fall back to API Credits", () => {
+    expect(getAuthStorageKeys("xiaomi", "mimo-v2.5-pro")).toEqual(["xiaomi", XIAOMI_CREDITS_KEY]);
+    expect(getAuthStorageKeys("xiaomi", "mimo-v2.5")).toEqual(["xiaomi", XIAOMI_CREDITS_KEY]);
+    // getAuthStorageKey() is the FIRST preference, not the only option.
+    expect(getAuthStorageKey("xiaomi", "mimo-v2.5-pro")).toBe("xiaomi");
+  });
+
+  it("mimo-v2.5-pro-ultraspeed is API-Credits only, with no Token Plan fallback", () => {
+    expect(getAuthStorageKeys("xiaomi", "mimo-v2.5-pro-ultraspeed")).toEqual([XIAOMI_CREDITS_KEY]);
+    expect(getAuthStorageKey("xiaomi", "mimo-v2.5-pro-ultraspeed")).toBe(XIAOMI_CREDITS_KEY);
   });
 
   it("registers a Code Assist-supported Gemini default", () => {

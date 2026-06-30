@@ -32,7 +32,7 @@ import {
 import { ExtensionLoader } from "./extensions/loader.js";
 import type { ExtensionContext } from "./extensions/types.js";
 import { shouldCompact, compact } from "./compaction/compactor.js";
-import { getContextWindow, getModel, MODELS } from "./model-registry.js";
+import { getAuthStorageKeys, getContextWindow, getModel, MODELS } from "./model-registry.js";
 import { discoverSkills, type Skill } from "./skills.js";
 import { ensureAppDirs } from "../config.js";
 import { buildSystemPrompt } from "../system-prompt.js";
@@ -810,7 +810,9 @@ export class AgentSession {
     // Resolve OAuth credentials and run agent loop.
     // On 401, force-refresh the token and retry once — the provider may have
     // revoked the token server-side before the stored expiry (e.g. after a restart).
-    let creds = await this.authStorage.resolveCredentials(this.provider);
+    let creds = await this.authStorage.resolveCredentials(this.provider, {
+      storageKeys: this.currentAuthStorageKeys(),
+    });
 
     // Auto-compact if needed. This must happen after credential resolution so
     // OpenAI OAuth/Codex sessions use the Codex product context window instead
@@ -896,12 +898,24 @@ export class AgentSession {
         // (active for `moonshot` when present) is refreshable, so it falls
         // through to the force-refresh path below.
         if (await this.authStorage.isStaticApiKey(this.provider)) {
-          log("WARN", "auth", `Got 401 for ${this.provider} — API key is invalid or revoked`);
-          await this.authStorage.clearCredentials(this.provider);
+          // Clear whichever key actually resolved (the request may have used
+          // a fallback key, not the model's first preference).
+          const badKey =
+            (await this.authStorage.pickStorageKey(this.currentAuthStorageKeys())) ??
+            this.currentAuthStorageKeys()[0]!;
+          log(
+            "WARN",
+            "auth",
+            `Got 401 for ${this.provider} (${badKey}) — API key is invalid or revoked`,
+          );
+          await this.authStorage.clearCredentials(badKey);
           throw err;
         }
         log("INFO", "auth", "Got 401, force-refreshing token and retrying");
-        creds = await this.authStorage.resolveCredentials(this.provider, { forceRefresh: true });
+        creds = await this.authStorage.resolveCredentials(this.provider, {
+          forceRefresh: true,
+          storageKeys: this.currentAuthStorageKeys(),
+        });
         await runAgentLoop(creds.accessToken, creds.accountId, creds.projectId);
       } else {
         throw err;
@@ -1001,7 +1015,11 @@ export class AgentSession {
     projectId?: string;
     baseUrl?: string;
   }): Promise<void> {
-    const creds = existingCredentials ?? (await this.authStorage.resolveCredentials(this.provider));
+    const creds =
+      existingCredentials ??
+      (await this.authStorage.resolveCredentials(this.provider, {
+        storageKeys: this.currentAuthStorageKeys(),
+      }));
     const contextWindow = getContextWindow(this.model, {
       provider: this.provider,
       accountId: creds.accountId,
@@ -1285,7 +1303,9 @@ export class AgentSession {
     const userText = userMsg ? extractText(userMsg.content) : "";
     if (!userText.trim()) return null;
     try {
-      const creds = await this.authStorage.resolveCredentials(this.provider);
+      const creds = await this.authStorage.resolveCredentials(this.provider, {
+        storageKeys: this.currentAuthStorageKeys(),
+      });
       const title = await generateSessionTitle({
         provider: this.provider,
         userMessage: userText,
@@ -1309,7 +1329,9 @@ export class AgentSession {
    */
   async enhancePrompt(text: string): Promise<EnhanceResult> {
     if (!text.trim()) return { enhanced: text, segments: [{ kind: "text", text }] };
-    const creds = await this.authStorage.resolveCredentials(this.provider);
+    const creds = await this.authStorage.resolveCredentials(this.provider, {
+      storageKeys: this.currentAuthStorageKeys(),
+    });
     // Cheap, best-effort stack detection from the project root so terminology is
     // idiomatic to the user's stack. Never throws (returns "" on any failure).
     let stack = "";
@@ -1349,6 +1371,17 @@ export class AgentSession {
   /** True when speedProfile is "optimized" (1-h cache TTL + pre-warm). */
   private isSpeedOptimized(): boolean {
     return this.settingsManager?.get("speedProfile") === "optimized";
+  }
+
+  /**
+   * Ordered auth-storage keys the current (provider, model) pair tries, first
+   * match wins. Almost always just the provider id; Xiaomi models can prefer
+   * one endpoint and fall back to another the user configured instead (e.g.
+   * `mimo-v2.5-pro` prefers the Token Plan, falls back to API Credits; the
+   * API-only `mimo-v2.5-pro-ultraspeed` has no fallback).
+   */
+  private currentAuthStorageKeys(): string[] {
+    return getAuthStorageKeys(this.provider, this.model);
   }
 
   /** Fire a cache pre-warm request for Anthropic so the first real turn is a
@@ -1436,7 +1469,9 @@ export class AgentSession {
 
     // Auto-compact on load if the restored session exceeds the context window.
     // Without this, huge sessions (1M+ tokens) get loaded into memory and OOM.
-    const creds = await this.authStorage.resolveCredentials(this.provider);
+    const creds = await this.authStorage.resolveCredentials(this.provider, {
+      storageKeys: this.currentAuthStorageKeys(),
+    });
     const contextWindow = getContextWindow(this.model, {
       provider: this.provider,
       accountId: creds.accountId,

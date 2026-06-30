@@ -74,7 +74,7 @@ Switch mid-conversation with `/model`. Not locked to anyone.
 | **Moonshot** | Kimi K2.7 | API key |
 | **Z.AI (GLM)** | GLM-5.1, GLM-4.7, GLM-4.7 Flash | API key |
 | **MiniMax** | MiniMax M3 (image + video) | API key |
-| **Xiaomi (MiMo)** | MiMo-V2.5-Pro, MiMo-V2.5 (image + video) | API key |
+| **Xiaomi (MiMo)** | MiMo-V2.5-Pro, MiMo-V2.5-Pro-UltraSpeed, MiMo-V2.5 (image + video) | API key |
 | **DeepSeek** | DeepSeek V4 Pro, V4 Flash | API key |
 | **OpenRouter** | Qwen3.6-Plus + multi-provider gateway | API key |
 

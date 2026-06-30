@@ -19,6 +19,16 @@ type AuthData = Record<string, OAuthCredentials>;
 export const MOONSHOT_OAUTH_KEY = "moonshot-oauth";
 
 /**
+ * Storage key for the Xiaomi API Credits credential (`https://api.xiaomimimo.com/v1`).
+ * Kept distinct from the `xiaomi` Token Plan entry (`token-plan-sgp.xiaomimimo.com`)
+ * so a user can configure BOTH — `mimo-v2.5-pro-ultraspeed` is API Credits-only,
+ * while `mimo-v2.5-pro`/`mimo-v2.5` prefer the Token Plan but fall back to API
+ * Credits when only that's configured. Which key(s) a model tries, and in what
+ * order, is decided per-model via `getAuthStorageKeys()` in model-registry.ts.
+ */
+export const XIAOMI_CREDITS_KEY = "xiaomi-credits";
+
+/**
  * Refresh refreshable OAuth tokens this long BEFORE their hard expiry. Renewing
  * proactively keeps the credential (and its refresh token) alive across
  * sessions instead of waiting until a request fails with 401 — which, for
@@ -67,6 +77,18 @@ export class AuthStorage {
   }
 
   /**
+   * First key in `keys` (in order) that has stored credentials, or `undefined`
+   * if none do. Mirrors the first-match logic `resolveCredentials({ storageKeys })`
+   * uses internally — callers that need to know WHICH credential will actually
+   * be used (e.g. to clear the right one after a 401) call this directly
+   * instead of re-deriving the same order.
+   */
+  async pickStorageKey(keys: string[]): Promise<string | undefined> {
+    await this.ensureLoaded();
+    return keys.find((key) => Boolean(this.data[key]));
+  }
+
+  /**
    * True if the user has any usable auth for the logical provider. For
    * `moonshot` this is satisfied by either the Kimi OAuth credential or the
    * Moonshot API key.
@@ -75,6 +97,9 @@ export class AuthStorage {
     await this.ensureLoaded();
     if (provider === "moonshot") {
       return Boolean(this.data[MOONSHOT_OAUTH_KEY] || this.data["moonshot"]);
+    }
+    if (provider === "xiaomi") {
+      return Boolean(this.data["xiaomi"] || this.data[XIAOMI_CREDITS_KEY]);
     }
     return Boolean(this.data[provider]);
   }
@@ -152,9 +177,23 @@ export class AuthStorage {
    */
   async resolveCredentials(
     provider: string,
-    opts?: { forceRefresh?: boolean },
+    opts?: { forceRefresh?: boolean; storageKeys?: string[] },
   ): Promise<OAuthCredentials> {
     await this.ensureLoaded();
+
+    // Explicit ordered storage-key override (e.g. Xiaomi: prefer the Token
+    // Plan credential, fall back to API Credits if only that's configured).
+    // Bypasses the provider-name resolution below entirely when given —
+    // these are always static API keys with no refresh mechanism, so a
+    // direct first-match lookup is correct. A single-entry list equal to
+    // `[provider]` falls through to normal resolution below.
+    if (opts?.storageKeys && !(opts.storageKeys.length === 1 && opts.storageKeys[0] === provider)) {
+      for (const key of opts.storageKeys) {
+        const creds = this.data[key];
+        if (creds) return creds;
+      }
+      throw new NotLoggedInError(provider);
+    }
 
     // Prefer Kimi OAuth over the Moonshot API key for the logical `moonshot`
     // provider. When an OAuth credential exists, resolve (and refresh) that

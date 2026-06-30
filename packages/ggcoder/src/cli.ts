@@ -85,10 +85,12 @@ import {
 } from "./core/session-compaction.js";
 import { setEstimatorModel } from "./core/compaction/token-estimator.js";
 import {
+  getAuthStorageKeys,
   getContextWindow,
   getDefaultModel,
   getMaxThinkingLevel,
   getModel,
+  getModelsForProvider,
 } from "./core/model-registry.js";
 import { MCPClientManager, getAllMcpServers } from "./core/mcp/index.js";
 import { runLogin, runLogout, runDoctor } from "./cli/auth.js";
@@ -422,49 +424,88 @@ async function runInkTUI(opts: {
   // Preload every logged-in provider's credentials for the model switcher.
   // Resolve each one BEFORE picking the active provider, so a dead OAuth
   // refresh token (preferredProvider expired) doesn't crash startup — we
-  // fall back to whichever other provider actually resolved.
+  // fall back to whichever other provider actually resolved. Keyed by
+  // auth-storage key (not always the provider id) — e.g. Xiaomi splits into
+  // "xiaomi" (Token Plan) and "xiaomi-credits" (API Credits, required for
+  // mimo-v2.5-pro-ultraspeed) since a user may hold either or both.
   const credentialsByProvider: Record<
     string,
     { accessToken: string; accountId?: string; projectId?: string; baseUrl?: string }
   > = {};
   const expiredProviders: Provider[] = [];
   for (const p of loggedInProviders) {
-    try {
-      const resolved = await authStorage.resolveCredentials(p);
-      credentialsByProvider[p] = {
-        accessToken: resolved.accessToken,
-        accountId: resolved.accountId,
-        projectId: resolved.projectId,
-        baseUrl: resolved.baseUrl,
-      };
-    } catch {
-      // Refresh failed (resolveCredentials wipes the bad creds when the
-      // refresh token is dead). Track so we can warn the user, and fall
-      // back to another working provider below.
-      expiredProviders.push(p);
+    // Every distinct storage key any of this provider's models might need —
+    // almost always just `[p]`; only providers with model-specific
+    // `authStorageKeys` (Xiaomi) contribute extra keys.
+    const storageKeys = new Set<string>([p]);
+    for (const m of getModelsForProvider(p)) {
+      for (const key of m.authStorageKeys ?? []) storageKeys.add(key);
     }
+    let resolvedAny = false;
+    for (const key of storageKeys) {
+      try {
+        const resolved = await authStorage.resolveCredentials(p, { storageKeys: [key] });
+        credentialsByProvider[key] = {
+          accessToken: resolved.accessToken,
+          accountId: resolved.accountId,
+          projectId: resolved.projectId,
+          baseUrl: resolved.baseUrl,
+        };
+        resolvedAny = true;
+      } catch {
+        // This particular storage key isn't configured (or its refresh token
+        // is dead) — other keys for this provider may still resolve.
+      }
+    }
+    // Refresh failed for every key (resolveCredentials wipes bad OAuth creds
+    // when the refresh token is dead). Track so we can warn the user, and
+    // fall back to another working provider below.
+    if (!resolvedAny) expiredProviders.push(p);
   }
 
-  // Fall back if the preferred provider didn't resolve. The settings file
-  // is NOT updated — user might re-login to the preferred one later and
+  // The model a provider should actually boot with, given which storage keys
+  // resolved: prefer the provider's default model, but for a provider like
+  // Xiaomi that splits credentials across models, fall back to whichever
+  // model's specific storage key DID resolve (e.g. a user who configured only
+  // API Credits, no Token Plan, must still land on mimo-v2.5-pro-ultraspeed,
+  // not get treated as logged out of Xiaomi entirely).
+  const resolvedKeyFor = (p: Provider, modelId: string): string | undefined =>
+    getAuthStorageKeys(p, modelId).find((key) => credentialsByProvider[key]);
+  const modelResolves = (p: Provider, modelId: string): boolean =>
+    resolvedKeyFor(p, modelId) !== undefined;
+  const resolvableModelFor = (p: Provider): string | undefined => {
+    const def = getDefaultModel(p).id;
+    if (modelResolves(p, def)) return def;
+    return getModelsForProvider(p).find((m) => modelResolves(p, m.id))?.id;
+  };
+
+  // Fall back if the preferred provider/model didn't resolve. The settings
+  // file is NOT updated — user might re-login to the preferred one later and
   // expect to come back. This is a per-launch override.
   let provider = preferredProvider;
   let model = preferredModel;
-  if (!credentialsByProvider[provider]) {
-    const fallback = loggedInProviders.find((p) => credentialsByProvider[p]);
-    if (!fallback) {
-      throw new Error(
-        'All logged-in providers expired or failed to authenticate. Run "ggcoder login" to re-authenticate.',
+  if (!modelResolves(provider, model)) {
+    // Same provider, different model first — e.g. Xiaomi Credits-only users
+    // land on mimo-v2.5-pro-ultraspeed instead of bouncing to another provider.
+    const sameProviderModel = resolvableModelFor(provider);
+    if (sameProviderModel) {
+      model = sameProviderModel;
+    } else {
+      const fallback = loggedInProviders.find((p) => resolvableModelFor(p));
+      if (!fallback) {
+        throw new Error(
+          'All logged-in providers expired or failed to authenticate. Run "ggcoder login" to re-authenticate.',
+        );
+      }
+      console.warn(
+        chalk.yellow(
+          `⚠ ${displayName(preferredProvider)} session expired — switched to ${displayName(fallback)} for this launch.\n` +
+            `  Run "ggcoder login" to re-authenticate ${displayName(preferredProvider)}.`,
+        ),
       );
+      provider = fallback;
+      model = resolvableModelFor(fallback)!;
     }
-    console.warn(
-      chalk.yellow(
-        `⚠ ${displayName(preferredProvider)} session expired — switched to ${displayName(fallback)} for this launch.\n` +
-          `  Run "ggcoder login" to re-authenticate ${displayName(preferredProvider)}.`,
-      ),
-    );
-    provider = fallback;
-    model = getDefaultModel(fallback).id;
   } else if (expiredProviders.length > 0) {
     console.warn(
       chalk.yellow(
@@ -486,7 +527,7 @@ async function runInkTUI(opts: {
 
   // Use the already-resolved credentials from the preload loop — no need
   // to re-resolve and risk hitting the same dead refresh path again.
-  const cached = credentialsByProvider[provider]!;
+  const cached = credentialsByProvider[resolvedKeyFor(provider, model)!]!;
   const creds = {
     accessToken: cached.accessToken,
     accountId: cached.accountId,

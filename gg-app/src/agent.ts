@@ -313,6 +313,18 @@ export async function listHistory(): Promise<HistoryEntry[]> {
 // ── Provider auth (login) ──────────────────────────────────
 export type AuthMethod = "oauth" | "apikey";
 
+/**
+ * One API-key option for a provider that splits auth across multiple distinct
+ * endpoints/credentials (currently only Xiaomi: Token Plan vs. API Credits).
+ */
+export interface ApiKeyVariant {
+  /** Storage key in auth.json (distinct from the provider `value`). */
+  key: string;
+  /** Display label, e.g. "Token Plan" or "API Credits". */
+  label: string;
+  baseUrl?: string;
+}
+
 export interface AuthProvider {
   value: string;
   label: string;
@@ -320,6 +332,8 @@ export interface AuthProvider {
   methods: AuthMethod[];
   apiKeyLabel?: string;
   apiKeyBaseUrl?: string;
+  /** When set, the API-key flow must ask which variant before submitting. */
+  apiKeyVariants?: ApiKeyVariant[];
   /** Live connection status from ~/.gg/auth.json. */
   connected: boolean;
 }
@@ -348,8 +362,8 @@ export async function authStatus(): Promise<AuthProvider[]> {
  * user's sidecar may not have booted yet, and a sidecar round-trip would hang.
  * Throws with a user-facing message on error.
  */
-export async function authApiKey(provider: string, key: string): Promise<void> {
-  await invoke("app_auth_apikey", { provider, key });
+export async function authApiKey(provider: string, key: string, variant?: string): Promise<void> {
+  await invoke("app_auth_apikey", { provider, key, variant });
 }
 
 /**

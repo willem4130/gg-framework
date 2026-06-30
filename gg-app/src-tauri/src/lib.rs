@@ -1213,6 +1213,20 @@ fn auth_file_path() -> PathBuf {
     home_dir().join(".gg").join("auth.json")
 }
 
+/// One API-key option for a provider that splits auth across multiple
+/// distinct endpoints/credentials (currently only Xiaomi: Token Plan vs.
+/// API Credits). Mirrors `ApiKeyVariant` in
+/// packages/ggcoder/src/core/auth-providers.ts.
+#[derive(PartialEq, Debug)]
+struct ApiKeyVariant {
+    /// Storage key in auth.json (distinct from the provider `value`).
+    key: &'static str,
+    /// Display label, e.g. "Token Plan" or "API Credits".
+    label: &'static str,
+    /// Base URL stored alongside this variant's credential.
+    base_url: Option<&'static str>,
+}
+
 /// Static metadata for one AI provider in the login hub. Mirrors
 /// packages/ggcoder/src/core/auth-providers.ts (AUTH_PROVIDERS) — keep in sync.
 struct ProviderMeta {
@@ -1223,8 +1237,13 @@ struct ProviderMeta {
     /// Supported auth methods, e.g. `["oauth"]`, `["apikey"]`, or both.
     methods: &'static [&'static str],
     api_key_label: Option<&'static str>,
-    /// Custom API base URL stored alongside an API-key credential.
+    /// Custom API base URL stored alongside an API-key credential. Used as the
+    /// default when `api_key_variants` is empty.
     api_key_base_url: Option<&'static str>,
+    /// When a provider's API-key auth splits across multiple endpoints, the
+    /// choices to present (first = default). Empty for every single-credential
+    /// provider.
+    api_key_variants: &'static [ApiKeyVariant],
 }
 
 /// The provider catalog (single source of truth for app_auth_status +
@@ -1237,6 +1256,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["oauth"],
         api_key_label: None,
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "openai",
@@ -1245,6 +1265,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["oauth"],
         api_key_label: None,
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "gemini",
@@ -1253,6 +1274,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["oauth"],
         api_key_label: None,
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "moonshot",
@@ -1261,6 +1283,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["oauth", "apikey"],
         api_key_label: Some("Moonshot"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "glm",
@@ -1269,6 +1292,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["apikey"],
         api_key_label: Some("Z.AI"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "minimax",
@@ -1277,14 +1301,27 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["apikey"],
         api_key_label: Some("MiniMax"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "xiaomi",
         label: "Xiaomi (MiMo)",
-        description: "MiMo-V2-Pro",
+        description: "MiMo-V2.5-Pro, MiMo-V2.5-Pro-UltraSpeed, MiMo-V2.5 · Token Plan or API Credits",
         methods: &["apikey"],
         api_key_label: Some("Xiaomi MiMo"),
         api_key_base_url: Some("https://token-plan-sgp.xiaomimimo.com/v1"),
+        api_key_variants: &[
+            ApiKeyVariant {
+                key: "xiaomi",
+                label: "Token Plan",
+                base_url: Some("https://token-plan-sgp.xiaomimimo.com/v1"),
+            },
+            ApiKeyVariant {
+                key: "xiaomi-credits",
+                label: "API Credits (required for UltraSpeed)",
+                base_url: Some("https://api.xiaomimimo.com/v1"),
+            },
+        ],
     },
     ProviderMeta {
         value: "deepseek",
@@ -1293,6 +1330,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["apikey"],
         api_key_label: Some("DeepSeek"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "openrouter",
@@ -1301,6 +1339,7 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["apikey"],
         api_key_label: Some("OpenRouter"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
     ProviderMeta {
         value: "sakana",
@@ -1309,24 +1348,39 @@ const AUTH_PROVIDERS: &[ProviderMeta] = &[
         methods: &["apikey"],
         api_key_label: Some("Sakana"),
         api_key_base_url: None,
+        api_key_variants: &[],
     },
 ];
 
-/// Pure: if `value` is a known provider that supports API-key auth, return
-/// `Some(api_key_base_url)` (the inner Option is the custom base URL, if any).
-/// `None` means the provider is unknown or doesn't support API keys.
-fn provider_apikey_meta(value: &str) -> Option<Option<&'static str>> {
-    AUTH_PROVIDERS
+/// Pure: resolve `(storage_key, base_url)` for an API-key submission to
+/// `provider`, given an optional variant key. Providers with multiple
+/// `api_key_variants` (currently only Xiaomi: Token Plan vs. API Credits)
+/// select the matching variant, defaulting to the first/primary one when
+/// `variant` is absent or unknown. Single-variant providers ignore `variant`
+/// and use the flat `api_key_base_url`. Returns `None` if `provider` is
+/// unknown or doesn't support API-key auth.
+fn resolve_apikey_target(
+    provider: &str,
+    variant: Option<&str>,
+) -> Option<(String, Option<&'static str>)> {
+    let meta = AUTH_PROVIDERS
         .iter()
-        .find(|p| p.value == value && p.methods.contains(&"apikey"))
-        .map(|p| p.api_key_base_url)
+        .find(|p| p.value == provider && p.methods.contains(&"apikey"))?;
+    if meta.api_key_variants.is_empty() {
+        return Some((meta.value.to_string(), meta.api_key_base_url));
+    }
+    let chosen = variant
+        .and_then(|v| meta.api_key_variants.iter().find(|x| x.key == v))
+        .unwrap_or(&meta.api_key_variants[0]);
+    Some((chosen.key.to_string(), chosen.base_url))
 }
 
 /// Native: provider list + live connection status, read directly from
 /// ~/.gg/auth.json. `connected` is true when a credential key is present
 /// (moonshot is satisfied by either its OAuth key `moonshot-oauth` or the
-/// `moonshot` API key, mirroring AuthStorage.hasProviderAuth). Never needs the
-/// sidecar.
+/// `moonshot` API key; a multi-variant provider like Xiaomi is satisfied by
+/// ANY of its variant keys — mirrors AuthStorage.hasProviderAuth). Never needs
+/// the sidecar.
 #[tauri::command]
 fn app_auth_status() -> serde_json::Value {
     // Parse the auth file into a JSON object; missing/invalid → empty (no creds).
@@ -1340,12 +1394,14 @@ fn app_auth_status() -> serde_json::Value {
             .map(|v| !v.is_null())
             .unwrap_or(false)
     };
-    let connected = |value: &str| -> bool {
-        if value == "moonshot" {
-            has_key("moonshot-oauth") || has_key("moonshot")
-        } else {
-            has_key(value)
+    let connected = |p: &ProviderMeta| -> bool {
+        if p.value == "moonshot" {
+            return has_key("moonshot-oauth") || has_key("moonshot");
         }
+        if !p.api_key_variants.is_empty() {
+            return has_key(p.value) || p.api_key_variants.iter().any(|v| has_key(v.key));
+        }
+        has_key(p.value)
     };
 
     let list: Vec<serde_json::Value> = AUTH_PROVIDERS
@@ -1356,13 +1412,27 @@ fn app_auth_status() -> serde_json::Value {
                 "label": p.label,
                 "description": p.description,
                 "methods": p.methods,
-                "connected": connected(p.value),
+                "connected": connected(p),
             });
             if let Some(l) = p.api_key_label {
                 obj["apiKeyLabel"] = serde_json::json!(l);
             }
             if let Some(u) = p.api_key_base_url {
                 obj["apiKeyBaseUrl"] = serde_json::json!(u);
+            }
+            if !p.api_key_variants.is_empty() {
+                let variants: Vec<serde_json::Value> = p
+                    .api_key_variants
+                    .iter()
+                    .map(|v| {
+                        serde_json::json!({
+                            "key": v.key,
+                            "label": v.label,
+                            "baseUrl": v.base_url,
+                        })
+                    })
+                    .collect();
+                obj["apiKeyVariants"] = serde_json::json!(variants);
             }
             obj
         })
@@ -1430,6 +1500,11 @@ fn apply_logout(existing: Option<&str>, provider: &str) -> Result<String, String
         if provider == "moonshot" {
             map.remove("moonshot-oauth");
         }
+        if let Some(meta) = AUTH_PROVIDERS.iter().find(|p| p.value == provider) {
+            for v in meta.api_key_variants {
+                map.remove(v.key);
+            }
+        }
     }
     serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
 }
@@ -1476,25 +1551,33 @@ fn write_auth_file(contents: &str) -> Result<(), String> {
 /// Native: store an API key for a provider directly in ~/.gg/auth.json. Never
 /// touches the sidecar, so it can't hang on a not-yet-booted agent. Validates
 /// that the provider exists and supports API-key auth, and that the key is
-/// non-empty. Returns `{ ok: true }`.
+/// non-empty. `variant` selects which storage key/base URL to use for
+/// providers with multiple API-key options (currently only Xiaomi); omitted or
+/// unknown defaults to the first/primary variant. Returns `{ ok: true }`.
 #[tauri::command]
-fn app_auth_apikey(provider: String, key: String) -> Result<serde_json::Value, String> {
+fn app_auth_apikey(
+    provider: String,
+    key: String,
+    variant: Option<String>,
+) -> Result<serde_json::Value, String> {
     let key = key.trim();
     if key.is_empty() {
         return Err("API key is required".to_string());
     }
-    let base_url = provider_apikey_meta(&provider)
+    let (storage_key, base_url) = resolve_apikey_target(&provider, variant.as_deref())
         .ok_or_else(|| "provider does not support API key auth".to_string())?;
     let existing = std::fs::read_to_string(auth_file_path()).ok();
     let now_ms = current_unix_millis();
-    let next = apply_apikey(existing.as_deref(), &provider, base_url, now_ms, key)?;
+    let next = apply_apikey(existing.as_deref(), &storage_key, base_url, now_ms, key)?;
     write_auth_file(&next)?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
 /// Native: disconnect a provider (remove its credential from ~/.gg/auth.json).
-/// Moonshot also clears its OAuth key. Never touches the sidecar. Returns
-/// `{ ok: true }`.
+/// Moonshot also clears its OAuth key; any provider with multiple
+/// `api_key_variants` (currently only Xiaomi) clears every variant key, so a
+/// single "disconnect" fully removes all of a provider's credentials. Never
+/// touches the sidecar. Returns `{ ok: true }`.
 #[tauri::command]
 fn app_auth_logout(provider: String) -> Result<serde_json::Value, String> {
     let existing = std::fs::read_to_string(auth_file_path()).ok();
@@ -3134,20 +3217,65 @@ mod tests {
     }
 
     #[test]
-    fn provider_apikey_meta_gates_on_apikey_support() {
+    fn resolve_apikey_target_gates_on_apikey_support() {
         // OAuth-only provider → not an API-key provider.
-        assert!(provider_apikey_meta("anthropic").is_none());
+        assert!(resolve_apikey_target("anthropic", None).is_none());
         // Unknown provider → None.
-        assert!(provider_apikey_meta("nope").is_none());
-        // API-key provider with no custom base URL.
-        assert_eq!(provider_apikey_meta("glm"), Some(None));
-        // Xiaomi carries a custom base URL.
+        assert!(resolve_apikey_target("nope", None).is_none());
+        // API-key provider with no custom base URL, no variants.
         assert_eq!(
-            provider_apikey_meta("xiaomi"),
-            Some(Some("https://token-plan-sgp.xiaomimimo.com/v1")),
+            resolve_apikey_target("glm", None),
+            Some(("glm".to_string(), None)),
         );
-        // Moonshot supports both oauth + apikey.
-        assert_eq!(provider_apikey_meta("moonshot"), Some(None));
+        // Moonshot supports both oauth + apikey, no variants.
+        assert_eq!(
+            resolve_apikey_target("moonshot", None),
+            Some(("moonshot".to_string(), None)),
+        );
+    }
+
+    #[test]
+    fn resolve_apikey_target_xiaomi_defaults_to_token_plan() {
+        // No variant requested → first/primary variant (Token Plan), storage
+        // key unchanged from the provider id for backward compat.
+        assert_eq!(
+            resolve_apikey_target("xiaomi", None),
+            Some((
+                "xiaomi".to_string(),
+                Some("https://token-plan-sgp.xiaomimimo.com/v1")
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_apikey_target_xiaomi_credits_variant() {
+        assert_eq!(
+            resolve_apikey_target("xiaomi", Some("xiaomi-credits")),
+            Some((
+                "xiaomi-credits".to_string(),
+                Some("https://api.xiaomimimo.com/v1")
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_apikey_target_unknown_variant_falls_back_to_first() {
+        assert_eq!(
+            resolve_apikey_target("xiaomi", Some("bogus")),
+            Some((
+                "xiaomi".to_string(),
+                Some("https://token-plan-sgp.xiaomimimo.com/v1")
+            )),
+        );
+    }
+
+    #[test]
+    fn apply_logout_xiaomi_drops_both_variant_keys() {
+        let existing = r#"{ "xiaomi": { "accessToken": "tp", "refreshToken": "", "expiresAt": 1 }, "xiaomi-credits": { "accessToken": "cr", "refreshToken": "", "expiresAt": 1 } }"#;
+        let out = apply_logout(Some(existing), "xiaomi").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("xiaomi").is_none());
+        assert!(v.get("xiaomi-credits").is_none());
     }
 
     #[test]

@@ -35,7 +35,11 @@ const PROVIDERS: { label: string; value: Provider; description: string }[] = [
   { label: "Moonshot", value: "moonshot", description: "Kimi K2.7 · OAuth or API key" },
   { label: "Z.AI (GLM)", value: "glm", description: "GLM-5.1, GLM-4.7, GLM-4.7 Flash" },
   { label: "MiniMax", value: "minimax", description: "MiniMax M3" },
-  { label: "Xiaomi (MiMo)", value: "xiaomi", description: "MiMo-V2-Pro" },
+  {
+    label: "Xiaomi (MiMo)",
+    value: "xiaomi",
+    description: "MiMo-V2.5-Pro, MiMo-V2.5-Pro-UltraSpeed, MiMo-V2.5 · Token Plan or API Credits",
+  },
   { label: "DeepSeek", value: "deepseek", description: "DeepSeek V4 Pro, V4 Flash" },
   { label: "OpenRouter", value: "openrouter", description: "Qwen3.6-Plus, multi-provider gateway" },
   { label: "Sakana (Fugu)", value: "sakana", description: "Fugu, Fugu Ultra" },
