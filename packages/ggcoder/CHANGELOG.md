@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.2.0
+
+### Minor Changes
+
+- Add Claude Sonnet 5 (`claude-sonnet-5`, 1M context, 128k output, adaptive thinking) replacing Sonnet 4.6, and fix the Anthropic non-streaming fallback so it no longer trips the SDK's "Streaming is required for operations that may take longer than 10 minutes" pre-flight throw on large max_tokens.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.2.0
+- @kenkaiiii/gg-agent@5.2.0
+- @kenkaiiii/gg-core@5.2.0
+
 ## 5.1.2
 
 ### Patch Changes
