@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.7.1",
+    date: "2026-06-30",
+    items: [
+      "I made @Ken much easier to remember right when you are about to type. The input now quietly rotates in helpful Ken hints, then shuffles into place instead of snapping.",
+      "Ken now follows your model switch. Pick a new model and @Ken uses it too, so his advice comes from the same brain you chose for the main agent.",
+    ],
+  },
+  {
     version: "0.7.0",
     date: "2026-06-30",
     items: [
