@@ -546,10 +546,12 @@ body {
 }
 
 /* ── Ken power banner (Autopilot on/off) ──────────────────────────────────
-   Takeover of the chat BODY only — lives inside `.transcript` (mirrors
-   WakeScreen's "Talk to me..." empty state, which is scoped the same way),
-   so the chat head/nav above and the tool panel/activity bar/input footer
-   below stay visible and untouched. A "KEN IS ON"/"KEN IS OFF" ASCII banner
+   Takeover of the chat BODY only — lives inside `.transcript-frame`, the
+   non-scrolling sibling wrapping `.transcript` (see that rule below), so it
+   stays pinned to the visible viewport at any scroll position instead of the
+   scrolled chat content. The chat head/nav above and the tool
+   panel/activity bar/input footer below stay visible and untouched. A "KEN IS
+   ON"/"KEN IS OFF" ASCII banner
    (same ANSI-Shadow block font as the GG CODER home logo) materializes with
    the same scale+fade "flash" the app already uses for the zoom-level HUD
    (see `.zoom-overlay-card`/`zoom-overlay-in`) instead of sliding across the
@@ -559,7 +561,13 @@ body {
    whatever is underneath. */
 .ken-power-overlay {
   position: absolute;
-  inset: 0;
+  /* Bleed 1px past every edge (clipped by `.transcript-frame`'s `overflow:
+     hidden`) rather than a flush `inset: 0` — under CSS `zoom` the absolutely
+     positioned overlay's content box can round a hair narrower than its
+     positioned ancestor, leaving a hairline sliver of chat text visible along
+     the top edge. The 1px bleed guarantees full coverage regardless of the
+     rounding direction. */
+  inset: -1px;
   z-index: 10;
   display: flex;
   align-items: center;
@@ -1646,8 +1654,26 @@ body {
   background: var(--border);
 }
 
-.transcript {
+/* Non-scrolling wrapper around `.transcript` — owns the flex sizing +
+   `position: relative` so an absolutely positioned overlay child (the Ken
+   power banner) is pinned to the visible chat viewport, not the scrolled
+   CONTENT inside `.transcript` (a `position: absolute` descendant of a
+   scrolling container is positioned relative to the top of that container's
+   scrollable content, not what's currently on screen — a full-height overlay
+   on a scrolled-down existing session would render far above the visible
+   messages). `.transcript` itself just fills this frame and scrolls. */
+.transcript-frame {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Clips the overlay's 1px bleed below (see `.ken-power-overlay`) so it never
+     spills onto the chat-head border or the tool panel/footer beyond this
+     frame. */
+  overflow: hidden;
+}
+.transcript {
   flex: 1 1 auto;
   /* Required so this scrollable flex child actually shrinks (default min-height
      is `auto`, which keeps it at content height — that pushes the live tool

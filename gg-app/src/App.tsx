@@ -1724,31 +1724,38 @@ function App(): React.ReactElement {
         )}
       </div>
 
-      <div className="transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
-        {/* Scoped to the chat body only — sits above the transcript content,
-            never over the header/nav or the input footer below. */}
+      {/* Non-scrolling frame the same size as the chat viewport. The banner
+          lives HERE, not inside `.transcript` — `.transcript` scrolls, and an
+          absolutely positioned child of a scrolling container is pinned to the
+          top of the scrolled CONTENT, not the visible viewport, so in an
+          existing session scrolled down it rendered far above what's on
+          screen. Anchoring to this non-scrolling sibling keeps it pinned to
+          what the user is actually looking at, at any scroll position. */}
+      <div className="transcript-frame">
         {kenPowerBanner && (
           <KenPowerBanner mode={kenPowerBanner} onDone={() => setKenPowerBanner(null)} />
         )}
-        {!hydrated && items.length === 0 ? (
-          <TranscriptSkeleton />
-        ) : (
-          <>
-            {items.length === 0 &&
-              (status === "ready" ? (
-                <WakeScreen />
-              ) : (
-                <div className="line transcript-reveal" style={{ color: theme.textDim }}>
-                  {`\u273b ${status}`}
-                </div>
-              ))}
-            <PromptSendProvider value={sendKenRecommendedPrompt}>
-              {items.map((it) => (
-                <TranscriptRow key={it.id} item={it} onImageLoad={maybeScrollToBottom} />
-              ))}
-            </PromptSendProvider>
-          </>
-        )}
+        <div className="transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
+          {!hydrated && items.length === 0 ? (
+            <TranscriptSkeleton />
+          ) : (
+            <>
+              {items.length === 0 &&
+                (status === "ready" ? (
+                  <WakeScreen />
+                ) : (
+                  <div className="line transcript-reveal" style={{ color: theme.textDim }}>
+                    {`\u273b ${status}`}
+                  </div>
+                ))}
+              <PromptSendProvider value={sendKenRecommendedPrompt}>
+                {items.map((it) => (
+                  <TranscriptRow key={it.id} item={it} onImageLoad={maybeScrollToBottom} />
+                ))}
+              </PromptSendProvider>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="liveregion">
