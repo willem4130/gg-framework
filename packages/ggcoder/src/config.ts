@@ -128,7 +128,7 @@ async function seedDefaultAgents(agentsDir: string): Promise<void> {
     "owl.md": `---
 name: owl
 description: "In-repo code explorer \u2014 traces symbols, call chains, and structure (no web)"
-tools: read, grep, find, ls, source_path, bash
+tools: read, grep, find, ls, source_path
 ---
 
 You are Owl, a sharp-eyed codebase explorer.
