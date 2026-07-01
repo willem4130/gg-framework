@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.12.1",
+    date: "2026-07-02",
+    items: [
+      "Squashed a bug in the brand new KEN IS ON banner: in a scrolled-down session it was flashing up above your chat instead of right over it. I pinned it to what you are actually looking at, every time, no matter how deep you have scrolled.",
+      "Also polished off a hairline sliver of chat text that could peek through the top edge of the banner. Full coverage now, clean every time.",
+    ],
+  },
+  {
     version: "0.12.0",
     date: "2026-07-02",
     items: [
