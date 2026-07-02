@@ -15,10 +15,21 @@
  *   ALL_CLEAR into a fresh PROMPT.
  * - A turn that ended in plan mode has a pending Accept/Reject modal; Ken must
  *   never inject a prompt into a read-only plan-mode session.
+ * - A turn whose ONLY tool calls were mechanical usage — a bash command that
+ *   starts a background process (dev server, watcher), is read-only, or is a
+ *   plain `git add`/`commit`/`push` workflow; a dedicated read-only tool
+ *   (read/grep/find/ls/web_fetch/web_search/source_path/code_search/
+ *   task_output/screenshot/skill); or NO tool calls at all (a plain-text
+ *   answer with nothing built) — was always going to come back as Ken's
+ *   IGNORE verdict (see the autopilot system prompt's "mechanical operation"
+ *   / "plain question answered with no code touched" rules). Pre-filtering
+ *   these skips the review API call entirely instead of paying for one whose
+ *   answer is already known.
  *
  * Kept pure + dependency-light so it's unit-testable without booting the
  * sidecar (which runs `main()` at import time).
  */
+import { isReadOnlyCommand } from "../tools/read-only-bash.js";
 
 /** A workflow (prompt-template) command: built-in PROMPT_COMMANDS or a custom
  *  `.gg/commands/*.md` entry. `prompt` is the full template body the command
@@ -92,11 +103,38 @@ export function countAssistantMessages(messages: ReadonlyArray<{ role: string }>
   return count;
 }
 
+/** Extract every tool call made by assistant messages from `startIndex`
+ *  onward — i.e. the tool calls added during one turn, given the message
+ *  array length captured before that turn ran. Used to feed
+ *  isMechanicalOnlyTurn without the gate module depending on gg-ai's full
+ *  Message type (kept structurally typed so it's easy to unit test). */
+export function extractTurnToolCalls(
+  messages: ReadonlyArray<{
+    role: string;
+    content:
+      | string
+      | ReadonlyArray<{ type: string; name?: string; args?: Record<string, unknown> }>;
+  }>,
+  startIndex: number,
+): TurnToolCall[] {
+  const calls: TurnToolCall[] = [];
+  for (const m of messages.slice(startIndex)) {
+    if (m.role !== "assistant" || typeof m.content === "string") continue;
+    for (const part of m.content) {
+      if (part.type === "tool_call" && typeof part.name === "string") {
+        calls.push({ name: part.name, args: part.args });
+      }
+    }
+  }
+  return calls;
+}
+
 export type AutopilotSkipReason =
   | "disabled"
   | "cancelled"
   | "plan-mode"
   | "workflow-command"
+  | "mechanical-only"
   | "no-assistant-output";
 
 export interface AutopilotGateInput {
@@ -110,6 +148,10 @@ export interface AutopilotGateInput {
   workflowCommand: boolean;
   /** Assistant messages ADDED by this turn (after minus before). */
   assistantMessagesAdded: number;
+  /** True when every tool call this turn was mechanical bash usage (see
+   *  isMechanicalOnlyTurn) — nothing for Ken to review. Optional so existing
+   *  callers/tests that don't set it default to false (reviewable). */
+  mechanicalOnly?: boolean;
 }
 
 export type AutopilotGateDecision = { start: true } | { start: false; reason: AutopilotSkipReason };
@@ -124,6 +166,86 @@ export function shouldStartAutopilotCycle(input: AutopilotGateInput): AutopilotG
   if (input.cancelled) return { start: false, reason: "cancelled" };
   if (input.planMode) return { start: false, reason: "plan-mode" };
   if (input.workflowCommand) return { start: false, reason: "workflow-command" };
+  if (input.mechanicalOnly) return { start: false, reason: "mechanical-only" };
   if (input.assistantMessagesAdded <= 0) return { start: false, reason: "no-assistant-output" };
   return { start: true };
+}
+
+/** A tool call made during a turn, as recorded on an assistant message's
+ *  content parts. Mirrors gg-ai's `ToolCall` shape minus the fields the gate
+ *  doesn't need (id). */
+export interface TurnToolCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+/** Dedicated tools that can never touch the repo/filesystem in a way worth
+ *  reviewing: pure lookups (read/grep/find/ls/source_path/code_search),
+ *  network research (web_fetch/web_search), reading a background process's
+ *  output (task_output), a UI screenshot, or loading a skill definition. Any
+ *  call to one of these is mechanical regardless of its arguments — unlike
+ *  bash, which needs isMechanicalBashCall to tell a read-only invocation from
+ *  a mutating one. Deliberately excludes generate_image (produces a real
+ *  artifact), subagent (can do anything internally), tasks/task_send/
+ *  task_stop (mutate task/process state), and enter_plan/exit_plan (mode
+ *  transitions already handled by the separate plan-mode gate check). */
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "web_fetch",
+  "web_search",
+  "source_path",
+  "code_search",
+  "task_output",
+  "screenshot",
+  "skill",
+]);
+
+/** Leading git subcommands that are a plain add/commit/push workflow —
+ *  mechanical for review purposes even though they mutate the repo (distinct
+ *  from plan-mode's stricter read-only bar in read-only-bash.ts). */
+const GIT_COMMIT_WORKFLOW = /^git\s+(add|commit|push)\b/i;
+
+/**
+ * True when a bash call is mechanical: starting a background process (a dev
+ * server or watcher — nothing to review until it's stopped and its actual
+ * code changes land in a later turn), a read-only command (reuses the same
+ * conservative classifier plan mode trusts), or a plain git add/commit/push
+ * chain. Conservative by construction: anything it can't prove mechanical
+ * (including a chain mixing git with other commands) returns false, so the
+ * turn still gets reviewed — false negatives are safe here, false positives
+ * are not.
+ */
+function isMechanicalBashCall(args: Record<string, unknown> | undefined): boolean {
+  if (!args) return false;
+  if (args.run_in_background === true) return true;
+  const command = typeof args.command === "string" ? args.command : "";
+  if (!command.trim()) return false;
+  if (isReadOnlyCommand(command)) return true;
+  const segments = command
+    .split(/&&|;|\|/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return segments.length > 0 && segments.every((s) => GIT_COMMIT_WORKFLOW.test(s));
+}
+
+/**
+ * True when the turn has nothing for Ken to review: either it made NO tool
+ * calls at all (a plain-text answer — "a plain question that got answered
+ * with no code touched" is IGNORE per the autopilot contract), or EVERY tool
+ * call was mechanical (a dedicated read-only tool, or bash usage that starts
+ * a background process / is read-only / is a plain git commit-push chain).
+ * ANY non-mechanical call (edit, write, subagent, generate_image, or bash
+ * outside these safe shapes) makes the whole turn reviewable — conservative
+ * default: keep reviewing whenever it's unclear.
+ */
+export function isMechanicalOnlyTurn(toolCalls: readonly TurnToolCall[]): boolean {
+  if (toolCalls.length === 0) return true;
+  return toolCalls.every(
+    (call) =>
+      READ_ONLY_TOOL_NAMES.has(call.name) ||
+      (call.name === "bash" && isMechanicalBashCall(call.args)),
+  );
 }

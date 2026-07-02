@@ -4,8 +4,11 @@ import {
   matchExpandedCommand,
   countAssistantMessages,
   shouldStartAutopilotCycle,
+  isMechanicalOnlyTurn,
+  extractTurnToolCalls,
   USER_INSTRUCTIONS_HEADER,
   type WorkflowCommandSpec,
+  type TurnToolCall,
 } from "./autopilot-gate.js";
 import { PROMPT_COMMANDS } from "./prompt-commands.js";
 
@@ -166,6 +169,13 @@ describe("shouldStartAutopilotCycle", () => {
     });
   });
 
+  it("skips mechanical-only turns (dev server start, read-only lookup, git commit/push)", () => {
+    expect(shouldStartAutopilotCycle({ ...reviewable, mechanicalOnly: true })).toEqual({
+      start: false,
+      reason: "mechanical-only",
+    });
+  });
+
   it("resolves multiple skip conditions in fixed priority order", () => {
     // disabled beats everything; plan-mode beats workflow-command beats no-output.
     expect(
@@ -192,5 +202,128 @@ describe("shouldStartAutopilotCycle", () => {
         assistantMessagesAdded: 0,
       }),
     ).toEqual({ start: false, reason: "workflow-command" });
+  });
+});
+
+describe("isMechanicalOnlyTurn", () => {
+  it("is TRUE for a turn with no tool calls (plain-text answer, nothing built)", () => {
+    // Matches the autopilot contract's own IGNORE example: "a plain question
+    // that got answered with no code touched".
+    expect(isMechanicalOnlyTurn([])).toBe(true);
+  });
+
+  it("treats dedicated read-only tools as mechanical regardless of args", () => {
+    const calls: TurnToolCall[] = [
+      { name: "read", args: { file_path: "a.ts" } },
+      { name: "grep", args: { pattern: "TODO" } },
+      { name: "find", args: { pattern: "*.ts" } },
+      { name: "ls", args: { path: "." } },
+      { name: "web_fetch", args: { url: "https://example.com" } },
+      { name: "web_search", args: { query: "x" } },
+      { name: "source_path", args: { package: "zod" } },
+      { name: "code_search", args: { query: "x" } },
+      { name: "task_output", args: { id: "abc" } },
+      { name: "screenshot", args: { url: "http://localhost:3000" } },
+      { name: "skill", args: { skill: "find-skills" } },
+    ];
+    expect(isMechanicalOnlyTurn(calls)).toBe(true);
+  });
+
+  it("is NOT mechanical when a research turn also calls write/edit/subagent", () => {
+    expect(
+      isMechanicalOnlyTurn([
+        { name: "read", args: {} },
+        { name: "write", args: {} },
+      ]),
+    ).toBe(false);
+    expect(
+      isMechanicalOnlyTurn([
+        { name: "grep", args: {} },
+        { name: "subagent", args: {} },
+      ]),
+    ).toBe(false);
+  });
+
+  it("is NOT mechanical for tools that mutate task/process state or produce artifacts", () => {
+    expect(isMechanicalOnlyTurn([{ name: "generate_image", args: {} }])).toBe(false);
+    expect(isMechanicalOnlyTurn([{ name: "tasks", args: {} }])).toBe(false);
+    expect(isMechanicalOnlyTurn([{ name: "task_send", args: {} }])).toBe(false);
+    expect(isMechanicalOnlyTurn([{ name: "task_stop", args: {} }])).toBe(false);
+  });
+
+  it("treats a background bash start (dev server / watcher) as mechanical", () => {
+    const calls: TurnToolCall[] = [
+      { name: "bash", args: { command: "npm run dev", run_in_background: true } },
+    ];
+    expect(isMechanicalOnlyTurn(calls)).toBe(true);
+  });
+
+  it("treats a read-only bash command as mechanical", () => {
+    const calls: TurnToolCall[] = [{ name: "bash", args: { command: "git status" } }];
+    expect(isMechanicalOnlyTurn(calls)).toBe(true);
+  });
+
+  it("treats a plain git add/commit/push workflow as mechanical", () => {
+    const calls: TurnToolCall[] = [
+      { name: "bash", args: { command: 'git add -A && git commit -m "fix" && git push' } },
+    ];
+    expect(isMechanicalOnlyTurn(calls)).toBe(true);
+  });
+
+  it("is NOT mechanical when a git chain mixes in a non-git command", () => {
+    const calls: TurnToolCall[] = [
+      { name: "bash", args: { command: "git commit -m x && rm -rf dist" } },
+    ];
+    expect(isMechanicalOnlyTurn(calls)).toBe(false);
+  });
+
+  it("is NOT mechanical when any call is edit/write", () => {
+    const calls: TurnToolCall[] = [
+      { name: "bash", args: { command: "git status" } },
+      { name: "edit", args: { file_path: "a.ts" } },
+    ];
+    expect(isMechanicalOnlyTurn(calls)).toBe(false);
+  });
+
+  it("is NOT mechanical for an ordinary mutating bash command", () => {
+    const calls: TurnToolCall[] = [{ name: "bash", args: { command: "rm -rf node_modules" } }];
+    expect(isMechanicalOnlyTurn(calls)).toBe(false);
+  });
+
+  it("is NOT mechanical when args are missing (defensive)", () => {
+    expect(isMechanicalOnlyTurn([{ name: "bash" }])).toBe(false);
+  });
+});
+
+describe("extractTurnToolCalls", () => {
+  it("collects tool calls only from assistant messages at/after startIndex", () => {
+    const messages = [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", name: "read", args: { file_path: "old.ts" } }],
+      },
+      { role: "tool", content: "ok" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text" },
+          { type: "tool_call", name: "bash", args: { command: "git status" } },
+        ],
+      },
+    ];
+    expect(extractTurnToolCalls(messages, 2)).toEqual([
+      { name: "bash", args: { command: "git status" } },
+    ]);
+  });
+
+  it("returns an empty array for a string-content assistant message (no tool calls)", () => {
+    const messages = [{ role: "assistant", content: "just text, no tools" }];
+    expect(extractTurnToolCalls(messages, 0)).toEqual([]);
+  });
+
+  it("returns an empty array when startIndex is at the end", () => {
+    const messages = [{ role: "assistant", content: [{ type: "tool_call", name: "bash" }] }];
+    expect(extractTurnToolCalls(messages, 1)).toEqual([]);
   });
 });

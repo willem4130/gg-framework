@@ -2,7 +2,14 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { theme } from "./theme";
 import { Modal } from "./Modal";
-import { getSettings, saveSettings } from "./agent";
+import { Badge } from "./Badge";
+import {
+  getSettings,
+  saveSettings,
+  getPermissionsStatus,
+  openPermissionsSettings,
+  type PermissionsStatus,
+} from "./agent";
 import { toast } from "./toast";
 
 interface Props {
@@ -14,6 +21,7 @@ interface Props {
 export function SettingsModal({ onClose, onSaved }: Props): React.ReactElement {
   const [projectsRoot, setProjectsRoot] = useState("");
   const [busy, setBusy] = useState(false);
+  const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
 
   useEffect(() => {
     // Native (Rust) read — no sidecar wait needed.
@@ -22,6 +30,17 @@ export function SettingsModal({ onClose, onSaved }: Props): React.ReactElement {
         if (s) setProjectsRoot(s.projectsRoot);
       })
       .catch(() => {});
+  }, []);
+
+  // The permission is granted OUTSIDE the app (System Settings), so re-check
+  // whenever the window regains focus — the common flow is: click "Grant",
+  // flip it in System Settings, alt-tab back. Not applicable on platforms with
+  // nothing to grant (Windows/Linux) — the row hides itself in that case.
+  useEffect(() => {
+    const refresh = (): void => void getPermissionsStatus().then(setPermissions);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, []);
 
   async function browse(): Promise<void> {
@@ -47,6 +66,25 @@ export function SettingsModal({ onClose, onSaved }: Props): React.ReactElement {
 
   return (
     <Modal title="Settings" onClose={onClose}>
+      {permissions?.applicable && (
+        <>
+          <div className="modal-label" style={{ color: theme.textMuted }}>
+            Permissions
+          </div>
+          <div className="modal-row">
+            <button
+              className="modal-btn"
+              onClick={() => void openPermissionsSettings()}
+              disabled={permissions.granted}
+            >
+              {permissions.granted ? "Permissions granted" : "Grant Permissions…"}
+            </button>
+            <Badge color={permissions.granted ? theme.success : theme.textMuted}>
+              {permissions.granted ? "Granted" : "Not granted"}
+            </Badge>
+          </div>
+        </>
+      )}
       <div className="modal-label" style={{ color: theme.textMuted }}>
         Project folder
       </div>

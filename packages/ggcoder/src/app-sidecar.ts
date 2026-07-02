@@ -29,6 +29,8 @@ import {
   isWorkflowCommandText,
   countAssistantMessages,
   shouldStartAutopilotCycle,
+  extractTurnToolCalls,
+  isMechanicalOnlyTurn,
   type WorkflowCommandSpec,
 } from "./core/autopilot-gate.js";
 import { driveAutopilotCycle } from "./core/autopilot-cycle.js";
@@ -1393,6 +1395,7 @@ async function createSession(
           next.attachments.length === 0 &&
           isWorkflowCommandText(next.text, await loadWorkflowCommandSpecs());
         const assistantsBefore = countAssistantMessages(session.getMessages());
+        const messagesBefore = session.getMessages().length;
         await runAgent(next.text, async () => {
           if (next.attachments.length > 0) {
             await session.promptWithAttachments(next.text, next.attachments);
@@ -1406,6 +1409,13 @@ async function createSession(
           planMode: session.getPlanMode(),
           workflowCommand,
           assistantMessagesAdded: countAssistantMessages(session.getMessages()) - assistantsBefore,
+          // Skip the review API call outright for turns that only started a
+          // background process (dev server/watcher), ran a read-only lookup, or
+          // committed/pushed — Ken's autopilot contract already IGNOREs these,
+          // so there's no reason to pay for that verdict.
+          mechanicalOnly: isMechanicalOnlyTurn(
+            extractTurnToolCalls(session.getMessages(), messagesBefore),
+          ),
         });
         if (decision.start) {
           await runAutopilotCycle(next.text);
@@ -1994,6 +2004,7 @@ async function createSession(
         const workflowCommand =
           attachments.length === 0 && isWorkflowCommandText(text, await loadWorkflowCommandSpecs());
         const assistantsBefore = countAssistantMessages(session.getMessages());
+        const messagesBefore = session.getMessages().length;
         await runAgent(text, async () => {
           if (attachments.length > 0) {
             // Persist each attachment under .gg/uploads so files are inspectable
@@ -2023,6 +2034,13 @@ async function createSession(
           planMode: session.getPlanMode(),
           workflowCommand,
           assistantMessagesAdded: countAssistantMessages(session.getMessages()) - assistantsBefore,
+          // Skip the review API call outright for turns that only started a
+          // background process (dev server/watcher), ran a read-only lookup, or
+          // committed/pushed — Ken's autopilot contract already IGNOREs these,
+          // so there's no reason to pay for that verdict.
+          mechanicalOnly: isMechanicalOnlyTurn(
+            extractTurnToolCalls(session.getMessages(), messagesBefore),
+          ),
         });
         if (decision.start) {
           await runAutopilotCycle(text);

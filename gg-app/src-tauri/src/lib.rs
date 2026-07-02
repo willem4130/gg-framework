@@ -65,6 +65,19 @@ struct DroppedPathInfo {
     is_dir: bool,
 }
 
+/// OS-level permission status shown in the Settings modal's "Grant
+/// Permissions" row. Only macOS has anything to grant today (Full Disk
+/// Access — needed because the subagent tool spawns a fresh `ggnode` process
+/// per call, which re-triggers macOS's per-folder privacy prompts under
+/// Desktop/Documents/Downloads/iCloud). Windows/Linux report
+/// `applicable: false` so the webview hides the row entirely instead of
+/// showing a badge for a permission that doesn't exist there.
+#[derive(serde::Serialize)]
+struct PermissionsStatus {
+    applicable: bool,
+    granted: bool,
+}
+
 /// Pending per-window restore targets, consumed once by the webview on mount.
 #[derive(Default)]
 struct RestoreTargets {
@@ -2782,6 +2795,56 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Whether this process can read inside a macOS TCC-protected folder (probed
+/// via the user's Documents directory, present on every account). Full Disk
+/// Access grants blanket read access to all of them at once; a narrower grant
+/// (e.g. only Desktop) would still fail this Documents probe, which is the
+/// intentionally strict behavior — the Settings badge should read "not
+/// granted" until Full Disk Access covers everything the subagent process
+/// might need. Returns `true` immediately on non-macOS (no probe needed).
+#[cfg(target_os = "macos")]
+fn full_disk_access_granted() -> bool {
+    let probe = home_dir().join("Documents");
+    std::fs::read_dir(&probe).is_ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn full_disk_access_granted() -> bool {
+    true
+}
+
+/// Report whether there's an OS permission to grant on this platform, and
+/// whether it's currently granted. Windows/Linux have nothing to grant (the
+/// subagent-respawn TCC issue is macOS-only), so `applicable` is false and the
+/// Settings modal hides the row entirely.
+#[tauri::command]
+fn permissions_status() -> PermissionsStatus {
+    PermissionsStatus {
+        applicable: cfg!(target_os = "macos"),
+        granted: full_disk_access_granted(),
+    }
+}
+
+/// Open System Settings' Full Disk Access pane directly (macOS only — the
+/// frontend only shows the button when `permissions_status().applicable` is
+/// true). `x-apple.systempreferences` deep-links straight past the generic
+/// Privacy & Security landing page.
+#[tauri::command]
+fn open_permissions_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("not applicable on this platform".into())
+    }
+}
+
 /// Pure cwd decision (testable without touching env/filesystem).
 /// - `env_override` (GG_APP_CWD) always wins.
 /// - dev build → the workspace root (`CARGO_MANIFEST_DIR/../..`).
@@ -3102,6 +3165,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             dropped_path_info,
+            permissions_status,
+            open_permissions_settings,
             read_dropped_file_attachment,
             open_project_path,
             agent_state,

@@ -622,6 +622,41 @@ export async function saveSettings(projectsRoot: string): Promise<void> {
   await invoke("app_settings_save", { projectsRoot });
 }
 
+export interface PermissionsStatus {
+  /** False on platforms with nothing to grant (Windows/Linux today) — the
+   *  caller should hide the permissions row entirely rather than show a
+   *  badge for a permission that doesn't exist. */
+  applicable: boolean;
+  granted: boolean;
+}
+
+/**
+ * OS permission needed for sub-agents to run without repeat "Allow" prompts:
+ * each subagent call spawns a fresh `ggnode` process, and macOS re-triggers
+ * its per-folder privacy prompt (Desktop/Documents/Downloads/iCloud) for every
+ * newly-spawned binary unless Full Disk Access is granted. Handled NATIVELY in
+ * Rust so it works even before the sidecar is up. Falls back to "not
+ * applicable" on any failure so the row degrades to hidden, never stuck open.
+ */
+export async function getPermissionsStatus(): Promise<PermissionsStatus> {
+  try {
+    return await invoke<PermissionsStatus>("permissions_status");
+  } catch (e) {
+    await logError(`permissions_status failed: ${String(e)}`);
+    return { applicable: false, granted: false };
+  }
+}
+
+/** Open the OS's permission-grant screen (macOS: System Settings → Privacy &
+ *  Security → Full Disk Access). No-op on platforms where it's not applicable. */
+export async function openPermissionsSettings(): Promise<void> {
+  try {
+    await invoke("open_permissions_settings");
+  } catch (e) {
+    await logError(`open_permissions_settings failed: ${String(e)}`);
+  }
+}
+
 /**
  * Create a new project folder (lowercase/dashes name) under the configured
  * projects root. Returns the created absolute path. Handled NATIVELY in Rust
