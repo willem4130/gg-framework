@@ -21,13 +21,9 @@ describe("Speed Benchmark", () => {
     // turn (turn 4) misses the 5-min cache but hits the 1-h cache.
     expect(comparison.optimized.cacheHitRate).toBeGreaterThan(comparison.baseline.cacheHitRate);
 
-    // The optimized run should have lower total TTFT.
+    // The optimization target is lower TTFT. Total wall-clock includes fixed
+    // output streaming sleeps and can jitter by a few milliseconds in CI.
     expect(comparison.optimized.totalTtftMs).toBeLessThan(comparison.baseline.totalTtftMs);
-
-    // The optimized run should have lower total wall-clock.
-    expect(comparison.optimized.totalWallClockMs).toBeLessThan(
-      comparison.baseline.totalWallClockMs,
-    );
 
     // TTFT improvement should be meaningful (> 5%).
     expect(comparison.ttftImprovement).toBeGreaterThan(5);
