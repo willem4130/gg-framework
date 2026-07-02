@@ -1,5 +1,14 @@
 # @kenkaiiii/ggcoder
 
+## 5.6.2
+
+### Patch Changes
+
+- Optimize Ken mentor/autopilot prompt caching: fold static project context (CLAUDE.md/AGENTS.md) into the cached system prompt instead of resending it uncached every turn, and force long cache retention on Ken sessions independent of the user's global speed profile.
+  - @kenkaiiii/gg-ai@5.6.2
+  - @kenkaiiii/gg-agent@5.6.2
+  - @kenkaiiii/gg-core@5.6.2
+
 ## 5.6.1
 
 ### Patch Changes
