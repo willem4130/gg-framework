@@ -35,7 +35,6 @@ import {
 } from "./core/autopilot-gate.js";
 import { driveAutopilotCycle } from "./core/autopilot-cycle.js";
 import { validateKenModelPref, effectiveKenModel, type KenModelPref } from "./core/ken-model.js";
-import { collectProjectContext } from "./system-prompt.js";
 import type { KenTurnPayload, AutopilotMarkerPayload } from "./core/session-manager.js";
 import { AuthStorage } from "./core/auth-storage.js";
 import { MOONSHOT_OAUTH_KEY, XIAOMI_CREDITS_KEY } from "@kenkaiiii/gg-core";
@@ -799,24 +798,25 @@ function lastAssistantText(messages: ReturnType<AgentSession["getMessages"]>): s
 }
 
 /**
- * Assemble Ken's context digest for one `@Ken` question: project docs (up the
- * tree) + git/env + the build session's compaction summary + recent activity.
- * Prepended to the user's question as Ken's prompt body each turn. Workflow
- * commands + autopilot-injected prompts are passed through so the digest
- * labels them as what they are instead of user-authored asks.
+ * Assemble Ken's context digest for one `@Ken` question: git/env + the build
+ * session's compaction summary + recent activity. Prepended to the user's
+ * question as Ken's prompt body each turn. Project docs (CLAUDE.md/AGENTS.md)
+ * are NOT here — they're folded into Ken's cached system prompt once per
+ * session instead (see ken-prompt.ts), so they hit the provider prompt cache
+ * instead of being re-sent uncached on every question. Workflow commands +
+ * autopilot-injected prompts are passed through so the digest labels them as
+ * what they are instead of user-authored asks.
  */
-async function buildKenContext(
+function buildKenContext(
   buildSession: AgentSession,
   cwd: string,
   gitBranch: string | null,
   question: string,
   workflowCommands: readonly WorkflowCommandSpec[],
   injectedPrompts: readonly string[],
-): Promise<string> {
-  const projectContext = await collectProjectContext(cwd).catch(() => [] as string[]);
+): string {
   return buildKenDigest({
     question,
-    projectContext,
     cwd,
     gitBranch,
     messages: buildSession.getMessages(),
@@ -1143,11 +1143,14 @@ async function createSession(
       provider: target.provider,
       model: target.model,
       cwd,
-      systemPrompt: buildKenSystemPrompt(),
+      systemPrompt: await buildKenSystemPrompt(cwd),
       allowedTools: KEN_ALLOWED_TOOLS,
       allowedMcpServers: KEN_ALLOWED_MCP_SERVERS,
       transient: true,
       signal: kenAbort.signal,
+      // Ken's bursty, spread-out turns (chat) outlast the default 5-min cache
+      // TTL regardless of the user's global speedProfile pick.
+      forceLongCacheRetention: true,
     });
     await ken.initialize();
     // Bridge Ken's bus to the shared SSE fan-out with ken_-prefixed types so the
@@ -1209,11 +1212,14 @@ async function createSession(
       provider: target.provider,
       model: target.model,
       cwd,
-      systemPrompt: buildKenAutopilotSystemPrompt(),
+      systemPrompt: await buildKenAutopilotSystemPrompt(cwd),
       allowedTools: KEN_ALLOWED_TOOLS,
       allowedMcpServers: KEN_ALLOWED_MCP_SERVERS,
       transient: true,
       signal: kenAutoAbort.signal,
+      // Autopilot review rounds routinely span the injected GG Coder run
+      // (often >5 min) regardless of the user's global speedProfile pick.
+      forceLongCacheRetention: true,
     });
     await ken.initialize();
     // Deliberately no bus bridge: the review is silent. Errors surface via the
@@ -1292,9 +1298,7 @@ async function createSession(
     broadcast("autopilot_review_start", {});
     try {
       const ken = await ensureKenAutoSession();
-      const projectContext = await collectProjectContext(cwd).catch(() => [] as string[]);
       const digest = buildKenAutopilotContext({
-        projectContext,
         cwd,
         gitBranch,
         messages: session.getMessages(),

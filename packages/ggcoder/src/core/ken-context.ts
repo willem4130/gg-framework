@@ -9,6 +9,12 @@
  *
  * Kept pure + dependency-light so it's unit-testable without booting the sidecar
  * (which runs `main()` at import time).
+ *
+ * NOTE: static project docs (CLAUDE.md/AGENTS.md) are NOT part of this digest
+ * — they're folded into Ken's cached system prompt once per session
+ * (`buildKenSystemPrompt`/`buildKenAutopilotSystemPrompt` in ken-prompt.ts) so
+ * they hit the provider prompt cache instead of being re-sent uncached on
+ * every `@Ken` question and every autopilot review round.
  */
 import type { Message, ContentPart, ToolResult } from "@kenkaiiii/gg-ai";
 import { matchExpandedCommand, type WorkflowCommandSpec } from "./autopilot-gate.js";
@@ -36,8 +42,6 @@ export const INJECTED_PROMPT_LABEL = "**Ken autopilot (injected):**";
 export interface KenDigestInput {
   /** The user's `@Ken …` text (already stripped of the mention). */
   question: string;
-  /** `collectProjectContext(cwd)` output — CLAUDE.md/AGENTS.md up the tree. */
-  projectContext: string[];
   cwd: string;
   gitBranch: string | null;
   /** Build session messages (`buildSession.getMessages()`). */
@@ -228,7 +232,6 @@ export function buildKenDigest(input: KenDigestInput): string {
   );
 
   const building: string[] = [];
-  if (input.projectContext.length > 0) building.push(input.projectContext.join("\n\n"));
   building.push(
     `- Working directory: ${input.cwd}`,
     `- Platform: ${platform}`,

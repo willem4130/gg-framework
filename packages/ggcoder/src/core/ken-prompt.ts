@@ -8,9 +8,14 @@
  * runnable prompts the user can fire into GG Coder, plus blunt, casual
  * mentorship. Ken never writes code; he recommends, GG Coder executes.
  *
- * This module owns ONLY Ken's identity + method. The "what they're building"
- * context is built fresh each turn by `buildKenContext()` in the sidecar.
+ * This module owns Ken's identity + method, PLUS the static project-context
+ * files (CLAUDE.md/AGENTS.md up the tree) — they rarely change turn to turn,
+ * so they're read once per session creation and folded into the cached system
+ * prompt instead of being re-sent uncached in every digest (see
+ * `buildKenDigest()` in ken-context.ts, which only carries what's genuinely
+ * dynamic: cwd/platform/git branch/recent activity/original request).
  */
+import { collectProjectContext } from "../system-prompt.js";
 
 /** The fenced-block language Ken wraps every recommended GG Coder prompt in.
  *  The webview special-cases ```prompt blocks into a "Send to GG Coder" button. */
@@ -39,7 +44,7 @@ function renderUncachedDateSuffix(): string {
  * are listed by the session's own Tools section; this prompt teaches him how to
  * think and how to format what he hands back.
  */
-export function buildKenSystemPrompt(): string {
+export async function buildKenSystemPrompt(cwd: string): Promise<string> {
   return [
     renderIdentity(),
     renderEdge(),
@@ -51,10 +56,13 @@ export function buildKenSystemPrompt(): string {
     renderDiscipline(),
     renderVoice(),
     renderContextNote(),
+    await renderProjectContext(cwd),
     // Volatile date AFTER the uncached marker, so the static persona above stays
     // in the provider prompt cache and only this line changes day to day.
     renderUncachedDateSuffix(),
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -66,7 +74,7 @@ export function buildKenSystemPrompt(): string {
  * user-facing output contract for the verdict format and drops the chat-voice
  * sections to save tokens.
  */
-export function buildKenAutopilotSystemPrompt(): string {
+export async function buildKenAutopilotSystemPrompt(cwd: string): Promise<string> {
   return [
     renderIdentity(),
     renderSkeptical(),
@@ -74,9 +82,22 @@ export function buildKenAutopilotSystemPrompt(): string {
     renderMethod(),
     renderDiscipline(),
     renderAutopilotContract(),
+    await renderProjectContext(cwd),
     // Volatile date AFTER the uncached marker so the static persona stays cached.
     renderUncachedDateSuffix(),
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** Static project-context files (CLAUDE.md/AGENTS.md up the tree from cwd),
+ *  folded into the cached system prompt. Read once per session creation
+ *  instead of per-turn in the digest — rarely changes mid-session, and even
+ *  when it does, a stale read is harmless (Ken's tools can always re-check). */
+async function renderProjectContext(cwd: string): Promise<string> {
+  const parts = await collectProjectContext(cwd).catch(() => [] as string[]);
+  if (parts.length === 0) return "";
+  return `## Project context\n\n${parts.join("\n\n")}`;
 }
 
 function renderIdentity(): string {

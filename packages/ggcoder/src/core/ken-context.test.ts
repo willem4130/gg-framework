@@ -74,15 +74,13 @@ describe("Ken allowedTools filter", () => {
 describe("buildKenDigest", () => {
   const base = {
     question: "what next?",
-    projectContext: ["### CLAUDE.md\n\nBuild a todo app."],
     cwd: "/tmp/proj",
     gitBranch: "main" as string | null,
     platform: "darwin",
   };
 
-  it("includes the project context, env, and the question", () => {
+  it("includes the env and the question", () => {
     const digest = buildKenDigest({ ...base, messages: [] });
-    expect(digest).toContain("Build a todo app.");
     expect(digest).toContain("/tmp/proj");
     expect(digest).toContain("main");
     expect(digest).toContain("what next?");
@@ -123,7 +121,6 @@ describe("buildKenDigest", () => {
       { role: "assistant", content: "Added the form." },
     ];
     const digest = buildKenAutopilotContext({
-      projectContext: base.projectContext,
       cwd: base.cwd,
       gitBranch: base.gitBranch,
       platform: base.platform,
@@ -168,7 +165,6 @@ describe("buildKenDigest", () => {
 describe("buildKenDigest — original request pinning", () => {
   const base = {
     question: "review it",
-    projectContext: [] as string[],
     cwd: "/tmp/proj",
     gitBranch: "main" as string | null,
     platform: "darwin",
@@ -220,7 +216,6 @@ describe("buildKenDigest — original request pinning", () => {
 describe("buildKenDigest — injected-prompt labeling", () => {
   const base = {
     question: "review it",
-    projectContext: [] as string[],
     cwd: "/tmp/proj",
     gitBranch: null,
     platform: "darwin",
@@ -252,7 +247,6 @@ describe("buildKenDigest — injected-prompt labeling", () => {
 describe("buildKenDigest — workflow-command labeling", () => {
   const base = {
     question: "review it",
-    projectContext: [] as string[],
     cwd: "/tmp/proj",
     gitBranch: null,
     platform: "darwin",

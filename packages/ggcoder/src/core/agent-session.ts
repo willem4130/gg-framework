@@ -148,6 +148,16 @@ export interface AgentSessionOptions {
    * MCP entirely (its dynamic tool names could never match a fixed allow-list).
    */
   allowedMcpServers?: string[];
+  /**
+   * Force 1-h prompt-cache TTL + pre-warm regardless of the user's global
+   * `speedProfile` setting. Bursty read-only advisory sessions (the Ken
+   * mentor + autopilot reviewer) call the same static system prompt on a
+   * schedule that routinely exceeds the default 5-min cache window — a
+   * dropped cache there resends the whole cached prefix at full price right
+   * when it matters most, independent of whatever the user picked for the
+   * main build session. Default (undefined) = follow `speedProfile`.
+   */
+  forceLongCacheRetention?: boolean;
 }
 
 // ── State ──────────────────────────────────────────────────
@@ -1464,9 +1474,13 @@ export class AgentSession {
     this.opts = { ...this.opts, signal };
   }
 
-  /** True when speedProfile is "optimized" (1-h cache TTL + pre-warm). */
+  /** True when speedProfile is "optimized" (1-h cache TTL + pre-warm), or the
+   *  session was constructed with `forceLongCacheRetention` (Ken sessions). */
   private isSpeedOptimized(): boolean {
-    return this.settingsManager?.get("speedProfile") === "optimized";
+    return (
+      this.opts.forceLongCacheRetention === true ||
+      this.settingsManager?.get("speedProfile") === "optimized"
+    );
   }
 
   /**

@@ -1,9 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { buildKenSystemPrompt, buildKenAutopilotSystemPrompt } from "./ken-prompt.js";
 import { INJECTED_PROMPT_LABEL } from "./ken-context.js";
 
+// No CLAUDE.md/AGENTS.md up the tree from tmpdir, so the appended project-
+// context section is empty and these assertions stay focused on the persona.
+const TEST_CWD = os.tmpdir();
+
 describe("buildKenAutopilotSystemPrompt — verdict contract", () => {
-  const prompt = buildKenAutopilotSystemPrompt();
+  let prompt: string;
+  beforeAll(async () => {
+    prompt = await buildKenAutopilotSystemPrompt(TEST_CWD);
+  });
 
   it("teaches all four verdict keywords", () => {
     for (const keyword of ["PROMPT", "ALL_CLEAR", "IGNORE", "HUMAN"]) {
@@ -50,10 +60,25 @@ describe("buildKenAutopilotSystemPrompt — verdict contract", () => {
 });
 
 describe("buildKenSystemPrompt — chat mode unaffected", () => {
-  it("keeps the chat output contract (prompt fence) and no verdict keywords", () => {
-    const prompt = buildKenSystemPrompt();
+  it("keeps the chat output contract (prompt fence) and no verdict keywords", async () => {
+    const prompt = await buildKenSystemPrompt(TEST_CWD);
     expect(prompt).toContain("Send to GG Coder");
     // The verdict contract is autopilot-only.
     expect(prompt).not.toContain("ALL_CLEAR");
+  });
+});
+
+describe("buildKenSystemPrompt / buildKenAutopilotSystemPrompt — project context", () => {
+  it("folds project context into the cached system prompt, not the per-turn digest", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ken-prompt-test-"));
+    await fs.writeFile(path.join(dir, "CLAUDE.md"), "Build a todo app.");
+    try {
+      const chat = await buildKenSystemPrompt(dir);
+      const autopilot = await buildKenAutopilotSystemPrompt(dir);
+      expect(chat).toContain("Build a todo app.");
+      expect(autopilot).toContain("Build a todo app.");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
