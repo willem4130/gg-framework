@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.8.0
+
+### Minor Changes
+
+- Autopilot now reviews submitted plans itself, auto-approves sound plans, requests revisions when needed, and starts implementation without a human blocker.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.8.0
+- @kenkaiiii/gg-agent@5.8.0
+- @kenkaiiii/gg-core@5.8.0
+
 ## 5.7.0
 
 ### Minor Changes
