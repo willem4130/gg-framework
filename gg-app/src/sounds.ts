@@ -9,7 +9,7 @@ import fuguUrl from "./assets/fugu.mp3";
 import kenAutopilotOnUrl from "./assets/ken-autopilot-on.mp3";
 import kenAutopilotOffUrl from "./assets/ken-autopilot-off.mp3";
 import levelUpUrl from "./assets/levelup.mp3";
-import expUrl from "./assets/exp.mp3";
+import expUrl from "./assets/exp-new.mp3";
 
 export type UiSound =
   | "click"
