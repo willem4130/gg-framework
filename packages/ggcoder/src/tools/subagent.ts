@@ -4,10 +4,28 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
+import type { Provider } from "@kenkaiiii/gg-ai";
 import type { AgentDefinition } from "../core/agents.js";
+import { getFastModel } from "../core/model-registry.js";
 import { log } from "../core/logger.js";
 import { truncateTail } from "./truncate.js";
 import { isPlanModeActive, planModeRestriction } from "../core/runtime-mode.js";
+
+// Tools that can mutate the workspace. A named agent whose allow-list contains
+// none of these is a read-only scout (recon/research) — safe to route to the
+// provider's fast/cheap model. An agent that can write/edit keeps the parent
+// model so code changes never regress in quality.
+const MUTATING_TOOLS = new Set(["write", "edit"]);
+
+/**
+ * True when the sub-agent is a read-only scout: an explicit named agent with a
+ * non-empty tool allow-list that grants no mutating tool. A subagent call with
+ * no `agent` (full toolset) is NOT read-only — it keeps the parent model.
+ */
+function isReadOnlyAgent(agentDef: AgentDefinition | undefined): boolean {
+  if (!agentDef || agentDef.tools.length === 0) return false;
+  return !agentDef.tools.some((tool) => MUTATING_TOOLS.has(tool.toLowerCase()));
+}
 
 const SUB_AGENT_MAX_TURNS = 50;
 const SUB_AGENT_MAX_OUTPUT_CHARS = 100_000; // ~25k tokens, matches other tool limits
@@ -90,7 +108,14 @@ export function createSubAgentTool(
       }
 
       const useProvider = getParentProvider();
-      const useModel = getParentModel();
+      // Read-only scouts (recon/research) run on the provider's fast/cheap model
+      // — lower TTFT + spend, no quality risk since they never edit code.
+      // Agents that can write, and default (unnamed) sub-agents, keep the
+      // parent model.
+      const parentModel = getParentModel();
+      const useModel = isReadOnlyAgent(agentDef)
+        ? getFastModel(useProvider as Provider, parentModel).id
+        : parentModel;
 
       // Build CLI args — limit turns to prevent runaway context growth
       const cliArgs: string[] = [

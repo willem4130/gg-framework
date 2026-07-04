@@ -506,3 +506,19 @@ export function getSummaryModel(provider: Provider, currentModelId: string): Mod
   // Moonshot or fallback: use current model
   return getModel(currentModelId) ?? getDefaultModel(provider);
 }
+
+/**
+ * Fastest/cheapest sibling within the SAME provider, for scout-style read-only
+ * sub-agents (recon, research) where a low-latency model is enough and the
+ * frontier model is wasted spend + latency.
+ *
+ * Routes off each model's `costTier` — the single source of truth that already
+ * travels with the registry entry — so a model rename/bump needs no change
+ * here. Providers with no low-tier sibling (Moonshot, MiniMax, Xiaomi, Sakana,
+ * OpenRouter) gracefully keep the parent model, so there's never a crash or a
+ * cross-provider jump to a login the user may not have.
+ */
+export function getFastModel(provider: Provider, currentModelId: string): ModelInfo {
+  const low = getModelsForProvider(provider).find((m) => m.costTier === "low");
+  return low ?? getModel(currentModelId) ?? getDefaultModel(provider);
+}

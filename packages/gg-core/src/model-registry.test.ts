@@ -6,6 +6,7 @@ import {
   getAuthStorageKeys,
   getContextWindow,
   getDefaultModel,
+  getFastModel,
   getModelsForProvider,
   usesOpenAICodexTransport,
 } from "./model-registry.js";
@@ -74,6 +75,29 @@ describe("model registry invariants", () => {
       expect(defaultModel.provider, `${provider} default provider`).toBe(provider);
       expect(MODELS, `${provider} default registered`).toContain(defaultModel);
     }
+  });
+});
+
+describe("getFastModel", () => {
+  it("routes to a low-tier sibling within the same provider", () => {
+    for (const provider of PROVIDERS) {
+      const current = getDefaultModel(provider);
+      const fast = getFastModel(provider, current.id);
+      // Never crosses providers — the user may only have this one connected.
+      expect(fast.provider).toBe(provider);
+      const hasLowTier = getModelsForProvider(provider).some((m) => m.costTier === "low");
+      if (hasLowTier) {
+        expect(fast.costTier).toBe("low");
+      } else {
+        // No cheap sibling — gracefully keeps the current model.
+        expect(fast.id).toBe(current.id);
+      }
+    }
+  });
+
+  it("picks Haiku for Anthropic and mini for OpenAI", () => {
+    expect(getFastModel("anthropic", "claude-opus-4-8").costTier).toBe("low");
+    expect(getFastModel("openai", "gpt-5.5").id).toBe("gpt-5.4-mini");
   });
 });
 
