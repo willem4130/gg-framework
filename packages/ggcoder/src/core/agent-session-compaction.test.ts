@@ -139,3 +139,97 @@ describe("AgentSession worker auto-compaction", () => {
     );
   });
 });
+
+/** Every .jsonl under the ggcoder session store — must stay empty for
+ *  transient sessions (Ken chat/autopilot, subagent spawns). */
+async function listSessionFiles(): Promise<string[]> {
+  const sessionsDir = path.join(tmpHome, ".gg", "sessions");
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.name.endsWith(".jsonl")) out.push(full);
+    }
+  };
+  await walk(sessionsDir);
+  return out;
+}
+
+describe("transient sessions never leak to the session store", () => {
+  // Regression: the Ken autopilot session (transient: true) was leaking one
+  // 3-line "## Who you are … Ken Kai" session file per review cycle into the
+  // project's session list — via compact() assigning a real sessionPath and
+  // via newSession() (autopilot's per-cycle resetReviewer) creating a file
+  // unconditionally.
+
+  it("compact() keeps a transient session fully in memory — no session file", async () => {
+    shouldCompactMock.mockReturnValue(true);
+    compactMock.mockResolvedValue({
+      messages: [
+        { role: "system", content: "ken system prompt" },
+        { role: "user", content: "[compacted]" },
+      ],
+      result: {
+        compacted: true,
+        originalCount: 2,
+        newCount: 2,
+        tokensBeforeEstimate: 100_000,
+        tokensAfterEstimate: 1_000,
+      },
+    });
+    agentLoopMock.mockImplementation(async function* (messages: Message[]) {
+      messages.push({ role: "assistant", content: "IGNORE" });
+      yield { type: "agent_done" };
+    });
+
+    const { AgentSession } = await import("./agent-session.js");
+    const session = new AgentSession({
+      provider: "anthropic",
+      model: "claude-test",
+      cwd: tmpProject,
+      systemPrompt: "ken system prompt",
+      transient: true,
+    });
+    await session.initialize();
+    await session.prompt("review this turn");
+    // Post-compaction persistence paths must all stay no-ops.
+    await session.persistKenTurn("q", "a");
+    await session.persistAutopilotMarker("done");
+    await session.dispose();
+
+    expect(compactMock).toHaveBeenCalled();
+    expect(await listSessionFiles()).toEqual([]);
+  });
+
+  it("newSession() on a transient session creates no file and detaches the DAG leaf", async () => {
+    shouldCompactMock.mockReturnValue(false);
+    agentLoopMock.mockImplementation(async function* (messages: Message[]) {
+      messages.push({ role: "assistant", content: "ALL_CLEAR" });
+      yield { type: "agent_done" };
+    });
+
+    const { AgentSession } = await import("./agent-session.js");
+    const session = new AgentSession({
+      provider: "anthropic",
+      model: "claude-test",
+      cwd: tmpProject,
+      systemPrompt: "ken system prompt",
+      transient: true,
+    });
+    await session.initialize();
+    await session.prompt("cycle 1");
+    // Autopilot's per-cycle resetReviewer path.
+    await session.newSession();
+    await session.prompt("cycle 2");
+    await session.dispose();
+
+    expect(await listSessionFiles()).toEqual([]);
+  });
+});

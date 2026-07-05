@@ -25,6 +25,12 @@
  *
  * Parsing is forgiving and safe-by-default: any reply we can't confidently map
  * to PROMPT, ALL_CLEAR, or IGNORE becomes a HUMAN stop, never a blind loop.
+ *
+ * Recovery order for prose-then-keyword drift (Ken writing commentary before
+ * the verdict despite the contract): bare trailing ALL_CLEAR/IGNORE → buried
+ * HUMAN → buried line-start PROMPT (uppercase, line-start only, so prose like
+ * "prompt the user" can never match). HUMAN wins over PROMPT when both appear
+ * — recovering a stop is always safe, recovering an action must lose ties.
  */
 
 export type AutopilotVerdict =
@@ -72,11 +78,11 @@ function normalizeKeywordLine(line: string): string {
  * Fallback for when Ken ignores the "keyword-first, nothing before it"
  * instruction and buries a bare ALL_CLEAR/IGNORE/SKIP line after a recap or
  * explanation (a real drift pattern models fall into despite the system
- * prompt). Only matches a line that is EXACTLY one of these bare keywords —
- * never PROMPT/HUMAN, since those carry a payload that can't be safely
- * recovered from an arbitrary position in surrounding prose. Returns the
- * LAST such line (the verdict conventionally lands at the end of the drift),
- * or null if none/ambiguous multiple different keywords are present.
+ * prompt). Only matches a line that is EXACTLY one of these bare keywords.
+ * PROMPT/HUMAN carry payloads and get their own dedicated recovery passes in
+ * parseAutopilotVerdict. Returns the LAST such line (the verdict
+ * conventionally lands at the end of the drift), or null if none/ambiguous
+ * multiple different keywords are present.
  */
 function findTrailingBareVerdict(lines: string[]): "all_clear" | "ignore" | null {
   let found: "all_clear" | "ignore" | null = null;
@@ -175,6 +181,20 @@ export function parseAutopilotVerdict(reply: string): AutopilotVerdict {
         .join("\n")
         .trim();
       return { kind: "human", reason: cap(reason) || DEFAULT_HUMAN_REASON };
+    }
+  }
+
+  // Buried PROMPT (the drift that used to dump a valid runnable prompt into a
+  // HUMAN bubble): recover a line that STARTS with the uppercase keyword and
+  // re-parse from there, so both `PROMPT <inline body>` and `PROMPT\n<body>`
+  // shapes work. Uppercase + line-start (never mid-line, never lowercase)
+  // keeps prose like "prompt the user" or "a prompt for GG Coder" from ever
+  // matching. Takes the LAST such line, and runs AFTER the HUMAN recovery so
+  // a reply carrying both stops instead of acting.
+  const BURIED_PROMPT_RE = /^PROMPT(?=$|[\s:.,])/;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (BURIED_PROMPT_RE.test(lines[i].trim())) {
+      return parseAutopilotVerdict(lines.slice(i).join("\n"));
     }
   }
 

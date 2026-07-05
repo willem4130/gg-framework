@@ -1121,28 +1121,38 @@ export class AgentSession {
 
     this.messages = result.messages;
 
-    // Persist compacted messages to a new session file so `ggcoder continue`
-    // picks up the compacted state instead of the full original history.
-    const session = await this.sessionManager.create(this.cwd, this.provider, this.model);
-    this.sessionId = session.id;
-    this.sessionPath = session.path;
+    // Transient sessions (Ken chat/autopilot, subagent spawns) must NEVER touch
+    // the session store: without this guard, the first auto-compaction called
+    // sessionManager.create() and assigned a real sessionPath, silently turning
+    // the "in-memory only" session into a persisted one — every later turn (and
+    // every further compaction) then leaked a Ken transcript file into the
+    // project's session list. Compact in memory only and keep sessionPath empty.
+    if (this.opts.transient) {
+      this.lastPersistedIndex = this.messages.length;
+    } else {
+      // Persist compacted messages to a new session file so `ggcoder continue`
+      // picks up the compacted state instead of the full original history.
+      const session = await this.sessionManager.create(this.cwd, this.provider, this.model);
+      this.sessionId = session.id;
+      this.sessionPath = session.path;
 
-    // Write compacted messages (skip system — it's rebuilt on load)
-    for (const msg of this.messages) {
-      if (msg.role === "system") continue;
-      await this.persistMessage(msg);
+      // Write compacted messages (skip system — it's rebuilt on load)
+      for (const msg of this.messages) {
+        if (msg.role === "system") continue;
+        await this.persistMessage(msg);
+      }
+      this.lastPersistedIndex = this.messages.length;
+      // Carry Ken's advisory turns into the new file so they survive compaction.
+      await this.rePersistKenTurns();
+      await this.rePersistAutopilotMarkers();
+      await this.rePersistAppMarkers();
+      // Persist the compaction counts so a resumed session's quiet notice can
+      // show the same "N → M messages" summary the live run did.
+      await this.persistAppMarker("compaction", {
+        originalCount: result.result.originalCount,
+        newCount: result.result.newCount,
+      });
     }
-    this.lastPersistedIndex = this.messages.length;
-    // Carry Ken's advisory turns into the new file so they survive compaction.
-    await this.rePersistKenTurns();
-    await this.rePersistAutopilotMarkers();
-    await this.rePersistAppMarkers();
-    // Persist the compaction counts so a resumed session's quiet notice can
-    // show the same "N → M messages" summary the live run did.
-    await this.persistAppMarker("compaction", {
-      originalCount: result.result.originalCount,
-      newCount: result.result.newCount,
-    });
 
     this.eventBus.emit("compaction_end", {
       originalCount: result.result.originalCount,
@@ -1173,7 +1183,20 @@ export class AgentSession {
         this.provider,
       ));
     this.messages = [{ role: "system", content: basePrompt }];
-    await this.createNewSession();
+    // Fresh conversation — new entries must not chain onto the old DAG's leaf.
+    this.currentLeafId = null;
+    // Transient sessions (Ken chat/autopilot, subagent spawns) never touch the
+    // session store. Without this guard, autopilot's per-cycle resetReviewer
+    // (kenAutoSession.newSession()) created a real session file EVERY review
+    // cycle — the stream of 3-line "## Who you are … Ken Kai" sessions that
+    // polluted the project's session list.
+    if (this.opts.transient) {
+      this.sessionId = "";
+      this.sessionPath = "";
+      this.lastPersistedIndex = this.messages.length;
+    } else {
+      await this.createNewSession();
+    }
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
   }
 
