@@ -1,5 +1,14 @@
 # @kenkaiiii/ggcoder
 
+## 5.8.5
+
+### Patch Changes
+
+- Autopilot now tells GG Coder when no human is watching: injected review prompts carry a situational-awareness preamble so the agent self-verifies its work and stops asking permission for safe, already-implied steps, while the transcript and resumed sessions still show Ken's clean instruction.
+  - @kenkaiiii/gg-ai@5.8.5
+  - @kenkaiiii/gg-agent@5.8.5
+  - @kenkaiiii/gg-core@5.8.5
+
 ## 5.8.4
 
 ### Patch Changes
