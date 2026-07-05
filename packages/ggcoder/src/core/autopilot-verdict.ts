@@ -162,6 +162,22 @@ export function parseAutopilotVerdict(reply: string): AutopilotVerdict {
   if (trailing === "all_clear") return { kind: "all_clear" };
   if (trailing === "ignore") return { kind: "ignore" };
 
+  // A buried bare HUMAN line (Ken wrote his reasoning first, THEN the verdict).
+  // Take the lines after the LAST exact-"HUMAN" line as the reason and drop the
+  // leading prose. Safe to recover unlike a buried PROMPT: HUMAN stops the cycle
+  // either way, so this can't trigger autonomous action — it only keeps Ken's
+  // internal reasoning out of the human-facing reason bubble (the drift that
+  // dumped his whole recap into the transcript alongside the real reason).
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (normalizeKeywordLine(lines[i]) === "HUMAN") {
+      const reason = lines
+        .slice(i + 1)
+        .join("\n")
+        .trim();
+      return { kind: "human", reason: cap(reason) || DEFAULT_HUMAN_REASON };
+    }
+  }
+
   // Truly unrecognized → stop and ask the human, echoing the raw reply for context.
   return { kind: "human", reason: cap(raw) };
 }

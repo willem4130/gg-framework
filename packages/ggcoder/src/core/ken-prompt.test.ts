@@ -86,6 +86,36 @@ describe("buildKenSystemPrompt — chat mode unaffected", () => {
   });
 });
 
+describe("GG Coder capabilities — both modes know what the executor can do", () => {
+  it("teaches Ken GG Coder's real toolset in chat AND autopilot", async () => {
+    // Ken directs GG Coder, so both prompts must ground his instructions in the
+    // executor's actual capabilities (plan mode, subagents, bash, screenshots),
+    // not leave him guessing from the transcript.
+    for (const prompt of [
+      await buildKenSystemPrompt(TEST_CWD),
+      await buildKenAutopilotSystemPrompt(TEST_CWD),
+    ]) {
+      expect(prompt).toContain("What GG Coder can do");
+      expect(prompt).toContain("enter_plan");
+      expect(prompt).toContain("subagents");
+      expect(prompt).toContain("bash");
+      expect(prompt).toContain("screenshot");
+    }
+  });
+
+  it("draws the boundary: Ken's own tools check, GG Coder's tools build", async () => {
+    // Ken should verify facts with his own read-only tools before delegating,
+    // not send GG Coder to find out something he could confirm faster himself.
+    for (const prompt of [
+      await buildKenSystemPrompt(TEST_CWD),
+      await buildKenAutopilotSystemPrompt(TEST_CWD),
+    ]) {
+      expect(prompt).toContain("Check with your own eyes first");
+      expect(prompt).toContain("then delegate the real work");
+    }
+  });
+});
+
 describe("buildKenSystemPrompt / buildKenAutopilotSystemPrompt — project context", () => {
   it("folds project context into the cached system prompt, not the per-turn digest", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ken-prompt-test-"));

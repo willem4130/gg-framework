@@ -48,6 +48,7 @@ export async function buildKenSystemPrompt(cwd: string): Promise<string> {
   return [
     renderIdentity(),
     renderEdge(),
+    renderGGCoderCapabilities(),
     renderSkeptical(),
     renderTaste(),
     renderMethod(),
@@ -77,6 +78,7 @@ export async function buildKenSystemPrompt(cwd: string): Promise<string> {
 export async function buildKenAutopilotSystemPrompt(cwd: string): Promise<string> {
   return [
     renderIdentity(),
+    renderGGCoderCapabilities(),
     renderSkeptical(),
     renderTaste(),
     renderMethod(),
@@ -129,6 +131,39 @@ function renderEdge(): string {
     `Litmus test: if your answer is something the user could've told GG Coder ` +
     `directly for the same result, you added nothing. Be the strategy, the ` +
     `skeptic, or the better-shaped ask.`
+  );
+}
+
+function renderGGCoderCapabilities(): string {
+  return (
+    `## What GG Coder can do\n\n` +
+    `You direct GG Coder, so you have to know its reach. It is a full coding agent ` +
+    `with these tools, and your prompts should assume them instead of making the ` +
+    `user do anything it can do itself:\n` +
+    `- Edits the repo: read, write, edit files; grep/find/ls to search and navigate.\n` +
+    `- Runs the shell: bash for installs, builds, tests, git, migrations, scripts, ` +
+    `and any long-running/background process. It can and should verify its own work ` +
+    `by running things.\n` +
+    `- Plan mode: enter_plan drops it into read-only research and drafts a written ` +
+    `plan for approval before touching code; exit_plan submits it. Ask for a plan ` +
+    `when a task is big or risky enough to design before building.\n` +
+    `- Spawns subagents: parallel isolated workers for focused subtasks (research, ` +
+    `wide exploration, branch-isolated changes). Big multi-part jobs can fan out.\n` +
+    `- Sees the web: web_search + web_fetch for live docs, and source_path to read ` +
+    `installed dependency source.\n` +
+    `- Sees the UI: screenshot renders a local dev server or URL to a PNG so it can ` +
+    `visually self-check what it built. It can also generate images on request.\n` +
+    `- Live type checking: every edit gets compiler-grade LSP diagnostics fed back, ` +
+    `so it self-corrects type errors as it goes.\n` +
+    `- MCP tools and custom .gg/commands may extend it further per project.\n\n` +
+    `So when you hand over a prompt, tell it to set up, build, test, and screenshot ` +
+    `itself. Push it to plan when the work warrants a plan, to fan out to subagents ` +
+    `when the work is wide, and to prove it ran, not just wrote.\n\n` +
+    `Two different jobs, don't confuse them: your OWN read-only tools are for ` +
+    `checking things yourself right now (verify a claim, read the code, see the UI); ` +
+    `GG Coder's tools are for the actual building. Check with your own eyes first — ` +
+    `don't send GG Coder off to find out something you could confirm faster ` +
+    `read-only — then delegate the real work.`
   );
 }
 

@@ -114,11 +114,35 @@ describe("parseAutopilotVerdict", () => {
     expect(parseAutopilotVerdict(reply)).toEqual({ kind: "ignore" });
   });
 
-  it("does NOT recover a PROMPT or HUMAN keyword from a later line — only bare ALL_CLEAR/IGNORE", () => {
-    // PROMPT/HUMAN carry a payload that can't be safely recovered from an
-    // arbitrary position in surrounding prose, so this still falls to human.
+  it("does NOT recover a buried PROMPT keyword — its body can't be safely recovered", () => {
+    // A buried PROMPT would trigger autonomous action off a malformed reply, so
+    // it stays a HUMAN stop (safe-by-default).
     const reply = "Some commentary about the change.\nPROMPT\nFix the bug.";
     const v = parseAutopilotVerdict(reply);
     expect(v.kind).toBe("human");
+  });
+
+  it("recovers a buried HUMAN, dropping the leading reasoning prose", () => {
+    // Ken drifted: he wrote his whole recap first, THEN the verdict. Recover the
+    // reason after the keyword and drop the prose — HUMAN stops either way.
+    const reply =
+      "The screenshot shows a clean squared inward spiral that matches the " +
+      "reference. Tests green. GG Coder asked whether to dress it up with art — " +
+      "that's a taste/product call the user should own.\nHUMAN\nStructural spiral " +
+      "is done; dressing it up with art is a taste call only you can make.";
+    const v = parseAutopilotVerdict(reply);
+    expect(v.kind).toBe("human");
+    if (v.kind === "human") {
+      expect(v.reason).toBe(
+        "Structural spiral is done; dressing it up with art is a taste call only you can make.",
+      );
+      expect(v.reason).not.toContain("The screenshot shows");
+    }
+  });
+
+  it("gives a buried bare HUMAN with no trailing reason the default reason", () => {
+    const v = parseAutopilotVerdict("Long recap of the work with no verdict payload.\nHUMAN");
+    expect(v.kind).toBe("human");
+    if (v.kind === "human") expect(v.reason.length).toBeGreaterThan(0);
   });
 });
