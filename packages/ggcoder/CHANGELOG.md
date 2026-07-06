@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.9.0
+
+### Minor Changes
+
+- Hash-anchored span edits and opt-in persistent bash session. The edit tool gains a `{ span, lines }` form: pin a line range by its line+hash anchors from a `read` with `anchors:true` and supply only the replacement lines — no retyping existing code, stale files rejected before any write. Benchmarked on Sonnet 5 at −19% output tokens overall and −76% on repetitive code, with equal correctness. The bash tool gains `persist: true`: commands run in a long-lived session shell where cd, env vars, and shell state survive across calls (~0.3ms vs ~6.4ms per-call overhead).
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.9.0
+- @kenkaiiii/gg-agent@5.9.0
+- @kenkaiiii/gg-core@5.9.0
+
 ## 5.8.8
 
 ### Patch Changes
