@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.15.0",
+    date: "2026-07-10",
+    items: [
+      "Your Claude and Codex limits now live right in the title bar. I built a tiny glowing meter that shows how much of your current window is gone and how long until it resets, so you can keep shipping without surprises.",
+      "Tap the meter and your weekly view slides in instantly. I made it follow the model you are using and disappear when it has nothing useful to say.",
+    ],
+  },
+  {
     version: "0.14.18",
     date: "2026-07-10",
     items: [
