@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.14.16",
+    date: "2026-07-10",
+    items: [
+      "GPT-5.6 is here and ready to go. I added all three tiers, Sol, Terra, and Luna, straight from OpenAI's latest Codex catalog, so you can pick the exact balance of power and speed your task needs. Sol is the frontier heavyweight, Terra is your daily driver, and Luna is the fast and affordable one.",
+      "Older OpenAI models have been retired. GPT-5.4, 5.4 Mini, and 5.3 Codex are gone, making room for the new 5.6 family and keeping your model picker clean.",
+      "Error messages finally speak app, not terminal. Every hint now tells you to use the model selector or compact button instead of referencing slash commands that only exist in the CLI.",
+    ],
+  },
+  {
     version: "0.14.15",
     date: "2026-07-09",
     items: [
