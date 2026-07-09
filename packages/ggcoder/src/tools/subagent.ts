@@ -27,6 +27,13 @@ function isReadOnlyAgent(agentDef: AgentDefinition | undefined): boolean {
   return !agentDef.tools.some((tool) => MUTATING_TOOLS.has(tool.toLowerCase()));
 }
 
+/** Only retry errors that specifically mean the selected model cannot be used. */
+export function isModelUnavailableError(stderr: string): boolean {
+  return /does not recognize the requested model|requested model[^\n]*(?:not available|no access)|model[^\n]*(?:does not exist|not found|not available)/i.test(
+    stderr,
+  );
+}
+
 const SUB_AGENT_MAX_TURNS = 50;
 const SUB_AGENT_MAX_OUTPUT_CHARS = 100_000; // ~25k tokens, matches other tool limits
 const SUB_AGENT_MAX_OUTPUT_LINES = 500;
@@ -117,246 +124,239 @@ export function createSubAgentTool(
         ? getFastModel(useProvider as Provider, parentModel).id
         : parentModel;
 
-      // Build CLI args — limit turns to prevent runaway context growth
-      const cliArgs: string[] = [
-        "--json",
-        "--provider",
-        useProvider,
-        "--model",
-        useModel,
-        "--max-turns",
-        String(SUB_AGENT_MAX_TURNS),
-      ];
-
-      // Inherit parent's cache-routing key so all sub-agents in one parent run
-      // share the same prompt_cache_key prefix instead of each spawning with a
-      // fresh sessionId-derived key (cold cache every time). Suffix the key so
-      // the parent and its sub-agents route to distinct shards but each share
-      // among themselves.
       const parentCacheKey = getParentCacheKey?.();
-      if (parentCacheKey) {
-        cliArgs.push("--prompt-cache-key", `${parentCacheKey}:subagent`);
-      }
+      const subCacheKey = parentCacheKey ? `${parentCacheKey}:subagent` : "(unset)";
 
-      if (agentDef?.systemPrompt) {
-        cliArgs.push("--system-prompt", agentDef.systemPrompt);
-      }
+      const buildCliArgs = (model: string): string[] => {
+        const cliArgs: string[] = [
+          "--json",
+          "--provider",
+          useProvider,
+          "--model",
+          model,
+          "--max-turns",
+          String(SUB_AGENT_MAX_TURNS),
+        ];
 
-      // Forward the agent's declared tool allow-list to the child so its tool
-      // set is filtered to exactly these names (see AgentSession.allowedTools).
-      // Empty/unset → the child keeps the full toolset (backward compatible),
-      // so agents with no `tools:` frontmatter behave exactly as before.
-      if (agentDef?.tools && agentDef.tools.length > 0) {
-        cliArgs.push("--tools", agentDef.tools.join(","));
-      }
+        // Inherit parent's cache-routing key so all sub-agents in one parent run
+        // share the same prompt_cache_key prefix instead of each spawning with a
+        // fresh sessionId-derived key (cold cache every time).
+        if (parentCacheKey) {
+          cliArgs.push("--prompt-cache-key", `${parentCacheKey}:subagent`);
+        }
+        if (agentDef?.systemPrompt) {
+          cliArgs.push("--system-prompt", agentDef.systemPrompt);
+        }
+        if (agentDef?.tools.length) {
+          cliArgs.push("--tools", agentDef.tools.join(","));
+        }
+        cliArgs.push(args.task);
+        return cliArgs;
+      };
 
-      cliArgs.push(args.task);
-
-      // Spawn the ggcoder CLI as a child process. We must run the CLI entry
-      // (dist/cli.js, the JSON-mode agent runner), NOT process.argv[1]: in the
-      // desktop app the host process is app-sidecar.js, which ignores CLI args
-      // and just boots another HTTP server — the sub-agent would then emit no
-      // NDJSON and hang until the hard timeout. cli.js sits one level up from
-      // this module (dist/tools/subagent.js → dist/cli.js); fall back to
-      // argv[1] only if that resolution somehow misses.
-      const child = spawn(process.execPath, [resolveCliEntry(), ...cliArgs], {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env },
-      });
-
-      // Track progress
+      // Track progress across both attempts. The cheap-model attempt can only
+      // fall back before producing output or using a tool, so these totals remain
+      // an accurate picture of the actual agent run.
       let toolUseCount = 0;
       const tokenUsage = { input: 0, output: 0 };
       const cacheTotals = { read: 0, write: 0 };
       let turnCount = 0;
       let currentActivity: string | undefined;
       let textOutput = "";
-      // Set when the child emits the terminal `max_turns` signal — the sub-agent
-      // hit its turn budget mid-task, so its final answer may be incomplete. We
-      // prepend a notice to the returned content so the parent doesn't treat a
-      // cut-off run as a finished one.
       let hitMaxTurns = false;
       let maxTurnsLimit = 0;
+      let activeChild: ReturnType<typeof spawn> | undefined;
+      let activeChildExited = true;
 
-      // Mirror the child sub-agent's cache key into the parent log so
-      // `grep cacheRead ~/.gg/debug.log` shows whether sub-agents are
-      // hitting the cache. JSON mode in the child has no logger of its
-      // own (concurrent writes would corrupt the shared file), so the
-      // parent is the only place this can be observed.
-      const subCacheKey = parentCacheKey ? `${parentCacheKey}:subagent` : "(unset)";
-      log("INFO", "subagent", "Sub-agent spawn", {
-        cacheKey: subCacheKey,
-        provider: useProvider,
-        model: useModel,
-        agent: agentDef?.name ?? "(default)",
-      });
-
-      // Track whether the child has actually exited
-      let childExited = false;
-
-      const killChild = () => {
-        if (childExited) return;
+      const killActiveChild = () => {
+        const child = activeChild;
+        if (!child || activeChildExited) return;
         child.kill("SIGTERM");
         setTimeout(() => {
-          if (!childExited) child.kill("SIGKILL");
+          if (activeChild === child && !activeChildExited) child.kill("SIGKILL");
         }, 3000);
       };
 
-      // Handle abort signal
-      const abortHandler = () => killChild();
+      const abortHandler = () => killActiveChild();
       context.signal.addEventListener("abort", abortHandler, { once: true });
 
-      // If already aborted (e.g. reset happened before we got here), kill immediately
-      if (context.signal.aborted) killChild();
-
       return new Promise((resolve) => {
-        // Hard timeout to prevent subagents from hanging indefinitely
-        const timeout = setTimeout(() => {
-          killChild();
-        }, SUB_AGENT_TIMEOUT_MS);
-        // Read NDJSON from stdout
-        const rl = createInterface({ input: child.stdout! });
-        rl.on("line", (line) => {
-          try {
-            const event = JSON.parse(line);
-            const type = event.type as string;
-            switch (type) {
-              case "text_delta":
-                // Cap accumulation to ~2x the truncation limit (keeps tail for truncateTail)
-                if (textOutput.length < SUB_AGENT_MAX_OUTPUT_CHARS * 2) {
-                  textOutput += event.text;
-                } else if (!textOutput.endsWith("[output capped]")) {
-                  textOutput += "\n[output capped]";
-                }
-                break;
-              case "tool_call_start":
-                toolUseCount++;
-                currentActivity = formatToolActivity(
-                  event.name as string,
-                  event.args as Record<string, unknown>,
-                );
-                context.onUpdate?.({
-                  toolUseCount,
-                  tokenUsage: { ...tokenUsage },
-                  currentActivity,
-                });
-                break;
-              case "tool_call_end":
-                break;
-              case "max_turns":
-                hitMaxTurns = true;
-                maxTurnsLimit = Number(event.maxTurns) || SUB_AGENT_MAX_TURNS;
-                break;
-              case "turn_end": {
-                const usage = event.usage as
-                  | {
-                      inputTokens: number;
-                      outputTokens: number;
-                      cacheRead?: number;
-                      cacheWrite?: number;
-                    }
-                  | undefined;
-                if (usage) {
-                  tokenUsage.input += usage.inputTokens;
-                  tokenUsage.output += usage.outputTokens;
-                  if (usage.cacheRead) cacheTotals.read += usage.cacheRead;
-                  if (usage.cacheWrite) cacheTotals.write += usage.cacheWrite;
-                  turnCount++;
-                  // Per-turn line lets you eyeball cache health turn-by-turn
-                  // when debugging a runaway sub-agent. The aggregate sum on
-                  // close is also useful but hides the curve.
-                  log("INFO", "subagent", "Sub-agent turn", {
-                    turn: turnCount,
-                    inputTokens: String(usage.inputTokens),
-                    outputTokens: String(usage.outputTokens),
-                    ...(usage.cacheRead != null && { cacheRead: String(usage.cacheRead) }),
-                    ...(usage.cacheWrite != null && { cacheWrite: String(usage.cacheWrite) }),
+        const finish = (result: { content: string; details?: SubAgentDetails }) => {
+          context.signal.removeEventListener("abort", abortHandler);
+          resolve(result);
+        };
+
+        const startAttempt = (model: string, fallbackFrom?: string) => {
+          // Spawn the CLI entry, not process.argv[1]: the desktop host is the
+          // app sidecar and does not understand JSON-mode agent arguments.
+          const child = spawn(process.execPath, [resolveCliEntry(), ...buildCliArgs(model)], {
+            cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env },
+          });
+          activeChild = child;
+          activeChildExited = false;
+
+          log("INFO", "subagent", "Sub-agent spawn", {
+            cacheKey: subCacheKey,
+            provider: useProvider,
+            model,
+            agent: agentDef?.name ?? "(default)",
+            ...(fallbackFrom && { fallbackFrom }),
+          });
+
+          // Both attempts share the original hard timeout; a retry never doubles
+          // the maximum runtime of one sub-agent call.
+          const remainingMs = Math.max(1, SUB_AGENT_TIMEOUT_MS - (Date.now() - startTime));
+          const timeout = setTimeout(killActiveChild, remainingMs);
+          const rl = createInterface({ input: child.stdout! });
+          rl.on("line", (line) => {
+            try {
+              const event = JSON.parse(line);
+              const type = event.type as string;
+              switch (type) {
+                case "text_delta":
+                  if (textOutput.length < SUB_AGENT_MAX_OUTPUT_CHARS * 2) {
+                    textOutput += event.text;
+                  } else if (!textOutput.endsWith("[output capped]")) {
+                    textOutput += "\n[output capped]";
+                  }
+                  break;
+                case "tool_call_start":
+                  toolUseCount++;
+                  currentActivity = formatToolActivity(
+                    event.name as string,
+                    event.args as Record<string, unknown>,
+                  );
+                  context.onUpdate?.({
+                    toolUseCount,
+                    tokenUsage: { ...tokenUsage },
+                    currentActivity,
                   });
+                  break;
+                case "tool_call_end":
+                  break;
+                case "max_turns":
+                  hitMaxTurns = true;
+                  maxTurnsLimit = Number(event.maxTurns) || SUB_AGENT_MAX_TURNS;
+                  break;
+                case "turn_end": {
+                  const usage = event.usage as
+                    | {
+                        inputTokens: number;
+                        outputTokens: number;
+                        cacheRead?: number;
+                        cacheWrite?: number;
+                      }
+                    | undefined;
+                  if (usage) {
+                    tokenUsage.input += usage.inputTokens;
+                    tokenUsage.output += usage.outputTokens;
+                    if (usage.cacheRead) cacheTotals.read += usage.cacheRead;
+                    if (usage.cacheWrite) cacheTotals.write += usage.cacheWrite;
+                    turnCount++;
+                    log("INFO", "subagent", "Sub-agent turn", {
+                      turn: turnCount,
+                      inputTokens: String(usage.inputTokens),
+                      outputTokens: String(usage.outputTokens),
+                      ...(usage.cacheRead != null && { cacheRead: String(usage.cacheRead) }),
+                      ...(usage.cacheWrite != null && { cacheWrite: String(usage.cacheWrite) }),
+                    });
+                  }
+                  context.onUpdate?.({
+                    toolUseCount,
+                    tokenUsage: { ...tokenUsage },
+                    currentActivity,
+                  });
+                  break;
                 }
-                context.onUpdate?.({
-                  toolUseCount,
-                  tokenUsage: { ...tokenUsage },
-                  currentActivity,
-                });
-                break;
               }
+            } catch {
+              // Skip malformed lines.
             }
-          } catch {
-            // Skip malformed lines
-          }
-        });
-
-        // Collect stderr (capped to prevent unbounded memory growth)
-        let stderr = "";
-        child.stderr?.on("data", (chunk: Buffer) => {
-          if (stderr.length < SUB_AGENT_MAX_STDERR_CHARS) {
-            stderr += chunk.toString();
-            if (stderr.length > SUB_AGENT_MAX_STDERR_CHARS) {
-              stderr = stderr.slice(0, SUB_AGENT_MAX_STDERR_CHARS);
-            }
-          }
-        });
-
-        child.on("close", (code) => {
-          childExited = true;
-          clearTimeout(timeout);
-          rl.close();
-          context.signal.removeEventListener("abort", abortHandler);
-          const durationMs = Date.now() - startTime;
-          const details: SubAgentDetails = {
-            toolUseCount,
-            tokenUsage: { ...tokenUsage },
-            durationMs,
-          };
-
-          // Roll-up. Total cacheRead vs cumulative input shows whether the
-          // cache key propagation actually saved tokens — read this number,
-          // not the raw input sum, to judge regressions.
-          log("INFO", "subagent", "Sub-agent done", {
-            durationMs: String(durationMs),
-            turns: String(turnCount),
-            toolUseCount: String(toolUseCount),
-            inputTokens: String(tokenUsage.input),
-            outputTokens: String(tokenUsage.output),
-            cacheRead: String(cacheTotals.read),
-            cacheWrite: String(cacheTotals.write),
-            exitCode: String(code),
           });
 
-          if (code !== 0 && !textOutput) {
-            resolve({
-              content: `Sub-agent failed (exit ${code}): ${stderr.trim() || "unknown error"}`,
-              details,
+          let stderr = "";
+          child.stderr?.on("data", (chunk: Buffer) => {
+            if (stderr.length >= SUB_AGENT_MAX_STDERR_CHARS) return;
+            stderr = (stderr + chunk.toString()).slice(0, SUB_AGENT_MAX_STDERR_CHARS);
+          });
+
+          child.on("close", (code) => {
+            if (activeChild === child) activeChildExited = true;
+            clearTimeout(timeout);
+            rl.close();
+
+            const canFallback =
+              model !== parentModel &&
+              code !== 0 &&
+              !textOutput &&
+              turnCount === 0 &&
+              toolUseCount === 0 &&
+              !context.signal.aborted &&
+              isModelUnavailableError(stderr);
+            if (canFallback) {
+              log("WARN", "subagent", "Cheap sub-agent model unavailable; retrying parent", {
+                provider: useProvider,
+                model,
+                fallbackModel: parentModel,
+              });
+              startAttempt(parentModel, model);
+              return;
+            }
+
+            const durationMs = Date.now() - startTime;
+            const details: SubAgentDetails = {
+              toolUseCount,
+              tokenUsage: { ...tokenUsage },
+              durationMs,
+            };
+            log("INFO", "subagent", "Sub-agent done", {
+              durationMs: String(durationMs),
+              turns: String(turnCount),
+              toolUseCount: String(toolUseCount),
+              inputTokens: String(tokenUsage.input),
+              outputTokens: String(tokenUsage.output),
+              cacheRead: String(cacheTotals.read),
+              cacheWrite: String(cacheTotals.write),
+              exitCode: String(code),
+              model,
             });
-            return;
-          }
 
-          // Truncate output to prevent blowing up parent's context
-          const raw = textOutput || "(no output)";
-          const result = truncateTail(raw, SUB_AGENT_MAX_OUTPUT_LINES, SUB_AGENT_MAX_OUTPUT_CHARS);
-          const body = result.truncated
-            ? `[Sub-agent output truncated: ${result.totalLines} total lines, showing last ${result.keptLines}]\n\n` +
-              result.content
-            : result.content;
-          // Prepend the cut-off notice so the parent knows this run stopped
-          // mid-task and shouldn't be trusted as a completed result.
-          const content = hitMaxTurns
-            ? `[Sub-agent reached its ${maxTurnsLimit}-turn limit — it stopped mid-task and this output may be incomplete.]\n\n${body}`
-            : body;
+            if (code !== 0 && !textOutput) {
+              finish({
+                content: `Sub-agent failed (exit ${code}): ${stderr.trim() || "unknown error"}`,
+                details,
+              });
+              return;
+            }
 
-          resolve({ content, details });
-        });
-
-        child.on("error", (err) => {
-          childExited = true;
-          clearTimeout(timeout);
-          rl.close();
-          context.signal.removeEventListener("abort", abortHandler);
-          resolve({
-            content: `Failed to spawn sub-agent: ${err.message}`,
+            const raw = textOutput || "(no output)";
+            const result = truncateTail(
+              raw,
+              SUB_AGENT_MAX_OUTPUT_LINES,
+              SUB_AGENT_MAX_OUTPUT_CHARS,
+            );
+            const body = result.truncated
+              ? `[Sub-agent output truncated: ${result.totalLines} total lines, showing last ${result.keptLines}]\n\n${result.content}`
+              : result.content;
+            const content = hitMaxTurns
+              ? `[Sub-agent reached its ${maxTurnsLimit}-turn limit — it stopped mid-task and this output may be incomplete.]\n\n${body}`
+              : body;
+            finish({ content, details });
           });
-        });
+
+          child.on("error", (err) => {
+            if (activeChild === child) activeChildExited = true;
+            clearTimeout(timeout);
+            rl.close();
+            finish({ content: `Failed to spawn sub-agent: ${err.message}` });
+          });
+
+          if (context.signal.aborted) killActiveChild();
+        };
+
+        startAttempt(useModel);
       });
     },
   };
