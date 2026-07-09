@@ -69,7 +69,7 @@ describe("formatError Mythos access", () => {
     expect(formatted.guidance).toContain(
       "platform.claude.com/docs/en/about-claude/models/overview",
     );
-    expect(formatted.guidance).toContain("claude-fable-5");
+    expect(formatted.guidance).toContain("Claude Fable 5");
   });
 
   it("does not hijack not_found errors for other models", () => {
@@ -83,14 +83,14 @@ describe("formatError Mythos access", () => {
 });
 
 describe("formatError request too large", () => {
-  it("routes an Anthropic 413 request_too_large to /compact, not a blind retry", () => {
+  it("routes an Anthropic 413 request_too_large to compact, not a blind retry", () => {
     const f = formatError(
       new ProviderError("anthropic", "request_too_large: Request exceeds the maximum size", {
         statusCode: 413,
       }),
     );
     expect(f.guidance).toContain("too large");
-    expect(f.guidance).toContain("/compact");
+    expect(f.guidance).toContain("Compact");
     expect(f.guidance).not.toContain("status.anthropic.com");
   });
 });
@@ -104,7 +104,7 @@ describe("VideoUnsupportedError", () => {
     expect(f.guidance).toContain("Gemini");
     expect(f.guidance).toContain("MiniMax");
     expect(f.guidance).toContain("MiMo");
-    expect(f.guidance).toContain("/model");
+    expect(f.guidance).toContain("model selector");
   });
 
   it("renders headline + guidance only (no bug-report framing)", () => {
@@ -145,14 +145,14 @@ describe("formatErrorForDisplay", () => {
     const out = formatErrorForDisplay(
       new ProviderError("openai", "This model is not available.", {
         statusCode: 404,
-        hint: "Run /model and choose a listed model.",
+        hint: "Switch to a listed model via the model selector.",
       }),
     );
     expect(out).toBe(
       [
         "OpenAI returned an error.",
         "  This model is not available.",
-        "  \u2192 Run /model and choose a listed model.",
+        "  \u2192 Switch to a listed model via the model selector.",
       ].join("\n"),
     );
   });

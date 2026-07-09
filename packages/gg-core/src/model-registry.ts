@@ -32,6 +32,8 @@ export interface ModelInfo {
   /**
    * The top reasoning tier this model genuinely uses. Used when thinking is
    * enabled to pick the strongest setting per model:
+   *   - OpenAI GPT-5.6-era (Sol/Terra/Luna): `max` (the 5.6 ladder adds `max`
+   *     and `ultra`; gg-ai caps at `max` — `ultra` needs a ThinkingLevel bump)
    *   - OpenAI GPT-5.5-era: `xhigh`
    *   - OpenAI Pro/Codex/old: clamped to what the model accepts
    *   - Claude Fable 5 / Mythos 5, Opus 4.8 / 4.7 / 4.6 and Sonnet 5: `max`
@@ -131,49 +133,63 @@ export const MODELS: ModelInfo[] = [
     maxThinkingLevel: "high",
   },
   // ── OpenAI (Codex) ─────────────────────────────────────
+  // GPT-5.6 family — three agentic coding tiers launched July 2026. All share a
+  // 372K context window: the Codex repo's models.json lists both `context_window`
+  // AND `max_context_window` as 372000 for every 5.6 variant, so (unlike 5.4/5.5,
+  // whose public-API 1M window exceeds the Codex-product cap) there's no split
+  // between the API and Codex-transport windows — a single `contextWindow` is
+  // correct in both code paths. All three take text+image input, freeform
+  // apply_patch, text+image web search, and parallel tool calls.
+  {
+    // Sol — "Latest frontier agentic coding model." (priority 1, default low).
+    // Reasoning ladder: low → medium → high → xhigh → max → ultra. gg-ai's
+    // ThinkingLevel tops out at `max`, so that's the cap here; the `ultra` rung
+    // (auto task delegation) needs a ThinkingLevel extension to expose.
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    provider: "openai",
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    supportsImages: true,
+    supportsVideo: false,
+    costTier: "high",
+    maxThinkingLevel: "max",
+  },
+  {
+    // Terra — "Balanced agentic coding model for everyday work." (priority 2,
+    // default medium). Same 372K context + ultra reasoning ladder as Sol.
+    id: "gpt-5.6-terra",
+    name: "GPT-5.6 Terra",
+    provider: "openai",
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    supportsImages: true,
+    supportsVideo: false,
+    costTier: "medium",
+    maxThinkingLevel: "max",
+  },
+  {
+    // Luna — "Fast and affordable agentic coding model." (priority 3, default
+    // medium). Same 372K context; reasoning tops out at `max` (no `ultra` rung).
+    id: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    provider: "openai",
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    supportsImages: true,
+    supportsVideo: false,
+    costTier: "low",
+    maxThinkingLevel: "max",
+  },
   {
     id: "gpt-5.5",
     name: "GPT-5.5",
     provider: "openai",
     contextWindow: 1_050_000,
     codexContextWindow: 272_000,
-    maxOutputTokens: 128_000,
-    supportsThinking: true,
-    supportsImages: true,
-    supportsVideo: false,
-    costTier: "high",
-    maxThinkingLevel: "xhigh",
-  },
-  {
-    id: "gpt-5.4",
-    name: "GPT-5.4",
-    provider: "openai",
-    contextWindow: 1_050_000,
-    codexContextWindow: 272_000,
-    maxOutputTokens: 128_000,
-    supportsThinking: true,
-    supportsImages: true,
-    supportsVideo: false,
-    costTier: "high",
-    maxThinkingLevel: "xhigh",
-  },
-  {
-    id: "gpt-5.4-mini",
-    name: "GPT-5.4 Mini",
-    provider: "openai",
-    contextWindow: 400_000,
-    maxOutputTokens: 128_000,
-    supportsThinking: true,
-    supportsImages: true,
-    supportsVideo: false,
-    costTier: "low",
-    maxThinkingLevel: "xhigh",
-  },
-  {
-    id: "gpt-5.3-codex",
-    name: "GPT-5.3 Codex",
-    provider: "openai",
-    contextWindow: 400_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,
@@ -469,7 +485,7 @@ export function getVideoByteLimit(modelId: string): number | undefined {
 
 export function getDefaultModel(provider: Provider): ModelInfo {
   if (provider === "xiaomi") return MODELS.find((m) => m.id === "mimo-v2.5-pro")!;
-  if (provider === "openai") return MODELS.find((m) => m.id === "gpt-5.5")!;
+  if (provider === "openai") return MODELS.find((m) => m.id === "gpt-5.6-sol")!;
   if (provider === "gemini") return MODELS.find((m) => m.id === "gemini-3.1-flash-lite")!;
   if (provider === "glm") return MODELS.find((m) => m.id === "glm-5.2")!;
   if (provider === "moonshot") return MODELS.find((m) => m.id === "kimi-k2.7-code")!;

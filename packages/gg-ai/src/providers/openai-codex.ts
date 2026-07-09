@@ -131,12 +131,12 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
       } else {
         hint =
           "This model is not available through Codex for the authenticated account. " +
-          "Run /model and choose a model listed for OpenAI Codex, or check your Codex model picker/usage limits.";
+          "Switch to a model listed for OpenAI Codex via the model selector, or check your Codex usage limits.";
       }
     } else if (response.status === 404 && text.includes("does not exist")) {
       hint =
         "This model is not in the current OpenAI Codex catalog for this account. " +
-        "Try gpt-5.5, gpt-5.4, gpt-5.4-mini, or gpt-5.3-codex.";
+        "Switch to gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, or gpt-5.5 via the model selector.";
     }
 
     throw new ProviderError("openai", message, {

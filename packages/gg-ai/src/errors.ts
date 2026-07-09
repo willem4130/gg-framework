@@ -270,7 +270,7 @@ export function formatError(err: unknown): FormattedError {
         statusCode: err.statusCode,
         ...(err.requestId ? { requestId: err.requestId } : {}),
         guidance:
-          "Request access via your Anthropic account team (see platform.claude.com/docs/en/about-claude/models/overview), or switch to claude-fable-5 with /model — same underlying model, generally available.",
+          "Request access via your Anthropic account team (see platform.claude.com/docs/en/about-claude/models/overview), or switch to Claude Fable 5 via the model selector — same underlying model, generally available.",
       };
     }
     if (isUsageLimitError(err)) {
@@ -348,7 +348,7 @@ function finaliseBySource(
         message: "",
         guidance:
           hint ??
-          "Only Kimi, Gemini, MiniMax, and MiMo-V2.5 can analyze video. Switch with /model.",
+          "Only Kimi, Gemini, MiniMax, and MiMo-V2.5 can analyze video. Switch to one of those via the model selector.",
         ...(requestId ? { requestId } : {}),
       };
     case "ggcoder":
@@ -457,7 +457,7 @@ function providerGuidance(
   ) {
     return status
       ? `This is an error from ${name}, not GG Coder. Retry — if it keeps happening, check ${status}.`
-      : `This is an error from ${name}, not GG Coder. Retry — if it keeps happening, try a different model with /model.`;
+      : `This is an error from ${name}, not GG Coder. Retry — if it keeps happening, try a different model via the model selector.`;
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
     return `Request to ${name} timed out. Their servers may be slow — retry. Not a GG Coder issue.`;
@@ -467,10 +467,10 @@ function providerGuidance(
     (lower.includes("model") &&
       (lower.includes("not exist") || lower.includes("not found") || lower.includes("no access")))
   ) {
-    return `${name} doesn't recognise this model on your account. Use /model to switch, or check your subscription tier.`;
+    return `${name} doesn't recognise this model on your account. Switch to a different model via the model selector, or check your subscription tier.`;
   }
   if (lower.includes("context_length_exceeded") || lower.includes("prompt is too long")) {
-    return `Context window for this ${name} model is full. Run /compact to shrink history, or start a new session.`;
+    return `Context window for this ${name} model is full. Compact the conversation to shrink history, or start a new session.`;
   }
   // Anthropic HTTP 413: the request BODY (not the token count) exceeds the
   // provider's max size. Retrying the same request fails identically — the fix
@@ -480,9 +480,9 @@ function providerGuidance(
     lower.includes("request_too_large") ||
     lower.includes("request exceeds the maximum size")
   ) {
-    return `The request to ${name} is too large. Run /compact to shrink history, or start a new session.`;
+    return `The request to ${name} is too large. Compact the conversation to shrink history, or start a new session.`;
   }
   return status
     ? `This is an error from ${name}, not GG Coder. Retry — if it persists, check ${status}.`
-    : `This is an error from ${name}, not GG Coder. Retry — if it persists, try a different model with /model.`;
+    : `This is an error from ${name}, not GG Coder. Retry — if it persists, try a different model via the model selector.`;
 }

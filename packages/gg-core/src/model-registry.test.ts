@@ -95,24 +95,28 @@ describe("getFastModel", () => {
     }
   });
 
-  it("picks Haiku for Anthropic and mini for OpenAI", () => {
+  it("picks Haiku for Anthropic and Luna for OpenAI", () => {
     expect(getFastModel("anthropic", "claude-opus-4-8").costTier).toBe("low");
-    expect(getFastModel("openai", "gpt-5.5").id).toBe("gpt-5.4-mini");
+    expect(getFastModel("openai", "gpt-5.6-sol").id).toBe("gpt-5.6-luna");
   });
 });
 
 describe("model registry context windows", () => {
   it("uses the public API context window for OpenAI API-key requests", () => {
     expect(getContextWindow("gpt-5.5", { provider: "openai" })).toBe(1_050_000);
-    expect(getContextWindow("gpt-5.4", { provider: "openai" })).toBe(1_050_000);
+    // 5.6 models: context_window AND max_context_window are both 372K in the
+    // Codex repo, so no split between API and Codex-transport windows.
+    expect(getContextWindow("gpt-5.6-sol", { provider: "openai" })).toBe(372_000);
   });
 
   it("uses the Codex product context window for OpenAI OAuth requests", () => {
     const options = { provider: "openai" as const, accountId: "acct_123" };
 
     expect(usesOpenAICodexTransport(options)).toBe(true);
+    // 5.5 keeps its split: 1M public API, 272K Codex transport.
     expect(getContextWindow("gpt-5.5", options)).toBe(272_000);
-    expect(getContextWindow("gpt-5.4", options)).toBe(272_000);
+    // 5.6 models have no split — 372K in both transports.
+    expect(getContextWindow("gpt-5.6-sol", options)).toBe(372_000);
   });
 
   it("keeps non-OpenAI providers on their model context windows", () => {
