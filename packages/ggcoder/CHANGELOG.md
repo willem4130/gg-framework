@@ -1,5 +1,14 @@
 # @kenkaiiii/ggcoder
 
+## 5.10.1
+
+### Patch Changes
+
+- Fix GPT-5.6 Sol, Terra, and Luna access through the ChatGPT Codex transport.
+  - @kenkaiiii/gg-ai@5.10.1
+  - @kenkaiiii/gg-agent@5.10.1
+  - @kenkaiiii/gg-core@5.10.1
+
 ## 5.10.0
 
 ### Minor Changes
