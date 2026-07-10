@@ -248,6 +248,48 @@ describe("streamOpenAICodex", () => {
     expect(body.max_tokens).toBeUndefined();
   });
 
+  it("uses the official Codex Responses-Lite identity and request shape for GPT-5.6", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createSseResponse([
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+        ]),
+      ),
+    );
+
+    const fetchMock = vi.mocked(fetch);
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+      thinking: "low",
+    });
+
+    for await (const _event of result) {
+      /* consume */
+    }
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(init.headers).toMatchObject({
+      originator: "codex_cli_rs",
+      version: "0.144.1",
+      "User-Agent": "codex_cli_rs/0.144.1",
+      "X-OpenAI-Internal-Codex-Responses-Lite": "true",
+    });
+    expect(body).toMatchObject({
+      model: "gpt-5.6-luna",
+      parallel_tool_calls: false,
+      reasoning: { effort: "low", summary: "auto", context: "all_turns" },
+    });
+  });
+
   it("surfaces JSON detail fields from Codex HTTP errors", async () => {
     vi.stubGlobal(
       "fetch",

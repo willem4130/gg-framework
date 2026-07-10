@@ -24,6 +24,11 @@ import { readSseStream } from "../utils/sse.js";
 import { extractRequestIdFromMessage } from "../utils/request-id.js";
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
+const CODEX_CLIENT_VERSION = "0.144.1";
+
+function usesResponsesLite(model: string): boolean {
+  return model.startsWith("gpt-5.6-");
+}
 
 function outputTextKey(itemId: string | undefined, contentIndex: number | undefined): string {
   return `${itemId ?? ""}:${contentIndex ?? 0}`;
@@ -46,6 +51,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   const downgraded = downgradeUnsupportedVideos(downgradedImages, options.supportsVideo);
   const { system, input } = toCodexInput(downgraded, { supportsImages: options.supportsImages });
 
+  const responsesLite = usesResponsesLite(options.model);
   const body: Record<string, unknown> = {
     model: options.model,
     store: false,
@@ -53,7 +59,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     instructions: system,
     input,
     tool_choice: "auto",
-    parallel_tool_calls: true,
+    parallel_tool_calls: !responsesLite,
     include: ["reasoning.encrypted_content"],
   };
 
@@ -76,6 +82,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   body.reasoning = {
     effort: options.thinking ?? "none",
     summary: "auto",
+    ...(responsesLite ? { context: "all_turns" } : {}),
   };
 
   const headers: Record<string, string> = {
@@ -83,8 +90,16 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     Accept: "text/event-stream",
     Authorization: `Bearer ${options.apiKey}`,
     "OpenAI-Beta": "responses=experimental",
-    originator: "ggcoder",
-    "User-Agent": `ggcoder (${os.platform()} ${os.release()}; ${os.arch()})`,
+    originator: responsesLite ? "codex_cli_rs" : "ggcoder",
+    "User-Agent": responsesLite
+      ? `codex_cli_rs/${CODEX_CLIENT_VERSION}`
+      : `ggcoder (${os.platform()} ${os.release()}; ${os.arch()})`,
+    ...(responsesLite
+      ? {
+          version: CODEX_CLIENT_VERSION,
+          "X-OpenAI-Internal-Codex-Responses-Lite": "true",
+        }
+      : {}),
   };
 
   if (options.accountId) {
