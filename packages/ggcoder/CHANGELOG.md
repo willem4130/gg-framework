@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.13.0
+
+### Minor Changes
+
+- Add parallel specialist orchestration and reliable app-exit radio cleanup.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.13.0
+- @kenkaiiii/gg-agent@5.13.0
+- @kenkaiiii/gg-core@5.13.0
+
 ## 5.12.0
 
 ### Minor Changes
