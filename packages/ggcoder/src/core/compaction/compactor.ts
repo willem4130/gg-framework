@@ -41,6 +41,7 @@ async function awaitSummaryResponseWithTimeout<T>(
   response: Promise<T>,
   timeoutMs: number,
   signal?: AbortSignal,
+  onTimeout?: () => void,
 ): Promise<T> {
   signal?.throwIfAborted();
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -48,7 +49,10 @@ async function awaitSummaryResponseWithTimeout<T>(
 
   try {
     return await new Promise<T>((resolve, reject) => {
-      timeout = setTimeout(() => reject(new SummaryTimeoutError(timeoutMs)), timeoutMs);
+      timeout = setTimeout(() => {
+        reject(new SummaryTimeoutError(timeoutMs));
+        onTimeout?.();
+      }, timeoutMs);
       if (typeof timeout.unref === "function") timeout.unref();
 
       abortListener = () => reject(new DOMException("Aborted", "AbortError"));
@@ -241,6 +245,64 @@ function truncateString(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const truncatedChars = text.length - maxChars;
   return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+}
+
+/** Maximum retained characters for each string argument in a completed tool call. */
+export const HISTORICAL_TOOL_ARG_MAX_CHARS = 8_000;
+
+function compactHistoricalToolArg(value: unknown): { value: unknown; changed: boolean } {
+  if (typeof value === "string") {
+    const compacted = truncateString(value, HISTORICAL_TOOL_ARG_MAX_CHARS);
+    return { value: compacted, changed: compacted !== value };
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const compacted = value.map((item) => {
+      const result = compactHistoricalToolArg(item);
+      changed ||= result.changed;
+      return result.value;
+    });
+    return { value: changed ? compacted : value, changed };
+  }
+  if (value && typeof value === "object") {
+    let changed = false;
+    const compacted = Object.fromEntries(
+      Object.entries(value).map(([key, item]) => {
+        const result = compactHistoricalToolArg(item);
+        changed ||= result.changed;
+        return [key, result.value];
+      }),
+    );
+    return { value: changed ? compacted : value, changed };
+  }
+  return { value, changed: false };
+}
+
+/**
+ * Clone recent assistant tool-call messages and cap large historical arguments.
+ * IDs, tool names, and short arguments remain byte-for-byte unchanged.
+ */
+export function compactHistoricalToolCallArgs(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+
+    let messageChanged = false;
+    const content = (message.content as ContentPart[]).map((part): ContentPart => {
+      if (part.type !== "tool_call") return part;
+
+      const toolCall = part as ContentPart & {
+        type: "tool_call";
+        args: Record<string, unknown>;
+      };
+      const result = compactHistoricalToolArg(toolCall.args);
+      if (!result.changed) return part;
+
+      messageChanged = true;
+      return { ...toolCall, args: result.value as Record<string, unknown> };
+    });
+
+    return messageChanged ? { ...message, content } : message;
+  });
 }
 
 /**
@@ -608,10 +670,13 @@ export async function compact(
     contextWindow: String(options.contextWindow),
   });
 
-  // Find the cut point — keep ~20K tokens of recent conversation
+  // Find the cut point — keep ~20K tokens of recent conversation. Completed
+  // tool calls may contain an entire generated file in their arguments; cap
+  // those historical payloads so one atomic call/result pair cannot defeat
+  // the recent-token budget and overflow the next provider request.
   const systemMessage = messages[0];
   const recentStart = findRecentCutPoint(messages, KEEP_RECENT_TOKENS);
-  const recentMessages = messages.slice(recentStart);
+  const recentMessages = compactHistoricalToolCallArgs(messages.slice(recentStart));
   const middleMessages = messages.slice(1, recentStart);
 
   log("INFO", "compaction", `Cut point analysis`, {
@@ -707,13 +772,18 @@ export async function compact(
     model: summaryModel.id,
     messageCount: String(summaryMessages.length),
     hasApiKey: String(!!options.apiKey),
-    apiKeyPrefix: options.apiKey ? options.apiKey.slice(0, 15) + "..." : "none",
   });
 
-  // Call LLM with retries on empty responses
+  // Retry empty successful responses only. Transport failures and timeouts use
+  // the deterministic fallback immediately; replaying the same large request
+  // adds long UI stalls and can leave several expensive requests in flight.
   let summaryText = "";
   for (let attempt = 0; attempt <= MAX_SUMMARY_RETRIES; attempt++) {
     options.signal?.throwIfAborted();
+    const attemptController = new AbortController();
+    const forwardAbort = () => attemptController.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", forwardAbort, { once: true });
+
     try {
       const result = stream({
         provider: options.provider,
@@ -728,13 +798,14 @@ export async function compact(
           options.provider === "moonshot" && isKimiCodingEndpoint(options.baseUrl)
             ? kimiCodingHeaders()
             : undefined,
-        signal: options.signal,
+        signal: attemptController.signal,
       });
 
       const response = await awaitSummaryResponseWithTimeout(
         result.response,
         SUMMARY_ATTEMPT_TIMEOUT_MS,
         options.signal,
+        () => attemptController.abort(),
       );
       options.signal?.throwIfAborted();
 
@@ -777,10 +848,14 @@ export async function compact(
         "WARN",
         "compaction",
         err instanceof SummaryTimeoutError
-          ? `Summary LLM call timed out after ${SUMMARY_ATTEMPT_TIMEOUT_MS}ms — using fallback if no later attempt succeeds`
+          ? `Summary LLM call timed out after ${SUMMARY_ATTEMPT_TIMEOUT_MS}ms — using fallback`
           : `Summary LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
         { attempt: String(attempt), timeoutMs: String(SUMMARY_ATTEMPT_TIMEOUT_MS) },
       );
+      break;
+    } finally {
+      options.signal?.removeEventListener("abort", forwardAbort);
+      attemptController.abort();
     }
   }
 

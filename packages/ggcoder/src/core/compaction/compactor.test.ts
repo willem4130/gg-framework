@@ -8,8 +8,9 @@ import {
   buildFallbackSummary,
   extractSummaryText,
   compact,
+  compactHistoricalToolCallArgs,
+  HISTORICAL_TOOL_ARG_MAX_CHARS,
   SUMMARY_ATTEMPT_TIMEOUT_MS,
-  MAX_SUMMARY_RETRIES,
 } from "./compactor.js";
 import { estimateConversationTokens } from "./token-estimator.js";
 import { getContextWindow } from "../model-registry.js";
@@ -527,6 +528,48 @@ describe("extractSummaryText", () => {
   });
 });
 
+// ── historical tool-call compaction ───────────────────────
+
+describe("compactHistoricalToolCallArgs", () => {
+  it("caps large string arguments without mutating the session history", () => {
+    const largeContent = "x".repeat(HISTORICAL_TOOL_ARG_MAX_CHARS * 4);
+    const original = makeToolCallMessage("write", { file_path: "large.ts", content: largeContent });
+
+    const [compacted] = compactHistoricalToolCallArgs([original]);
+    const compactedCall = (compacted.content as ContentPart[])[0] as ContentPart & {
+      type: "tool_call";
+      args: { file_path: string; content: string };
+    };
+    const originalCall = (original.content as ContentPart[])[0] as ContentPart & {
+      type: "tool_call";
+      args: { content: string };
+    };
+
+    expect(compactedCall.args.file_path).toBe("large.ts");
+    expect(compactedCall.args.content.length).toBeLessThan(largeContent.length);
+    expect(compactedCall.args.content).toContain("more characters truncated");
+    expect(originalCall.args.content).toBe(largeContent);
+  });
+
+  it("caps large strings nested inside edit arrays", () => {
+    const largeEdit = "x".repeat(HISTORICAL_TOOL_ARG_MAX_CHARS * 4);
+    const original = makeToolCallMessage("edit", {
+      file_path: "large.ts",
+      edits: [{ old_text: "before", new_text: largeEdit }],
+    });
+
+    const [compacted] = compactHistoricalToolCallArgs([original]);
+    const compactedCall = (compacted.content as ContentPart[])[0] as ContentPart & {
+      type: "tool_call";
+      args: { edits: Array<{ old_text: string; new_text: string }> };
+    };
+
+    expect(compactedCall.args.edits[0].old_text).toBe("before");
+    expect(compactedCall.args.edits[0].new_text.length).toBeLessThan(largeEdit.length);
+    expect(compactedCall.args.edits[0].new_text).toContain("more characters truncated");
+  });
+});
+
 // ── compact (integration) ──────────────────────────────────
 
 vi.mock("@kenkaiiii/gg-ai", async (importOriginal) => {
@@ -710,10 +753,10 @@ describe("compact", () => {
 
       const messages = buildConversation(30);
       const promise = compact(messages, baseOptions);
-      await vi.advanceTimersByTimeAsync((SUMMARY_ATTEMPT_TIMEOUT_MS + 1) * 3);
+      await vi.advanceTimersByTimeAsync(SUMMARY_ATTEMPT_TIMEOUT_MS + 1);
       const result = await promise;
 
-      expect(mockStream).toHaveBeenCalledTimes(MAX_SUMMARY_RETRIES + 1);
+      expect(mockStream).toHaveBeenCalledTimes(1);
       const summaryMsg = result.messages[1];
       expect(summaryMsg.role).toBe("user");
       expect(summaryMsg.content as string).toContain("## Goal");
@@ -726,7 +769,8 @@ describe("compact", () => {
     const mockStream = vi.mocked(stream);
     const ac = new AbortController();
     mockStream.mockImplementation(({ signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBe(ac.signal);
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal).not.toBe(ac.signal);
       return mockStreamResult(
         new Promise((_, reject) => {
           signal?.addEventListener(
