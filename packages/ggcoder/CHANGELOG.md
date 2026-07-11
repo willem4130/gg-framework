@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.12.0
+
+### Minor Changes
+
+- Add concurrent async subagent orchestration with steering, follow-up, interruption, lifecycle tracking, and shared-workspace safeguards.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.12.0
+- @kenkaiiii/gg-agent@5.12.0
+- @kenkaiiii/gg-core@5.12.0
+
 ## 5.11.0
 
 ### Minor Changes
