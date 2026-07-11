@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.18.0",
+    date: "2026-07-11",
+    items: [
+      "`Ultra` now runs a real specialist crew. I made every expert visible while it works, steerable mid-job, and ready to pick up another mission with full context intact.",
+      "`Radio` finally behaves like part of the app. I added a volume slider, made your level stick across windows, and guaranteed the music stops when GG Coder closes, even after a force quit.",
+      "`What's new` is easier to scan. I put the latest release in one clean card, grouped each feature into a single story, and gave the details just enough emphasis to pop.",
+    ],
+  },
+  {
     version: "0.17.0",
     date: "2026-07-11",
     items: [
