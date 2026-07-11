@@ -342,4 +342,37 @@ describe("useAgentEvents", () => {
       { toolCallId: "abcd1234", status: "idle", async: true, toolUseCount: 2 },
     ]);
   });
+
+  it("keeps late async snapshots attached to their original run group", () => {
+    const { hook, getItems } = setup();
+    const snapshot = (agentId: string, state: "starting" | "completed") => ({
+      agent_id: agentId,
+      task_name: agentId,
+      state,
+      started_at: 1,
+      updated_at: 2,
+      elapsed_ms: 10,
+      turn_count: 0,
+      tool_use_count: 0,
+      token_usage: { input: 0, output: 0 },
+    });
+
+    act(() => {
+      hook.result.current.handleEvent(ev("run_start"));
+      hook.result.current.handleEvent(ev("subagent_state", snapshot("old-agent", "starting")));
+      hook.result.current.handleEvent(ev("run_end", { cancelled: false }));
+      hook.result.current.handleEvent(ev("run_start"));
+      hook.result.current.handleEvent(ev("subagent_state", snapshot("new-agent", "starting")));
+      hook.result.current.handleEvent(ev("subagent_state", snapshot("old-agent", "completed")));
+    });
+
+    const groups = getItems().filter((item) => item.kind === "subagent_group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.kind === "subagent_group" ? groups[0].agents : []).toMatchObject([
+      { toolCallId: "old-agent", status: "idle" },
+    ]);
+    expect(groups[1]?.kind === "subagent_group" ? groups[1].agents : []).toMatchObject([
+      { toolCallId: "new-agent", status: "starting" },
+    ]);
+  });
 });

@@ -922,9 +922,8 @@ async fn agent_kill_task(
     res.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
-/// Proxy: radio state for THIS window's sidecar — `{ stations, current }`.
-/// Playback lives in the per-window sidecar process, so each window's radio is
-/// independent (opening more windows never duplicates audio).
+/// Proxy: app-wide radio state — `{ stations, current, volume }`.
+/// All windows share the daemon's single player, preventing duplicate audio.
 #[tauri::command]
 async fn agent_radio_state(
     webview: WebviewWindow,
@@ -970,6 +969,37 @@ async fn agent_radio_set(
             .unwrap_or("radio request failed")
             .to_string();
         return Err(msg);
+    }
+    Ok(body)
+}
+
+/// Proxy: set app-wide radio volume from 0 to 100.
+#[tauri::command]
+async fn agent_radio_volume(
+    webview: WebviewWindow,
+    client: State<'_, reqwest::Client>,
+    volume: f64,
+) -> Result<serde_json::Value, String> {
+    let port = port_for(&webview).ok_or("daemon not ready")?;
+    let gg_sid = session_for(&webview).ok_or("session not ready")?;
+    let res = client
+        .post(format!("{}/radio/volume", sidecar_base(port)))
+        .header("x-gg-session", &gg_sid)
+        .json(&serde_json::json!({ "volume": volume }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status();
+    let body = res
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("radio volume request failed")
+            .to_string());
     }
     Ok(body)
 }
@@ -3350,6 +3380,7 @@ pub fn run() {
             agent_kill_task,
             agent_radio_state,
             agent_radio_set,
+            agent_radio_volume,
             agent_tasks,
             agent_run_tasks,
             agent_delete_task,

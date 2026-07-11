@@ -194,9 +194,10 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
   const pendingChunksRef = useRef<string>("");
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Transcript id of the active sub-agent group for this run (null until the
-  // first subagent spawns). Lets later parallel agents join the same in-chat
-  // feed instead of each opening a fresh block.
+  // first subagent spawns). The per-agent map keeps late async lifecycle events
+  // attached to their original transcript group after a newer run starts.
   const subagentGroupIdRef = useRef<number | null>(null);
+  const subagentGroupByAgentRef = useRef<Map<string, number>>(new Map());
   // Transcript id of the in-flight compaction notice, so compaction_end can
   // flip the same row from shimmer → summary instead of pushing a new line.
   const compactionIdRef = useRef<number | null>(null);
@@ -404,13 +405,18 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
                   : agent.activities,
             };
           };
-          const groupId = subagentGroupIdRef.current;
-          if (groupId === null) {
-            const id = nextId();
-            subagentGroupIdRef.current = id;
+          const mappedGroupId = subagentGroupByAgentRef.current.get(snapshot.agent_id);
+          const activeGroupId = subagentGroupIdRef.current;
+          const shouldCreateGroup = mappedGroupId === undefined && activeGroupId === null;
+          const groupId = mappedGroupId ?? activeGroupId ?? nextId();
+          if (mappedGroupId === undefined) {
+            subagentGroupByAgentRef.current.set(snapshot.agent_id, groupId);
+            if (shouldCreateGroup) subagentGroupIdRef.current = groupId;
+          }
+          if (shouldCreateGroup) {
             pushItem({
               kind: "subagent_group",
-              id,
+              id: groupId,
               agents: [
                 {
                   toolCallId: snapshot.agent_id,
@@ -864,6 +870,7 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
           setQueuedCount(0);
           endStreamingText();
           subagentGroupIdRef.current = null;
+          subagentGroupByAgentRef.current.clear();
           break;
         case "session_title":
           setSessionTitle(String(d.title ?? "") || null);

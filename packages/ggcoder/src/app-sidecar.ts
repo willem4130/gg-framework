@@ -86,7 +86,14 @@ import {
   markTaskInProgress,
 } from "./core/tasks-store.js";
 import { initLogger, log } from "./core/logger.js";
-import { RADIO_STATIONS, getCurrentStation, playRadio, stopRadio } from "./core/radio.js";
+import {
+  RADIO_STATIONS,
+  getCurrentStation,
+  getRadioVolume,
+  playRadio,
+  setRadioVolume,
+  stopRadio,
+} from "./core/radio.js";
 import { enrichProcessPath } from "./core/shell-path.js";
 import { downscaleForPreview, validateVisionImage } from "./utils/image.js";
 import { startServeMode, type ServeController } from "./modes/serve-mode.js";
@@ -2815,7 +2822,34 @@ async function createSession(
     // duplicate audio across windows (the original per-window goal), now for
     // free. (To restore per-window radio, key playback by sessionId.)
     if (method === "GET" && url === "/radio") {
-      json(res, 200, { stations: RADIO_STATIONS, current: getCurrentStation() });
+      json(res, 200, {
+        stations: RADIO_STATIONS,
+        current: getCurrentStation(),
+        volume: getRadioVolume(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url === "/radio/volume") {
+      void readBody(req).then((raw) => {
+        let volume: number;
+        try {
+          volume = Number((JSON.parse(raw) as { volume?: number }).volume);
+        } catch {
+          json(res, 400, { error: "invalid JSON body" });
+          return;
+        }
+        if (!Number.isFinite(volume)) {
+          json(res, 400, { error: "volume must be a number" });
+          return;
+        }
+        const result = setRadioVolume(volume);
+        if (!result.ok) {
+          json(res, 400, { error: result.error ?? "Radio volume failed to update." });
+          return;
+        }
+        json(res, 200, { current: getCurrentStation(), volume: getRadioVolume() });
+      });
       return;
     }
 

@@ -24,6 +24,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (frame.command === "initialize") {
     if (frame.options?.systemPrompt === "malformed") process.stdout.write("not-json\n");
     else if (frame.options?.systemPrompt === "die") process.exit(2);
+    else if (frame.options?.systemPrompt === "hang") return;
     else {
       emit({ type: "state", state: "idle" });
       ack(frame);

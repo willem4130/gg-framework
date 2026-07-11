@@ -82,6 +82,17 @@ describe("SubAgentManager", () => {
     await expect(malformed.spawn("bad", "task", "bad")).rejects.toThrow("malformed");
   });
 
+  it("rejects a launch that is still starting when cancellation interrupts all workers", async () => {
+    const hangingDefs = [{ ...agents[0]!, name: "hanging", systemPrompt: "hang" }];
+    const instance = manager({ agentDefs: hangingDefs });
+    const launch = instance.spawn("hanging", "task", "hanging");
+    const rejection = expect(launch).rejects.toThrow("Subagent worker closed");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await instance.interruptAll();
+    await rejection;
+  });
+
   it("reaps idle workers and retains a bounded closed snapshot", async () => {
     const instance = manager({ idleTimeoutMs: 5 });
     const child = await instance.spawn("short", "fast", "fake");

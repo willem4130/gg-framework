@@ -246,8 +246,10 @@ export class SubAgentManager {
   async interruptAll(): Promise<void> {
     await Promise.allSettled(
       [...this.workers.values()]
-        .filter((worker) => worker.state === "running")
-        .map((worker) => this.interrupt(worker.agent_id)),
+        .filter((worker) => this.isActive(worker))
+        .map((worker) =>
+          worker.state === "starting" ? this.close(worker) : this.interrupt(worker.agent_id),
+        ),
     );
   }
 
@@ -453,6 +455,11 @@ export class SubAgentManager {
       ]);
     }
     this.kill(worker);
+    const closedError = new Error("Subagent worker closed");
+    for (const pending of worker.requests.values()) pending.reject(closedError);
+    worker.requests.clear();
+    for (const resolve of worker.turnResolvers) resolve();
+    worker.turnResolvers.clear();
     worker.state = "closed";
     worker.updated_at = Date.now();
     this.publish(worker);

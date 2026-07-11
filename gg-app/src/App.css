@@ -1105,6 +1105,96 @@ body {
   gap: 10px;
   margin-top: 26px;
 }
+
+/* Internet radio reuses the modal system, with a larger version of the title
+   usage meter as its volume control. */
+.radio-modal {
+  width: min(480px, 90vw);
+}
+.radio-station-select {
+  appearance: auto;
+  cursor: pointer;
+}
+.radio-station-description {
+  min-height: 19px;
+  word-break: normal;
+}
+.radio-player-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+.radio-play-button {
+  min-width: 104px;
+}
+.radio-volume-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.radio-volume-heading .modal-label {
+  margin: 0;
+}
+.radio-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.radio-volume-slider {
+  position: relative;
+  height: 22px;
+  flex: 1 1 auto;
+}
+.radio-volume-track {
+  position: absolute;
+  inset: 2px 0;
+  overflow: hidden;
+  border: 1px solid #313131;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(circle, #1b2735, #090a0f);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+.radio-volume-fill {
+  height: 100%;
+  min-width: 1px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00f260, #0575e6);
+  box-shadow:
+    0 0 5px #00f260,
+    0 0 9px #0575e6;
+  transition: width 0.16s ease-out;
+}
+.radio-volume-input {
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.radio-volume-input::-webkit-slider-runnable-track {
+  height: 18px;
+  background: transparent;
+}
+.radio-volume-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  background: #111820;
+  box-shadow:
+    0 0 0 2px rgba(5, 117, 230, 0.4),
+    0 2px 7px rgba(0, 0, 0, 0.65);
+}
 /* Modal actions are glossy pills: neutral by default, .primary = violet. */
 .modal-btn {
   display: inline-flex;

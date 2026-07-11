@@ -49,6 +49,12 @@ export const RADIO_STATIONS: readonly RadioStation[] = [
     url: "http://ice1.somafm.com/dronezone-128-mp3",
   },
   {
+    id: "somafm-heavyweight-reggae",
+    name: "SomaFM · Heavyweight Reggae",
+    description: "Roots reggae, dub, ska, and rocksteady",
+    url: "https://ice5.somafm.com/reggae-128-mp3",
+  },
+  {
     id: "radio-paradise",
     name: "Radio Paradise",
     description: "Eclectic mix — rock, electronica, jazz",
@@ -64,7 +70,7 @@ export const RADIO_STATIONS: readonly RadioStation[] = [
 
 interface PlayerCandidate {
   cmd: string;
-  args: (url: string) => string[];
+  args: (url: string, volume: number) => string[];
 }
 
 /**
@@ -120,17 +126,48 @@ function resolvePlayerPath(cmd: string): string | null {
  * spam. Stdio is also redirected to "ignore" at spawn time.
  */
 const PLAYERS: readonly PlayerCandidate[] = [
-  { cmd: "mpv", args: (u) => ["--really-quiet", "--no-video", "--no-terminal", u] },
-  { cmd: "ffplay", args: (u) => ["-nodisp", "-autoexit", "-loglevel", "quiet", u] },
-  { cmd: "mpg123", args: (u) => ["-q", u] },
-  { cmd: "cvlc", args: (u) => ["--play-and-exit", "--quiet", u] },
+  {
+    cmd: "mpv",
+    args: (url, volume) => [
+      "--really-quiet",
+      "--no-video",
+      "--no-terminal",
+      `--volume=${volume}`,
+      url,
+    ],
+  },
+  {
+    cmd: "ffplay",
+    args: (url, volume) => [
+      "-nodisp",
+      "-autoexit",
+      "-loglevel",
+      "quiet",
+      "-volume",
+      String(volume),
+      url,
+    ],
+  },
+  {
+    cmd: "mpg123",
+    args: (url, volume) => ["-q", "-f", String(Math.round(32768 * (volume / 100))), url],
+  },
+  {
+    cmd: "cvlc",
+    args: (url, volume) => ["--play-and-exit", "--quiet", "--gain", (volume / 100).toFixed(2), url],
+  },
 ];
 
 let currentChild: ChildProcess | null = null;
 let currentStationId: string | null = null;
+let currentVolume = 70;
 
 export function getCurrentStation(): string | null {
   return currentStationId;
+}
+
+export function getRadioVolume(): number {
+  return currentVolume;
 }
 
 /**
@@ -166,6 +203,13 @@ export interface PlayResult {
   error?: string;
 }
 
+/** Set app-wide radio volume. A playing live stream restarts at the new level. */
+export function setRadioVolume(volume: number): PlayResult {
+  currentVolume = Math.min(100, Math.max(0, Math.round(volume)));
+  const station = currentStationId;
+  return station ? playRadio(station) : { ok: true };
+}
+
 /**
  * On WSL2, native Linux audio binaries can't reach the Windows audio device
  * through WSLg's bridge in any useful way for streaming — detect WSL and route
@@ -191,6 +235,7 @@ function tryPlayOnWindowsHost(station: RadioStation): ChildProcess | null {
     "Add-Type -AssemblyName WindowsBase;",
     "$p = New-Object System.Windows.Media.MediaPlayer;",
     "$p.Open([uri]$env:GG_RADIO_URL);",
+    "$p.Volume = [double]$env:GG_RADIO_VOLUME;",
     "$p.Play();",
     "[System.Windows.Threading.Dispatcher]::Run();",
   ].join(" ");
@@ -201,7 +246,9 @@ function tryPlayOnWindowsHost(station: RadioStation): ChildProcess | null {
       env: {
         ...process.env,
         GG_RADIO_URL: station.url,
-        WSLENV: (process.env.WSLENV ? process.env.WSLENV + ":" : "") + "GG_RADIO_URL",
+        GG_RADIO_VOLUME: String(currentVolume / 100),
+        WSLENV:
+          (process.env.WSLENV ? process.env.WSLENV + ":" : "") + "GG_RADIO_URL:GG_RADIO_VOLUME",
       },
     });
   } catch {
@@ -248,7 +295,7 @@ export function playRadio(stationId: string): PlayResult {
     const bin = resolvePlayerPath(player.cmd);
     if (!bin) continue;
     try {
-      const child = spawn(bin, player.args(station.url), {
+      const child = spawn(bin, player.args(station.url, currentVolume), {
         detached: process.platform !== "win32",
         stdio: "ignore",
       });
