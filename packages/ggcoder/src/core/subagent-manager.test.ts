@@ -93,7 +93,7 @@ describe("SubAgentManager", () => {
     expect(followed.agents[0]?.output).toContain("context:2");
   });
 
-  it("rejects duplicate live names and reports malformed workers", async () => {
+  it("rejects duplicate names and contains malformed-worker stdin errors", async () => {
     const instance = manager();
     await instance.spawn("same", "slow", "fake");
     await expect(instance.spawn("same", "other", "fake")).rejects.toThrow("already exists");
@@ -101,6 +101,10 @@ describe("SubAgentManager", () => {
     const malformedDefs = [{ ...agents[0]!, name: "bad", systemPrompt: "malformed" }];
     const malformed = manager({ agentDefs: malformedDefs });
     await expect(malformed.spawn("bad", "task", "bad")).rejects.toThrow("malformed");
+    // Let the worker exit and close stdin. A late EPIPE must be consumed by the
+    // manager rather than surfacing as Vitest's process-level unhandled error.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(malformed.list()).toEqual([expect.objectContaining({ state: "failed" })]);
   });
 
   it("rejects a launch that is still starting when cancellation interrupts all workers", async () => {
