@@ -22,6 +22,13 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.18.3",
+    date: "2026-07-12",
+    items: [
+      "OpenAI sessions just got smarter about every token. I aligned `Codex` caching across your main chat and specialist crew, so long jobs stay snappy, reuse more work, and keep each agent safely in its own lane.",
+    ],
+  },
+  {
     version: "0.18.2",
     date: "2026-07-12",
     items: [
