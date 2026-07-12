@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.14.0
+
+### Minor Changes
+
+- Add specialist chat agents, safer multi-window sessions, hardened web tools, and live provider usage tracking.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.14.0
+- @kenkaiiii/gg-agent@5.14.0
+- @kenkaiiii/gg-core@5.14.0
+
 ## 5.13.3
 
 ### Patch Changes
