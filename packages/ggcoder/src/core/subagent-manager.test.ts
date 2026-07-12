@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentDefinition } from "./agents.js";
 import { SubAgentManager } from "./subagent-manager.js";
 
@@ -24,6 +24,7 @@ function manager(options: { idleTimeoutMs?: number; agentDefs?: AgentDefinition[
     getProvider: () => "openai",
     getModel: () => "gpt-5.6-sol",
     getThinkingLevel: () => "ultra",
+    getCacheKey: () => "parent-cache",
     workerEntry,
     idleTimeoutMs: options.idleTimeoutMs,
   });
@@ -36,6 +37,26 @@ afterEach(async () => {
 });
 
 describe("SubAgentManager", () => {
+  it("partitions the worker cache key by selected model and agent family", async () => {
+    const instance = manager();
+    const requestSpy = vi.spyOn(
+      instance as unknown as {
+        request: (...args: unknown[]) => Promise<unknown>;
+      },
+      "request",
+    );
+
+    await instance.spawn("cache-child", "fast", "fake");
+
+    const initializeCall = requestSpy.mock.calls.find(([, command]) => command === "initialize");
+    expect(initializeCall?.[2]).toMatchObject({
+      options: {
+        model: "gpt-5.6-luna",
+        promptCacheKey: "parent-cache:subagent:gpt-5.6-luna:fake",
+      },
+    });
+  });
+
   it("returns after launch and overlaps four child turns", async () => {
     const instance = manager();
     const start = Date.now();

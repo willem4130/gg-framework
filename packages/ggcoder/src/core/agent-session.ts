@@ -279,6 +279,9 @@ export class AgentSession {
   private approvedPlanPath?: string;
 
   private sessionId = "";
+  /** Runtime conversation identity for provider transport headers. Transient
+   *  children need one even though they intentionally have no persisted session. */
+  private readonly transportSessionId = crypto.randomUUID();
   private sessionPath = "";
   private lastPersistedIndex = 0;
   /** Current leaf entry ID in the session DAG — used to chain parentIds for branching. */
@@ -940,6 +943,7 @@ export class AgentSession {
         baseUrl: effectiveBaseUrl,
         signal: this.opts.signal,
         accountId,
+        transportSessionId: this.sessionId || this.transportSessionId,
         projectId,
         // Kimi For Coding gates the managed endpoint on coding-agent identity
         // headers; attach them only when the Kimi OAuth token is in use.

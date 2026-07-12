@@ -31,6 +31,13 @@ function spawnedModels(): string[] {
   });
 }
 
+function spawnedCacheKeys(): string[] {
+  return spawnMock.mock.calls.map(([, rawArgs]) => {
+    const args = rawArgs as string[];
+    return args[args.indexOf("--prompt-cache-key") + 1]!;
+  });
+}
+
 function mockExit(stderr: string, code: number, stdout = ""): MockChildProcess {
   const child = new MockChildProcess();
   setImmediate(() => {
@@ -49,6 +56,7 @@ async function runOwl() {
     [owl],
     () => "openai",
     () => "gpt-5.6-sol",
+    () => "parent-cache",
   );
   return tool.execute(
     { agent: "owl", task: "Inspect the registry." },
@@ -70,6 +78,10 @@ describe("createSubAgentTool fast-model fallback", () => {
 
     await expect(runOwl()).resolves.toMatchObject({ content: "fallback succeeded" });
     expect(spawnedModels()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol"]);
+    expect(spawnedCacheKeys()).toEqual([
+      "parent-cache:subagent:gpt-5.6-luna:owl",
+      "parent-cache:subagent:gpt-5.6-luna:owl",
+    ]);
   });
 
   it("does not retry unrelated child failures", async () => {

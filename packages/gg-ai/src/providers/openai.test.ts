@@ -134,6 +134,45 @@ describe("streamOpenAI request shaping", () => {
     }
   });
 
+  it("uses GPT-5.6 cache options instead of deprecated retention", async () => {
+    createMock.mockResolvedValueOnce(createStreamingResult(""));
+    const result = streamOpenAI({
+      provider: "openai",
+      model: "gpt-5.6",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      cacheRetention: "long",
+    });
+    for await (const _event of result) {
+      /* consume */
+    }
+
+    const params = createMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(params).toMatchObject({
+      prompt_cache_key: "ggcoder",
+      prompt_cache_options: { mode: "implicit", ttl: "30m" },
+    });
+    expect(params).not.toHaveProperty("prompt_cache_retention");
+  });
+
+  it("keeps 24h retention for pre-GPT-5.6 OpenAI models", async () => {
+    createMock.mockResolvedValueOnce(createStreamingResult(""));
+    const result = streamOpenAI({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      cacheRetention: "long",
+    });
+    for await (const _event of result) {
+      /* consume */
+    }
+
+    const params = createMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(params).toMatchObject({ prompt_cache_retention: "24h" });
+    expect(params).not.toHaveProperty("prompt_cache_options");
+  });
+
   it("passes xhigh reasoning effort through for OpenAI GPT models", async () => {
     createMock.mockResolvedValueOnce(createStreamingResult(""));
     const result = streamOpenAI({

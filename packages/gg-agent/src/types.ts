@@ -202,6 +202,7 @@ export interface AgentOptions {
   baseUrl?: string;
   signal?: AbortSignal;
   accountId?: string;
+  transportSessionId?: StreamOptions["transportSessionId"];
   projectId?: StreamOptions["projectId"];
   cacheRetention?: StreamOptions["cacheRetention"];
   /** Stable per-session cache routing key for providers that support it. */

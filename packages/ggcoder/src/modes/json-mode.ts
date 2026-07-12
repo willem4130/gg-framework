@@ -55,10 +55,9 @@ export async function runJsonMode(options: JsonModeOptions): Promise<void> {
     // and have no resumable identity. Skip writing a `.jsonl` so the spawn
     // doesn't show up in `ggcoder continue` for the parent project.
     transient: true,
-    // Parent-supplied cache routing key. When set, AgentSession uses it
-    // verbatim instead of generating `${prefix}:${sessionId}` — so every
-    // sub-agent spawned by one parent shares the same prompt_cache_key and
-    // benefits from warm cache lookups on the shared system+tool prefix.
+    // Parent-supplied cache routing key. The spawner partitions it by model and
+    // named-agent family, so children with the same static system+tool prefix
+    // share cache routing without mixing unrelated prefixes under one hot key.
     promptCacheKey: options.promptCacheKey,
   };
 

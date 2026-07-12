@@ -260,6 +260,10 @@ export interface StreamOptions {
   serviceTier?: "auto" | "default" | "flex" | "priority";
   /** OpenAI ChatGPT account ID (from OAuth JWT) for codex endpoint */
   accountId?: string;
+  /** Stable conversation identity for Codex transport headers. This is distinct from
+   *  promptCacheKey: sessions with matching prefixes may share a cache key, but must
+   *  retain independent session/thread identities. */
+  transportSessionId?: string;
   /** Google Cloud/Code Assist project ID used by Gemini OAuth transport. */
   projectId?: string;
   /** Enable provider-native web search. Each provider uses its own format:

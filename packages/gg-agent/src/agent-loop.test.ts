@@ -312,6 +312,24 @@ describe("agentLoop", () => {
     expect(result.totalUsage.outputTokens).toBe(50);
   });
 
+  it("forwards Codex transport identity separately from prompt cache routing", async () => {
+    mockStream.mockReturnValueOnce(mockOkResult("Done") as unknown as ReturnType<typeof stream>);
+
+    await collectLoop([{ role: "user", content: "test" }], {
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      transportSessionId: "transport-session",
+      promptCacheKey: "shared-cache-family",
+    });
+
+    expect(mockStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transportSessionId: "transport-session",
+        promptCacheKey: "shared-cache-family",
+      }),
+    );
+  });
+
   it("calls transformContext before each LLM call", async () => {
     mockStream.mockReturnValueOnce(mockOkResult("Done") as unknown as ReturnType<typeof stream>);
 

@@ -142,7 +142,11 @@ export class SubAgentManager {
           systemPrompt: selection.agentDef?.systemPrompt,
           thinkingLevel: childThinkingLevel(this.options.getThinkingLevel()),
           allowedTools: selection.agentDef?.tools.length ? selection.agentDef.tools : undefined,
-          promptCacheKey: subAgentCacheKey(this.options.getCacheKey?.()),
+          promptCacheKey: subAgentCacheKey(
+            this.options.getCacheKey?.(),
+            selection.model,
+            selection.agentDef?.name ?? "default",
+          ),
         },
       });
       await this.request(record, "start", { task });

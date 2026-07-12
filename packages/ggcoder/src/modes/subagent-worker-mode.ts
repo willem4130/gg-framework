@@ -121,8 +121,14 @@ export async function runSubagentWorkerMode(): Promise<void> {
         }
       }
       clearTimeout(turnTimer);
-      setState("idle");
-      emit({ type: "turn_complete", status: "completed", output: boundSubAgentOutput(output) });
+      const interrupted = controller.signal.aborted;
+      setState(interrupted ? "interrupted" : "idle");
+      emit({
+        type: "turn_complete",
+        status: interrupted ? "interrupted" : "completed",
+        output: boundSubAgentOutput(output),
+        ...(interrupted ? { error: "Interrupted" } : {}),
+      });
     })()
       .catch((error: unknown) => {
         clearTimeout(turnTimer);

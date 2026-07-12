@@ -5,7 +5,7 @@ import type { AgentDefinition } from "../core/agents.js";
 import { getFastModel } from "../core/model-registry.js";
 import { truncateTail } from "./truncate.js";
 
-const MUTATING_TOOLS = new Set(["write", "edit"]);
+const MUTATING_TOOLS = new Set(["bash", "write", "edit"]);
 
 export const SUB_AGENT_MAX_TURNS = 50;
 export const SUB_AGENT_MAX_OUTPUT_CHARS = 100_000;
@@ -53,8 +53,12 @@ export function childThinkingLevel(level: ThinkingLevel | undefined): ThinkingLe
   return level === "ultra" ? "max" : level;
 }
 
-export function subAgentCacheKey(parentCacheKey: string | undefined): string | undefined {
-  return parentCacheKey ? `${parentCacheKey}:subagent` : undefined;
+export function subAgentCacheKey(
+  parentCacheKey: string | undefined,
+  model: string,
+  agentName = "default",
+): string | undefined {
+  return parentCacheKey ? `${parentCacheKey}:subagent:${model}:${agentName}` : undefined;
 }
 
 export function currentSubAgentDepth(env: NodeJS.ProcessEnv = process.env): number {

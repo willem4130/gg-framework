@@ -95,7 +95,7 @@ export function createSubAgentTool(
       }
       const useModel = selection.model;
       const parentCacheKey = getParentCacheKey?.();
-      const childCacheKey = subAgentCacheKey(parentCacheKey);
+      const childCacheKey = subAgentCacheKey(parentCacheKey, useModel, agentDef?.name ?? "default");
       const subCacheKey = childCacheKey ?? "(unset)";
 
       const buildCliArgs = (model: string): string[] => {

@@ -39,13 +39,19 @@ function extractOpenAIUsage(usage: OpenAI.CompletionUsage): {
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
+  cacheWrite: number;
 } {
   let cacheRead = 0;
+  let cacheWrite = 0;
   const details = usage.prompt_tokens_details;
   if (details?.cached_tokens) {
     cacheRead = details.cached_tokens;
   }
   const usageAny = usage as unknown as Record<string, unknown>;
+  const detailsAny = details as unknown as Record<string, unknown> | undefined;
+  if (typeof detailsAny?.cache_write_tokens === "number") {
+    cacheWrite = detailsAny.cache_write_tokens;
+  }
   if (!cacheRead && typeof usageAny.cached_tokens === "number" && usageAny.cached_tokens > 0) {
     cacheRead = usageAny.cached_tokens as number;
   }
@@ -59,9 +65,10 @@ function extractOpenAIUsage(usage: OpenAI.CompletionUsage): {
   // OpenAI's prompt_tokens includes cached tokens; subtract to match
   // Anthropic's convention where inputTokens excludes cache hits.
   return {
-    inputTokens: usage.prompt_tokens - cacheRead,
+    inputTokens: usage.prompt_tokens - cacheRead - cacheWrite,
     outputTokens: usage.completion_tokens,
     cacheRead,
+    cacheWrite,
   };
 }
 
@@ -166,10 +173,12 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     const paramsAny = params as unknown as Record<string, unknown>;
     paramsAny.prompt_cache_key = normalizePromptCacheKey(options.promptCacheKey ?? "ggcoder");
 
-    // Map cacheRetention to OpenAI's prompt_cache_retention param.
-    // "long" → "24h" keeps cached prefixes active up to 24 hours (OpenAI feature).
-    const retention = options.cacheRetention ?? "short";
-    if (retention === "long") {
+    // GPT-5.6 replaced prompt_cache_retention with prompt_cache_options.
+    // Its only supported TTL is 30m; implicit mode preserves automatic latest-
+    // message breakpoints while enabling the newer reliable key+prefix matching.
+    if (options.provider === "openai" && options.model.startsWith("gpt-5.6")) {
+      paramsAny.prompt_cache_options = { mode: "implicit", ttl: "30m" };
+    } else if ((options.cacheRetention ?? "short") === "long") {
       paramsAny.prompt_cache_retention = "24h";
     }
   }
@@ -235,6 +244,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
+  let cacheWrite = 0;
   let finishReason: string | null = null;
   let receivedAnyChunk = false;
 
@@ -244,7 +254,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
       const choice = chunk.choices?.[0];
 
       if (chunk.usage) {
-        ({ inputTokens, outputTokens, cacheRead } = extractOpenAIUsage(chunk.usage));
+        ({ inputTokens, outputTokens, cacheRead, cacheWrite } = extractOpenAIUsage(chunk.usage));
       }
 
       if (!choice) continue;
@@ -349,7 +359,12 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
       content: contentParts.length > 0 ? contentParts : textAccum || "",
     },
     stopReason,
-    usage: { inputTokens, outputTokens, ...(cacheRead > 0 && { cacheRead }) },
+    usage: {
+      inputTokens,
+      outputTokens,
+      ...(cacheRead > 0 && { cacheRead }),
+      ...(cacheWrite > 0 && { cacheWrite }),
+    },
   };
 
   yield { type: "done", stopReason };
@@ -453,8 +468,9 @@ function completionToResponse(completion: OpenAI.ChatCompletion): StreamResponse
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
+  let cacheWrite = 0;
   if (completion.usage) {
-    ({ inputTokens, outputTokens, cacheRead } = extractOpenAIUsage(completion.usage));
+    ({ inputTokens, outputTokens, cacheRead, cacheWrite } = extractOpenAIUsage(completion.usage));
   }
 
   const stopReason = normalizeOpenAIStopReason(choice?.finish_reason ?? null);
@@ -465,7 +481,12 @@ function completionToResponse(completion: OpenAI.ChatCompletion): StreamResponse
       content: contentParts.length > 0 ? contentParts : textAccum,
     },
     stopReason,
-    usage: { inputTokens, outputTokens, ...(cacheRead > 0 && { cacheRead }) },
+    usage: {
+      inputTokens,
+      outputTokens,
+      ...(cacheRead > 0 && { cacheRead }),
+      ...(cacheWrite > 0 && { cacheWrite }),
+    },
   };
 }
 
