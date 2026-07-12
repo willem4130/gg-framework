@@ -109,6 +109,37 @@ describe("fetchSubscriptionUsage", () => {
     );
   });
 
+  it("treats a weekly-only Codex primary window as weekly", async () => {
+    const now = 2_000_000;
+    const result = await fetchSubscriptionUsage(
+      "openai",
+      { accessToken: "openai-token" },
+      {
+        now: () => now,
+        fetchFn: async () =>
+          jsonResponse({
+            rate_limit: {
+              primary_window: {
+                limit_window_seconds: 604_800,
+                used_percent: 11,
+                reset_after_seconds: 593_701,
+              },
+              secondary_window: null,
+            },
+          }),
+      },
+    );
+
+    expect(result.windows).toEqual([
+      {
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: 11,
+        resetsAt: now + 593_701_000,
+      },
+    ]);
+  });
+
   it("rejects provider HTTP errors without exposing the response body", async () => {
     await expect(
       fetchSubscriptionUsage(

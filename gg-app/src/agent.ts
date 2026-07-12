@@ -45,6 +45,20 @@ export interface SidecarEvent {
   data: unknown;
 }
 
+export interface MemoryChangeEvent extends SidecarEvent {
+  type: "memory_change";
+  data: { count: number };
+}
+
+export function isMemoryChangeEvent(event: SidecarEvent): event is MemoryChangeEvent {
+  return (
+    event.type === "memory_change" &&
+    typeof event.data === "object" &&
+    event.data !== null &&
+    typeof (event.data as { count?: unknown }).count === "number"
+  );
+}
+
 /** A background process (bash run_in_background), mirrored from the sidecar. */
 export interface BackgroundTask {
   id: string;
@@ -55,10 +69,38 @@ export interface BackgroundTask {
   exitCode: number | null;
 }
 
+export type WorkspaceMode = "code" | "chat";
+export type ChatAgentId = "general" | "therapist" | "research";
+
+export type MemoryCategory =
+  | "identity"
+  | "preference"
+  | "project"
+  | "relationship"
+  | "health"
+  | "other";
+
+export interface Memory {
+  id: string;
+  text: string;
+  category: MemoryCategory;
+  importance: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemorySnapshot {
+  memories: Memory[];
+  softLimit: number;
+  hardLimit: number;
+}
+
 export interface AgentState {
   provider: string;
   model: string;
   cwd: string;
+  mode: WorkspaceMode;
+  chatAgent?: ChatAgentId;
   running: boolean;
   /** Current reasoning level, or null when thinking is off. May be absent on
    * frames from older sidecars / partial model_change spreads. */
@@ -128,6 +170,16 @@ export async function deleteTask(id: string): Promise<ProjectTask[]> {
     await logError(`agent_delete_task failed: ${String(e)}`);
     return [];
   }
+}
+
+export async function listMemories(): Promise<MemorySnapshot> {
+  await waitForReady();
+  return invoke<MemorySnapshot>("agent_memories");
+}
+
+export async function deleteMemory(id: string): Promise<MemorySnapshot> {
+  await waitForReady();
+  return invoke<MemorySnapshot>("agent_delete_memory", { id });
 }
 
 export interface ThinkingState {
@@ -833,10 +885,13 @@ export async function searchFiles(query: string): Promise<FileHit[]> {
   }
 }
 
-/** List the latest sessions for a project cwd (newest first, with previews). */
-export async function listSessions(cwd: string): Promise<RecentSession[]> {
+/** List the latest sessions for a project or chat-agent namespace. */
+export async function listSessions(cwd: string, chatAgent?: ChatAgentId): Promise<RecentSession[]> {
   try {
-    const res = await invoke<{ sessions: RecentSession[] }>("agent_sessions", { cwd });
+    const res = await invoke<{ sessions: RecentSession[] }>("agent_sessions", {
+      cwd,
+      chatAgent: chatAgent ?? null,
+    });
     return res.sessions ?? [];
   } catch (e) {
     await logError(`agent_sessions failed: ${String(e)}`);
@@ -845,15 +900,32 @@ export async function listSessions(cwd: string): Promise<RecentSession[]> {
 }
 
 /**
- * Re-point this window's agent at a project: respawns the sidecar at `cwd`,
+ * Re-point this window's agent at a workspace: respawns the sidecar at `cwd`,
  * optionally resuming `sessionPath`. The caller re-runs the ready flow after.
  */
+export async function selectWorkspace(
+  mode: WorkspaceMode,
+  cwd: string,
+  sessionPath?: string,
+  chatAgent: ChatAgentId = "general",
+): Promise<void> {
+  await invoke("select_project", {
+    mode,
+    chatAgent,
+    cwd,
+    sessionPath: sessionPath ?? null,
+  });
+}
+
+/** Re-point this window at a coding project. */
 export async function selectProject(cwd: string, sessionPath?: string): Promise<void> {
-  await invoke("select_project", { cwd, sessionPath: sessionPath ?? null });
+  await selectWorkspace("code", cwd, sessionPath);
 }
 
 /** The project/session a window was restored to on app boot (workspace restore). */
 export interface RestoreTarget {
+  mode: WorkspaceMode;
+  chatAgent?: ChatAgentId;
   cwd: string;
   sessionPath: string | null;
 }

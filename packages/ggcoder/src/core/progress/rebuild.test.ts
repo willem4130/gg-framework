@@ -95,6 +95,25 @@ describe("rebuildFromSessions", () => {
     expect(file!.totals.projects).toHaveLength(2);
   });
 
+  it("rebuilds XP across coder and chat roots without double-counting projects", async () => {
+    const coderRoot = path.join(sessionsDir, "coder");
+    const chatRoot = path.join(sessionsDir, "chat");
+    for (const [root, prompts] of [
+      [coderRoot, 2],
+      [chatRoot, 3],
+    ] as const) {
+      const projectDir = path.join(root, "_same_project");
+      await fs.mkdir(projectDir, { recursive: true });
+      await fs.writeFile(
+        path.join(projectDir, `${prompts}.jsonl`),
+        sessionJsonl(`s${prompts}`, "2025-01-01T00:00:00Z", prompts),
+      );
+    }
+    const file = await rebuildFromSessions([coderRoot, chatRoot]);
+    expect(file!.totals.prompts).toBe(5);
+    expect(file!.totals.projects).toHaveLength(1);
+  });
+
   it("skips malformed lines and empty sessions", async () => {
     await writeSession("_proj_a", "bad.jsonl", "not json\n{broken\n");
     await writeSession("_proj_a", "s1.jsonl", sessionJsonl("s1", "2025-01-01T00:00:00Z", 1));

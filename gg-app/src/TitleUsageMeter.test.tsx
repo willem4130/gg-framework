@@ -80,6 +80,30 @@ describe("TitleUsageMeter", () => {
     expect(getUsageMock).toHaveBeenCalledTimes(2);
   });
 
+  it("renders a weekly-only provider window without a bogus 168h label", async () => {
+    getUsageMock.mockResolvedValue({
+      provider: "openai",
+      displayName: "Codex",
+      connected: true,
+      windows: [
+        {
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 11,
+          resetsAt: Date.now() + 6 * 24 * 60 * 60_000,
+        },
+      ],
+      fetchedAt: Date.now(),
+    });
+
+    render(<TitleUsageMeter currentProvider="openai" />);
+
+    const meter = await screen.findByRole("button", { name: /Codex Weekly: 11% used/ });
+    expect(screen.getByText("week")).toBeDefined();
+    expect(screen.queryByText("168h")).toBeNull();
+    expect(meter.querySelector<HTMLElement>(".title-usage-fill")?.style.width).toBe("11%");
+  });
+
   it("stays hidden for providers without subscription quota support", () => {
     const { container } = render(<TitleUsageMeter currentProvider="gemini" />);
     expect(container.firstChild).toBeNull();
@@ -91,6 +115,6 @@ describe("compactResetLabel", () => {
   it("formats current and weekly countdowns", () => {
     const now = Date.parse("2030-01-01T00:00:00Z");
     expect(compactResetLabel(now + 95 * 60_000, now)).toBe("1h 35m");
-    expect(compactResetLabel(now + (2 * 24 + 3) * 60 * 60_000, now)).toBe("51h 0m");
+    expect(compactResetLabel(now + (2 * 24 + 3) * 60 * 60_000, now)).toBe("2d 3h");
   });
 });

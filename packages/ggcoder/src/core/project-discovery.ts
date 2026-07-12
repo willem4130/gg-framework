@@ -402,8 +402,11 @@ export interface RecentSession {
  * with many/large sessions this is the difference between scanning everything
  * and scanning ~5 files.
  */
-export async function listRecentSessions(cwd: string, limit = 5): Promise<RecentSession[]> {
-  const sessionsDir = getAppPaths().sessionsDir;
+export async function listRecentSessions(
+  cwd: string,
+  limit = 5,
+  sessionsDir = getAppPaths().sessionsDir,
+): Promise<RecentSession[]> {
   const dir = path.join(sessionsDir, encodeCwd(cwd));
   const files = await collectJsonlFiles(dir, 1);
   if (files.length === 0) return [];

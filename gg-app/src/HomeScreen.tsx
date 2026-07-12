@@ -26,16 +26,15 @@ import { toast } from "./toast";
 
 interface Props {
   onProjects: () => void;
+  onChat: () => void;
   onLogin: () => void;
 }
 
 /**
  * App entry screen: the shimmering GG Coder banner over the primary actions.
- * "Your Projects" requires two prerequisites — a configured project folder AND
- * at least one connected AI provider — and is dimmed until both are met, with
- * toasts guiding the user. Settings (project folder) lives here, beside Projects.
+ * Code and Chat require a configured workspace folder and connected AI provider.
  */
-export function HomeScreen({ onProjects, onLogin }: Props): React.ReactElement {
+export function HomeScreen({ onProjects, onChat, onLogin }: Props): React.ReactElement {
   const [folderSet, setFolderSet] = useState(false);
   const [providerCount, setProviderCount] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
@@ -61,8 +60,8 @@ export function HomeScreen({ onProjects, onLogin }: Props): React.ReactElement {
 
   async function refresh(): Promise<void> {
     // Settings + auth are read NATIVELY (Rust) — do them first, WITHOUT waiting on
-    // the sidecar, so the "Your Projects" gate never stays dimmed just because
-    // the agent is slow/crashed (the original bug, now also covering providers).
+    // the sidecar, so the workspace gate never stays dimmed just because the
+    // agent is slow/crashed.
     const [settings, providers] = await Promise.all([getSettings(), authStatus()]);
     // Prefer the explicit `configured` flag; fall back to a non-empty root so an
     // older sidecar (one that predates the flag) degrades to "set" instead of
@@ -120,14 +119,14 @@ export function HomeScreen({ onProjects, onLogin }: Props): React.ReactElement {
     }
   }
 
-  function handleProjects(): void {
+  function handleWorkspace(open: () => void): void {
     if (ready) {
-      onProjects();
+      open();
       return;
     }
     // Guide the user to the missing prerequisite(s).
     if (!folderSet) {
-      toast("Set a project folder first. Open Settings.", "warning");
+      toast("Set a workspace folder first. Open Settings.", "warning");
     }
     if (providerCount === 0) {
       toast("Connect an AI provider first.", "warning");
@@ -196,13 +195,20 @@ export function HomeScreen({ onProjects, onLogin }: Props): React.ReactElement {
         </a>
       </div>
       <div className="home-actions">
-        <div className="home-projects-row">
+        <div className="home-projects-row home-primary-row">
           <button
             className={`btn btn-primary btn-lg home-btn${ready ? "" : " is-dimmed"}`}
             aria-disabled={!ready}
-            onClick={handleProjects}
+            onClick={() => handleWorkspace(onProjects)}
           >
-            Your Projects
+            Code
+          </button>
+          <button
+            className={`btn btn-primary btn-lg home-btn${ready ? "" : " is-dimmed"}`}
+            aria-disabled={!ready}
+            onClick={() => handleWorkspace(onChat)}
+          >
+            Chat
           </button>
           <button
             className="btn btn-ghost btn-icon btn-nav-icon home-settings"

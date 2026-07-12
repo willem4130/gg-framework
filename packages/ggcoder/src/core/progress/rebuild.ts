@@ -74,41 +74,50 @@ function scanSessionFile(file: string): Promise<SessionScan> {
 }
 
 /**
- * Rebuild a progress file from session history. Returns null when there is no
- * history at all (fresh install → start at Lurker via createEmptyProgress).
+ * Rebuild a progress file from coding and/or chat session roots. Returns null
+ * when there is no history at all (fresh install → start at Lurker).
  */
-export async function rebuildFromSessions(sessionsDir?: string): Promise<ProgressFile | null> {
-  const dir = sessionsDir ?? getAppPaths().sessionsDir;
-  let projectDirs: string[];
-  try {
-    projectDirs = await fs.readdir(dir);
-  } catch {
-    return null;
-  }
+export async function rebuildFromSessions(
+  sessionsDirs?: string | string[],
+): Promise<ProgressFile | null> {
+  const dirs = sessionsDirs
+    ? Array.isArray(sessionsDirs)
+      ? sessionsDirs
+      : [sessionsDirs]
+    : [getAppPaths().sessionsDir];
 
   let totalPrompts = 0;
-  let projectCount = 0;
+  const projects = new Set<string>();
   let oldest: string | null = null;
 
-  for (const entry of projectDirs) {
-    const projectDir = path.join(dir, entry);
-    let files: string[];
+  for (const dir of dirs) {
+    let projectDirs: string[];
     try {
-      files = (await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl"));
+      projectDirs = await fs.readdir(dir);
     } catch {
       continue;
     }
-    let projectPrompts = 0;
-    for (const f of files) {
-      const scan = await scanSessionFile(path.join(projectDir, f));
-      projectPrompts += scan.userPrompts;
-      if (scan.oldestTimestamp && (!oldest || scan.oldestTimestamp < oldest)) {
-        oldest = scan.oldestTimestamp;
+
+    for (const entry of projectDirs) {
+      const projectDir = path.join(dir, entry);
+      let files: string[];
+      try {
+        files = (await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl"));
+      } catch {
+        continue;
       }
-    }
-    if (projectPrompts > 0) {
-      totalPrompts += projectPrompts;
-      projectCount++;
+      let projectPrompts = 0;
+      for (const file of files) {
+        const scan = await scanSessionFile(path.join(projectDir, file));
+        projectPrompts += scan.userPrompts;
+        if (scan.oldestTimestamp && (!oldest || scan.oldestTimestamp < oldest)) {
+          oldest = scan.oldestTimestamp;
+        }
+      }
+      if (projectPrompts > 0) {
+        totalPrompts += projectPrompts;
+        projects.add(entry);
+      }
     }
   }
 
@@ -121,7 +130,7 @@ export async function rebuildFromSessions(sessionsDir?: string): Promise<Progres
   file.xp = seeded;
   file.totals.prompts = totalPrompts;
   // Historical projects are counted but their paths aren't rehashed — use opaque markers.
-  file.totals.projects = Array.from({ length: projectCount }, (_, i) => `seed-${i}`);
+  file.totals.projects = Array.from({ length: projects.size }, (_, i) => `seed-${i}`);
   file.xpBySource.prompts = seeded;
   if (oldest) file.createdAt = oldest;
   // Seeding is not "activity today" — leave streak at zero, but keep dayXp clean.

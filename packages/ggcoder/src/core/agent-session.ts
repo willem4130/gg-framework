@@ -94,6 +94,8 @@ export interface AgentSessionOptions {
   cwd: string;
   baseUrl?: string;
   systemPrompt?: string;
+  /** Synchronous volatile prompt suffix, refreshed immediately before every run. */
+  getSystemPromptTail?: () => string;
   sessionId?: string;
   continueRecent?: boolean;
   maxTokens?: number;
@@ -166,6 +168,22 @@ export interface AgentSessionOptions {
   forceLongCacheRetention?: boolean;
   /** Hidden persistent subagent workers omit the async orchestration tool suite. */
   subagentWorker?: boolean;
+  /** Session storage root override. Chat agents use a dedicated namespace. */
+  sessionRootDir?: string;
+  /** Register GG Coder built-in/prompt/custom slash commands. Defaults to true. */
+  coderSlashCommands?: boolean;
+  /** Enable loop-break, re-grounding, and Ideal review hooks. Defaults to true. */
+  selfCorrectionHooks?: boolean;
+  /** Load project skills/agents and create local .gg directories. Defaults to true. */
+  projectCustomization?: boolean;
+  /** Register global + bundled subagents without loading project customization. */
+  globalSubagents?: boolean;
+  /** Load GG Coder extensions. Defaults to true. */
+  loadExtensions?: boolean;
+  /** Inject GG Coder's model-specific subagent orchestration prompt. Defaults to true. */
+  orchestrationPrompt?: boolean;
+  /** Host-provided tools appended to this session only (for example, chat delegation). */
+  additionalTools?: AgentTool[];
 }
 
 // ── State ──────────────────────────────────────────────────
@@ -271,6 +289,8 @@ export class AgentSession {
   private maxTokens: number;
   private thinkingLevel?: ThinkingLevel;
   private customSystemPrompt?: string;
+  /** Stable prompt prefix retained separately from the volatile uncached tail. */
+  private baseSystemPrompt = "";
   /** Shared with the tool layer so plan-mode restrictions read live state. */
   private planModeRef = { current: false };
   /** Path of the approved plan currently being implemented, or undefined. When
@@ -331,53 +351,68 @@ export class AgentSession {
     this.authStorage = new AuthStorage(paths.authFile);
     await this.authStorage.load();
 
-    // Session manager
-    this.sessionManager = new SessionManager(paths.sessionsDir);
+    // Session manager. Agent-specific roots keep chat and coder histories isolated.
+    this.sessionManager = new SessionManager(this.opts.sessionRootDir ?? paths.sessionsDir);
 
-    // Ensure project-local .gg directories exist
-    const localGGDir = path.join(this.cwd, ".gg");
-    await fs.mkdir(path.join(localGGDir, "skills"), { recursive: true });
-    await fs.mkdir(path.join(localGGDir, "commands"), { recursive: true });
-    await fs.mkdir(path.join(localGGDir, "agents"), { recursive: true });
+    const projectCustomization = this.opts.projectCustomization !== false;
+    if (projectCustomization) {
+      // Ensure project-local .gg directories exist.
+      const localGGDir = path.join(this.cwd, ".gg");
+      await fs.mkdir(path.join(localGGDir, "skills"), { recursive: true });
+      await fs.mkdir(path.join(localGGDir, "commands"), { recursive: true });
+      await fs.mkdir(path.join(localGGDir, "agents"), { recursive: true });
 
-    // Discover skills
-    this.skills = await discoverSkills({
-      globalSkillsDir: paths.skillsDir,
-      projectDir: this.cwd,
-    });
-
-    // Discover agents and create tools (with sub-agent support)
-    const agents = await discoverAgents({
-      globalAgentsDir: paths.agentsDir,
-      projectDir: this.cwd,
-    });
-    const { tools, processManager, rebuildReadTool, lspManager, subAgentManager } =
-      await createTools(this.cwd, {
-        agents,
-        skills: this.skills,
-        provider: this.provider,
-        model: this.model,
-        lspDiagnostics: this.settingsManager.get("lspDiagnostics"),
-        authStorage: this.authStorage,
-        // Lazy — sessionId/model/provider can change after createTools() runs, so
-        // sub-agent spawns read the current parent state at execution time.
-        getProvider: () => this.provider,
-        getModel: () => this.model,
-        getThinkingLevel: () => this.thinkingLevel,
-        getBaseUrl: () => this.baseUrl,
-        getCacheKey: () => this.getPromptCacheKey(),
-        disableAsyncSubagents: this.opts.subagentWorker,
-        onSubAgentState: (snapshot) => this.eventBus.emit("subagent_state", snapshot),
-        // Plan mode: only wired when the host supplies callbacks. The ref is
-        // shared so bash/edit/write enforce read-only restrictions live.
-        ...(this.opts.onEnterPlan || this.opts.onExitPlan
-          ? {
-              planModeRef: this.planModeRef,
-              onEnterPlan: this.opts.onEnterPlan,
-              onExitPlan: this.opts.onExitPlan,
-            }
-          : {}),
+      this.skills = await discoverSkills({
+        globalSkillsDir: paths.skillsDir,
+        projectDir: this.cwd,
       });
+    } else {
+      this.skills = [];
+    }
+
+    // Discover agents and create tools (with sub-agent support). Chat sessions
+    // can retain bundled workers without loading project/global customization.
+    const agents = projectCustomization
+      ? await discoverAgents({
+          globalAgentsDir: paths.agentsDir,
+          projectDir: this.cwd,
+        })
+      : this.opts.globalSubagents
+        ? await discoverAgents({ globalAgentsDir: paths.agentsDir })
+        : [];
+    const {
+      tools: builtInTools,
+      processManager,
+      rebuildReadTool,
+      lspManager,
+      subAgentManager,
+    } = await createTools(this.cwd, {
+      agents,
+      skills: this.skills,
+      provider: this.provider,
+      model: this.model,
+      lspDiagnostics: this.settingsManager.get("lspDiagnostics"),
+      authStorage: this.authStorage,
+      // Lazy — sessionId/model/provider can change after createTools() runs, so
+      // sub-agent spawns read the current parent state at execution time.
+      getProvider: () => this.provider,
+      getModel: () => this.model,
+      getThinkingLevel: () => this.thinkingLevel,
+      getBaseUrl: () => this.baseUrl,
+      getCacheKey: () => this.getPromptCacheKey(),
+      disableAsyncSubagents: this.opts.subagentWorker,
+      onSubAgentState: (snapshot) => this.eventBus.emit("subagent_state", snapshot),
+      // Plan mode: only wired when the host supplies callbacks. The ref is
+      // shared so bash/edit/write enforce read-only restrictions live.
+      ...(this.opts.onEnterPlan || this.opts.onExitPlan
+        ? {
+            planModeRef: this.planModeRef,
+            onEnterPlan: this.opts.onEnterPlan,
+            onExitPlan: this.opts.onExitPlan,
+          }
+        : {}),
+    });
+    const tools = [...builtInTools, ...(this.opts.additionalTools ?? [])];
     // Apply the optional tool allow-list (read-only advisory sessions). Filtering
     // here means the excluded tools are never registered with the agent loop, so
     // a hallucinated call can't mutate the repo — and buildSystemPrompt below is
@@ -414,7 +449,8 @@ export class AgentSession {
         undefined,
         this.provider,
       ));
-    this.messages = [{ role: "system", content: basePrompt }];
+    this.baseSystemPrompt = basePrompt;
+    this.messages = [{ role: "system", content: this.withSystemPromptTail(basePrompt) }];
     this.syncUltraOrchestrationPrompt();
 
     // Load or create session. Transient sessions (subagent spawns) never
@@ -435,58 +471,53 @@ export class AgentSession {
       await this.createNewSession();
     }
 
-    // Register slash commands
-    const builtins = createBuiltinCommands();
-    for (const cmd of builtins) {
-      this.slashCommands.register(cmd);
+    // GG Coder owns its command registry. Other agents start with an isolated
+    // empty registry and can register their own commands in their own file.
+    if (this.opts.coderSlashCommands !== false) {
+      const builtins = createBuiltinCommands();
+      for (const cmd of builtins) this.slashCommands.register(cmd);
+
+      // Wire up /help to show all registered + prompt + custom commands.
+      const helpCmd = this.slashCommands.get("help");
+      if (helpCmd) {
+        const registry = this.slashCommands;
+        const cwd = this.cwd;
+        helpCmd.execute = async () => {
+          const all = registry.getAll();
+          const lines = all.map(
+            (c) =>
+              `  /${c.name}${c.aliases.length ? ` (${c.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${c.description}`,
+          );
+
+          if (PROMPT_COMMANDS.length > 0) {
+            lines.push("", "Prompt commands:");
+            for (const cmd of PROMPT_COMMANDS) {
+              lines.push(
+                `  /${cmd.name}${cmd.aliases.length ? ` (${cmd.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${cmd.description}`,
+              );
+            }
+          }
+
+          const customCmds = await loadCustomCommands(cwd);
+          if (customCmds.length > 0) {
+            lines.push("", "Custom commands:");
+            for (const cmd of customCmds) lines.push(`  /${cmd.name} — ${cmd.description}`);
+          }
+          return "Available commands:\n" + lines.join("\n");
+        };
+      }
     }
 
-    // Wire up /help to show all registered + prompt + custom commands
-    const helpCmd = this.slashCommands.get("help");
-    if (helpCmd) {
-      const registry = this.slashCommands;
-      const cwd = this.cwd;
-      helpCmd.execute = async () => {
-        const all = registry.getAll();
-        const lines = all.map(
-          (c) =>
-            `  /${c.name}${c.aliases.length ? ` (${c.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${c.description}`,
-        );
-
-        // Add prompt-template commands
-        if (PROMPT_COMMANDS.length > 0) {
-          lines.push("");
-          lines.push("Prompt commands:");
-          for (const cmd of PROMPT_COMMANDS) {
-            lines.push(
-              `  /${cmd.name}${cmd.aliases.length ? ` (${cmd.aliases.map((a) => "/" + a).join(", ")})` : ""} — ${cmd.description}`,
-            );
-          }
-        }
-
-        // Add custom commands from .gg/commands/
-        const customCmds = await loadCustomCommands(cwd);
-        if (customCmds.length > 0) {
-          lines.push("");
-          lines.push("Custom commands:");
-          for (const cmd of customCmds) {
-            lines.push(`  /${cmd.name} — ${cmd.description}`);
-          }
-        }
-
-        return "Available commands:\n" + lines.join("\n");
+    if (this.opts.loadExtensions !== false) {
+      const extContext: ExtensionContext = {
+        eventBus: this.eventBus,
+        registerTool: (tool) => this.tools.push(tool),
+        registerSlashCommand: (cmd) => this.slashCommands.register(cmd),
+        cwd: this.cwd,
+        settingsManager: this.settingsManager,
       };
+      await this.extensionLoader.loadAll(paths.extensionsDir, extContext);
     }
-
-    // Load extensions
-    const extContext: ExtensionContext = {
-      eventBus: this.eventBus,
-      registerTool: (tool) => this.tools.push(tool),
-      registerSlashCommand: (cmd) => this.slashCommands.register(cmd),
-      cwd: this.cwd,
-      settingsManager: this.settingsManager,
-    };
-    await this.extensionLoader.loadAll(paths.extensionsDir, extContext);
 
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
   }
@@ -606,12 +637,18 @@ export class AgentSession {
    * Process user input. Handles slash commands or runs agent loop.
    */
   async prompt(content: string): Promise<void> {
-    // Check for slash commands
-    const parsed = this.slashCommands.parse(content);
+    const parsedInput = this.slashCommands.parse(content);
+    const coderCommands = this.opts.coderSlashCommands !== false;
+    // Non-coder agents only intercept commands registered in their own registry.
+    // Unknown `/text` stays a normal conversational prompt.
+    const parsed =
+      parsedInput && (coderCommands || this.slashCommands.get(parsedInput.name))
+        ? parsedInput
+        : null;
     if (parsed) {
-      // Check prompt-template commands first (built-in + custom)
-      const builtinPromptCmd = getPromptCommand(parsed.name);
-      const customCmds = await loadCustomCommands(this.cwd);
+      // GG Coder alone can resolve its prompt-template and project commands.
+      const builtinPromptCmd = coderCommands ? getPromptCommand(parsed.name) : undefined;
+      const customCmds = coderCommands ? await loadCustomCommands(this.cwd) : [];
       const customPromptCmd = !builtinPromptCmd
         ? customCmds.find((c) => c.name === parsed.name)
         : undefined;
@@ -831,6 +868,7 @@ export class AgentSession {
         return { role: "user", content: parts };
       });
     }
+    if (this.opts.selfCorrectionHooks === false) return null;
     if (!this.settingsManager.get("idealReviewEnabled")) return null;
     if (!this.loopBreakInjected) {
       const decision = evaluateLoopBreak({
@@ -858,6 +896,7 @@ export class AgentSession {
    * otherwise finish and the change set is substantial enough to warrant it.
    */
   private getHookFollowUpMessages(): Message[] | null {
+    if (this.opts.selfCorrectionHooks === false) return null;
     if (!this.settingsManager.get("idealReviewEnabled")) return null;
     if (this.idealReviewInjected) return null;
     const decision = evaluateIdealReview(this.hookStats);
@@ -872,6 +911,7 @@ export class AgentSession {
 
   /** Auto-compact if needed, run agent loop with auth retry, and persist messages. */
   private async runLoop(): Promise<void> {
+    this.refreshSystemPromptTail();
     // One-shot cache-key marker per session so turn_end cacheRead numbers
     // in the log can be traced back to a specific routing namespace —
     // particularly useful when sub-agents inherit `parentKey:subagent`.
@@ -1045,6 +1085,10 @@ export class AgentSession {
     const prevProvider = this.provider;
     if (provider) this.provider = provider as Provider;
     this.model = model;
+    // Keep host-provided option closures (notably chat delegation) aligned with
+    // the live selection after an in-session model switch.
+    this.opts.provider = this.provider;
+    this.opts.model = this.model;
     this.syncUltraOrchestrationPrompt();
     setEstimatorModel(model);
     // maxTokens must follow the active model — it was frozen at the boot
@@ -1215,7 +1259,8 @@ export class AgentSession {
         undefined,
         this.provider,
       ));
-    this.messages = [{ role: "system", content: basePrompt }];
+    this.baseSystemPrompt = basePrompt;
+    this.messages = [{ role: "system", content: this.withSystemPromptTail(basePrompt) }];
     this.syncUltraOrchestrationPrompt();
     // Fresh conversation — new entries must not chain onto the old DAG's leaf.
     this.currentLeafId = null;
@@ -1384,12 +1429,29 @@ export class AgentSession {
       undefined,
       this.provider,
     );
+    this.baseSystemPrompt = rebuilt;
+    const content = this.withSystemPromptTail(rebuilt);
     if (this.messages[0]?.role === "system") {
-      this.messages[0] = { role: "system", content: rebuilt };
+      this.messages[0] = { role: "system", content };
     } else {
-      this.messages.unshift({ role: "system", content: rebuilt });
+      this.messages.unshift({ role: "system", content });
     }
     this.syncUltraOrchestrationPrompt();
+  }
+
+  private withSystemPromptTail(basePrompt: string): string {
+    if (!this.opts.getSystemPromptTail) return basePrompt;
+    return `${basePrompt}\n\n<!-- uncached -->\n${this.opts.getSystemPromptTail()}`;
+  }
+
+  private refreshSystemPromptTail(): void {
+    if (!this.opts.getSystemPromptTail) return;
+    const content = this.withSystemPromptTail(this.baseSystemPrompt);
+    if (this.messages[0]?.role === "system") {
+      this.messages[0] = { role: "system", content };
+    } else {
+      this.messages.unshift({ role: "system", content });
+    }
   }
 
   getMessages(): Message[] {
@@ -1643,6 +1705,7 @@ export class AgentSession {
 
   /** Sol/Terra Ultra delegates proactively; lower levels require an explicit request. */
   private syncUltraOrchestrationPrompt(): void {
+    if (this.opts.orchestrationPrompt === false) return;
     const systemMessage = this.messages[0];
     if (systemMessage?.role !== "system" || typeof systemMessage.content !== "string") return;
 

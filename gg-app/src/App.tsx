@@ -32,6 +32,7 @@ import {
   setWindowTitle,
   openProjectPath,
   type AgentState,
+  type WorkspaceMode,
   type ModelOption,
   type SlashCommand,
   type BackgroundTask,
@@ -62,6 +63,7 @@ import { ContextMeter } from "./ContextMeter";
 import { BackgroundTasksButton } from "./BackgroundTasksButton";
 import { TasksModal } from "./TasksModal";
 import { NotesModal } from "./NotesModal";
+import { MemoryModal } from "./MemoryModal";
 import { ShimmerText } from "./ShimmerText";
 import { WakeScreen } from "./WakeScreen";
 import { ConfirmModal } from "./ConfirmModal";
@@ -74,6 +76,7 @@ import { WindowLayoutButton } from "./WindowLayoutButton";
 // import { GazeButton } from "./GazeButton";
 import { RadioButton } from "./RadioButton";
 import { ProjectPicker } from "./ProjectPicker";
+import { ChatPicker } from "./ChatPicker";
 import { BackButton } from "./BackButton";
 import { AutopilotToggle } from "./AutopilotToggle";
 import { HomeScreen } from "./HomeScreen";
@@ -444,26 +447,22 @@ function App(): React.ReactElement {
   const [showTasks, setShowTasks] = useState(false);
   // Free-form per-project notes, persisted to localStorage keyed by project cwd.
   const [showNotes, setShowNotes] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
   const [notes, setNotes] = useState("");
-  // Every window picks a project before connecting — on app load and on each new
-  // window. The picker re-points this window's agent at the chosen cwd/session.
+  // Every window chooses a code or chat workspace before connecting. Mode stays
+  // separate from picker visibility so restore and reopened pickers are explicit.
   const [needsProject, setNeedsProject] = useState(true);
-  // False until the boot-time workspace-restore check resolves. Gates the entry
-  // render so a window reopened from the saved workspace (after a restart /
-  // update) never flashes the picker before jumping into its restored project.
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("code");
+  // False until the boot-time workspace-restore check resolves.
   const [restoreChecked, setRestoreChecked] = useState(false);
-  // Entry-screen routing while no project is open: the home landing, the
-  // project chooser, or the provider login hub. Secondary windows (opened via
-  // the Windows button) skip the home screen and land on "Choose a project".
-  const [entryView, setEntryView] = useState<"home" | "projects" | "login">(
+  // Entry-screen routing while no workspace is open. Secondary windows skip the
+  // home screen and land on the code project chooser.
+  const [entryView, setEntryView] = useState<"home" | "projects" | "chats" | "login">(
     isSecondaryWindow ? "projects" : "home",
   );
-  // Re-open the project/session picker over an already-open project (to switch
-  // sessions). Distinct from `needsProject` so cancelling returns to the
-  // current session instead of forcing a fresh selection.
+  // Re-open the matching session picker over an already-open workspace.
   const [showPicker, setShowPicker] = useState(false);
-  // Bumped on each project/session choice to force re-hydration (see
-  // onProjectChosen) even when needsProject doesn't change.
+  // Bumped on each workspace/session choice to force re-hydration.
   const [hydrateNonce, setHydrateNonce] = useState(0);
   // New-session confirmation modal + in-flight guard.
   const [confirmNewSession, setConfirmNewSession] = useState(false);
@@ -745,13 +744,12 @@ function App(): React.ReactElement {
     };
   }, [insertDroppedFolderPaths]);
 
-  // Drive the native OS title bar (macOS / Windows / Linux all honor setTitle):
-  // the generated session title when actively working in a project, else
-  // "GG Coder" (home/picker/login screens, and while the session picker is open).
+  // Drive the native OS title bar with the session title or mode-specific app name.
   useEffect(() => {
-    const inProject = !needsProject && !showPicker;
-    setWindowTitle(inProject && sessionTitle ? sessionTitle : "GG Coder");
-  }, [needsProject, showPicker, sessionTitle]);
+    const inWorkspace = !needsProject && !showPicker;
+    const fallbackTitle = workspaceMode === "chat" ? "GG Chat" : "GG Coder";
+    setWindowTitle(inWorkspace && sessionTitle ? sessionTitle : fallbackTitle);
+  }, [needsProject, showPicker, sessionTitle, workspaceMode]);
 
   // Auto-grow the chat textarea to fit its content (up to a CSS max-height,
   // after which it scrolls). Runs whenever the input value changes.
@@ -1104,7 +1102,10 @@ function App(): React.ReactElement {
     // picker). React 19 makes a setState after unmount a safe no-op.
     void restoreTarget()
       .then((target) => {
-        if (target) onProjectChosen();
+        if (target) {
+          setWorkspaceMode(target.mode);
+          onProjectChosen();
+        }
       })
       .finally(() => setRestoreChecked(true));
     // Mount-only: onProjectChosen reads stable setters; restoreTarget is consumed once.
@@ -1247,7 +1248,7 @@ function App(): React.ReactElement {
   // with it (case-insensitive, word-boundary so `@kennedy.ts` still picks files),
   // Ken is "active": the file picker is suppressed and the input is tinted in
   // Ken's color with a shimmering marker, so it's obvious the message goes to Ken.
-  const kenActive = /^@ken\b/i.test(input.trimStart());
+  const kenActive = workspaceMode === "code" && /^@ken\b/i.test(input.trimStart());
   // Split the input for the `@Ken` highlight overlay: any leading whitespace,
   // the literal `@Ken` token (preserving the user's casing), then the rest. Only
   // the token shimmers; lead+rest render in the normal input color.
@@ -1557,7 +1558,7 @@ function App(): React.ReactElement {
     // `@Ken <prompt>` (case-insensitive, optional colon) routes to Ken Kai, the
     // read-only mentor agent — NOT GG Coder. Ken runs concurrently with any
     // build run; his reply streams into a magenta bubble via ken_* events.
-    const kenMatch = /^@ken\b:?\s*/i.exec(trimmed);
+    const kenMatch = workspaceMode === "code" ? /^@ken\b:?\s*/i.exec(trimmed) : null;
     if (kenMatch) {
       const question = trimmed.slice(kenMatch[0].length).trim();
       if (!question) return;
@@ -1807,17 +1808,24 @@ function App(): React.ReactElement {
       <div className="app" style={{ background: theme.background }}>
         {entryView === "home" ? (
           <HomeScreen
-            onProjects={() => setEntryView("projects")}
+            onProjects={() => {
+              setWorkspaceMode("code");
+              setEntryView("projects");
+            }}
+            onChat={() => {
+              setWorkspaceMode("chat");
+              setEntryView("chats");
+            }}
             onLogin={() => setEntryView("login")}
           />
         ) : entryView === "login" ? (
           <LoginScreen onClose={() => setEntryView("home")} />
+        ) : entryView === "chats" ? (
+          <ChatPicker onChosen={onProjectChosen} onClose={() => setEntryView("home")} />
         ) : (
           <ProjectPicker
             onChosen={onProjectChosen}
-            // Every window can return to the home screen (it shows global
-            // settings/auth, nothing window-specific) — secondary windows just
-            // default to opening on the picker.
+            // Every window can return to the mode-neutral home screen.
             onClose={() => setEntryView("home")}
           />
         )}
@@ -1826,28 +1834,27 @@ function App(): React.ReactElement {
     );
   }
 
-  // Picker reopened over an already-open project (to switch sessions). Deep-links
-  // to the current project's session list. From the session list, back returns
-  // to the project list; from the top-level project list, back goes to the home
-  // screen (not the open session).
+  // Picker reopened over an already-open workspace. Back from the picker returns
+  // to the home screen; choosing a session resets and re-hydrates this window.
   if (showPicker) {
+    const pickerProps = {
+      onChosen: () => {
+        setShowPicker(false);
+        onProjectChosen();
+      },
+      onClose: () => {
+        setShowPicker(false);
+        setNeedsProject(true);
+        setEntryView("home" as const);
+      },
+    };
     return (
       <div className="app" style={{ background: theme.background }}>
-        <ProjectPicker
-          initialProjectPath={state?.cwd ?? null}
-          onChosen={() => {
-            setShowPicker(false);
-            onProjectChosen();
-          }}
-          onClose={() => {
-            setShowPicker(false);
-            // Back from the over-a-project picker returns to the home screen for
-            // every window (the entry picker now offers a back-to-home button,
-            // so secondary windows are no longer stranded there).
-            setNeedsProject(true);
-            setEntryView("home");
-          }}
-        />
+        {workspaceMode === "chat" ? (
+          <ChatPicker initialAgent={state?.chatAgent ?? "general"} {...pickerProps} />
+        ) : (
+          <ProjectPicker initialProjectPath={state?.cwd ?? null} {...pickerProps} />
+        )}
       </div>
     );
   }
@@ -1874,7 +1881,7 @@ function App(): React.ReactElement {
               the cursor has it, and a bare child would otherwise block dragging
               across the whole bar. */}
           <span className="chat-head-title" data-tauri-drag-region>
-            {sessionTitle ?? "GG Coder"}
+            {sessionTitle ?? (workspaceMode === "chat" ? "GG Chat" : "GG Coder")}
           </span>
           <TitleUsageMeter currentProvider={state?.provider ?? ""} />
           {windowTotal > 1 && windowIndex !== null && (
@@ -1886,33 +1893,35 @@ function App(): React.ReactElement {
               {windowIndex}/{windowTotal}
             </span>
           )}
-          <button
-            className="nav-toggle"
-            title={navHidden ? "Show nav buttons" : "Hide nav buttons"}
-            aria-label={navHidden ? "Show nav buttons" : "Hide nav buttons"}
-            onClick={toggleNav}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ display: "block" }}
+          {workspaceMode === "code" && (
+            <button
+              className="nav-toggle"
+              title={navHidden ? "Show nav buttons" : "Hide nav buttons"}
+              aria-label={navHidden ? "Show nav buttons" : "Hide nav buttons"}
+              onClick={toggleNav}
             >
-              <polyline points={navHidden ? "6 9 12 15 18 9" : "6 15 12 9 18 15"} />
-            </svg>
-          </button>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ display: "block" }}
+              >
+                <polyline points={navHidden ? "6 9 12 15 18 9" : "6 15 12 9 18 15"} />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Nav row — the action buttons. Collapsed away by the toggle. */}
-        {!navHidden && (
+        {(workspaceMode === "chat" || !navHidden) && (
           <div className="chat-head-nav" data-tauri-drag-region>
             <BackButton
-              label="Back to this project's sessions"
+              label={workspaceMode === "chat" ? "Back to chats" : "Back to this project's sessions"}
               onClick={() => setShowPicker(true)}
             />
             <div className="rank-badge-wrap">
@@ -1929,78 +1938,102 @@ function App(): React.ReactElement {
                 ))}
               </div>
             </div>
-            <span className="picker-head-actions">
-              <AutopilotToggle
-                checked={state?.autopilot ?? false}
-                disabled={running || autopilotReviewing}
-                onChange={(next) => {
-                  setState((s) => (s ? { ...s, autopilot: next } : s));
-                  void setAutopilot(next);
-                  setKenPowerBanner(next ? "on" : "off");
-                  // Dedicated cues for turning autopilot on/off (not the generic
-                  // click, suppressed via data-suppress-click-sound).
-                  playSound(next ? "autopilotOn" : "autopilotOff");
-                }}
-              />
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={running}
-                title="Start a new session for this project"
-                onClick={() => setConfirmNewSession(true)}
-              >
-                {"+ New"}
-              </button>
-              <button
-                className="btn btn-sm btn-ghost"
-                title="Open your notes for this project"
-                onClick={() => setShowNotes(true)}
-              >
-                Notes
-              </button>
-              <button
-                className="btn btn-sm btn-ghost"
-                title="View and run this project's tasks"
-                onClick={openTasks}
-              >
-                {projectTasks.some((t) => t.status !== "done")
-                  ? `Tasks (${projectTasks.filter((t) => t.status !== "done").length})`
-                  : "Tasks"}
-              </button>
-              <RadioButton />
-              {/* <GazeButton /> */}
-              <WindowLayoutButton
-                onArrange={() => {
-                  setNavHiddenPersisted(true);
-                  setToolsHiddenPersisted(true);
-                }}
-              />
-              {needsGitInit ? (
+            {workspaceMode === "chat" ? (
+              <span className="picker-head-actions">
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={running}
+                  title="Start a new chat"
+                  onClick={() => setConfirmNewSession(true)}
+                >
+                  {"+ New"}
+                </button>
                 <button
                   className="btn btn-sm btn-ghost"
-                  disabled={running}
-                  title="Initialize git + create a GitHub repository"
-                  onClick={() => setShowInitGit(true)}
+                  title="View and curate durable chat memories"
+                  onClick={() => setShowMemories(true)}
                 >
-                  {"Initialize Git"}
+                  Memories
                 </button>
-              ) : (
-                commitCommand && (
+                <RadioButton />
+                <WindowLayoutButton />
+              </span>
+            ) : (
+              <>
+                <span className="picker-head-actions">
+                  <AutopilotToggle
+                    checked={state?.autopilot ?? false}
+                    disabled={running || autopilotReviewing}
+                    onChange={(next) => {
+                      setState((s) => (s ? { ...s, autopilot: next } : s));
+                      void setAutopilot(next);
+                      setKenPowerBanner(next ? "on" : "off");
+                      // Dedicated cues for turning autopilot on/off (not the generic
+                      // click, suppressed via data-suppress-click-sound).
+                      playSound(next ? "autopilotOn" : "autopilotOff");
+                    }}
+                  />
                   <button
-                    className={`btn btn-sm ${hasCommit ? "btn-success" : "btn-ghost"}`}
+                    className="btn btn-primary btn-sm"
                     disabled={running}
-                    title={hasCommit ? "Run /commit" : "Generate a /commit command"}
-                    onClick={() =>
-                      submitText(
-                        `/${commitCommand}`,
-                        hasCommit ? "Committing\u2026" : "Setting up commits\u2026",
-                      )
-                    }
+                    title="Start a new session for this project"
+                    onClick={() => setConfirmNewSession(true)}
                   >
-                    {`/${commitCommand}`}
+                    {"+ New"}
                   </button>
-                )
-              )}
-            </span>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    title="Open your notes for this project"
+                    onClick={() => setShowNotes(true)}
+                  >
+                    Notes
+                  </button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    title="View and run this project's tasks"
+                    onClick={openTasks}
+                  >
+                    {projectTasks.some((t) => t.status !== "done")
+                      ? `Tasks (${projectTasks.filter((t) => t.status !== "done").length})`
+                      : "Tasks"}
+                  </button>
+                  <RadioButton />
+                  {/* <GazeButton /> */}
+                  <WindowLayoutButton
+                    onArrange={() => {
+                      setNavHiddenPersisted(true);
+                      setToolsHiddenPersisted(true);
+                    }}
+                  />
+                  {needsGitInit ? (
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      disabled={running}
+                      title="Initialize git + create a GitHub repository"
+                      onClick={() => setShowInitGit(true)}
+                    >
+                      {"Initialize Git"}
+                    </button>
+                  ) : (
+                    commitCommand && (
+                      <button
+                        className={`btn btn-sm ${hasCommit ? "btn-success" : "btn-ghost"}`}
+                        disabled={running}
+                        title={hasCommit ? "Run /commit" : "Generate a /commit command"}
+                        onClick={() =>
+                          submitText(
+                            `/${commitCommand}`,
+                            hasCommit ? "Committing\u2026" : "Setting up commits\u2026",
+                          )
+                        }
+                      >
+                        {`/${commitCommand}`}
+                      </button>
+                    )
+                  )}
+                </span>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -2013,7 +2046,7 @@ function App(): React.ReactElement {
           screen. Anchoring to this non-scrolling sibling keeps it pinned to
           what the user is actually looking at, at any scroll position. */}
       <div className="transcript-frame">
-        {kenPowerBanner && (
+        {workspaceMode === "code" && kenPowerBanner && (
           <KenPowerBanner mode={kenPowerBanner} onDone={() => setKenPowerBanner(null)} />
         )}
         <div className="transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
@@ -2023,7 +2056,7 @@ function App(): React.ReactElement {
             <>
               {items.length === 0 &&
                 (status === "ready" ? (
-                  <WakeScreen />
+                  <WakeScreen chat={workspaceMode === "chat"} />
                 ) : (
                   <div className="line transcript-reveal" style={{ color: theme.textDim }}>
                     {`\u273b ${status}`}
@@ -2040,8 +2073,10 @@ function App(): React.ReactElement {
       </div>
 
       <div className="liveregion">
-        {autopilotReviewing && <AutopilotReviewBar onCancel={() => void cancel()} />}
-        {kenRunning && (
+        {workspaceMode === "code" && autopilotReviewing && (
+          <AutopilotReviewBar onCancel={() => void cancel()} />
+        )}
+        {workspaceMode === "code" && kenRunning && (
           <KenActivityBar
             runStartTs={kenRunStartTs}
             tokens={kenTokens}
@@ -2055,7 +2090,7 @@ function App(): React.ReactElement {
         {/* Ken's bar (chat OR autopilot review) REPLACES the main bar while the
             build is idle — otherwise the idle "Ready for work" line stacks under
             Ken's spinner. When the build is also running, both bars show. */}
-        {(running || (!kenRunning && !autopilotReviewing)) && (
+        {(workspaceMode === "chat" || running || (!kenRunning && !autopilotReviewing)) && (
           <ActivityBar
             running={running}
             tokens={tokens}
@@ -2063,8 +2098,8 @@ function App(): React.ReactElement {
             isThinking={isThinking}
             thinkingStartTs={thinkingStartTs}
             thinkingAccumMs={thinkingAccumMs}
-            planTotal={planTotal}
-            planDone={Math.min(planDone.size, planTotal)}
+            planTotal={workspaceMode === "chat" ? 0 : planTotal}
+            planDone={workspaceMode === "chat" ? 0 : Math.min(planDone.size, planTotal)}
             onCancel={() => void cancel()}
             toolsHidden={toolsHidden}
             hasToolFeed={liveToolFeed.length > 0}
@@ -2152,7 +2187,7 @@ function App(): React.ReactElement {
               // submit the un-enhanced draft mid-animation.
               readOnly={enhanceAnim !== null}
               value={input}
-              placeholder={displayPlaceholder}
+              placeholder={workspaceMode === "chat" ? "Ask anything\u2026" : displayPlaceholder}
               onPaste={(e) => {
                 const files = Array.from(e.clipboardData.files);
                 if (files.length > 0) {
@@ -2249,42 +2284,58 @@ function App(): React.ReactElement {
         )}
       </div>
 
-      <div className="footer" style={{ color: theme.footerText }}>
+      <div
+        className={`footer${workspaceMode === "chat" ? " footer-chat" : ""}`}
+        style={{ color: theme.footerText }}
+      >
         {!hydrated ? (
           <FooterSkeleton />
         ) : (
           <>
-            <span className="footer-left footer-reveal" style={{ fontFamily: "var(--mono)" }}>
-              {state?.cwd && (
-                <span className="footer-cwd" style={{ color: theme.textDim }}>
-                  {basename(state.cwd)}
-                </span>
-              )}
-              {state?.gitBranch && (
-                <>
-                  {state?.cwd && <FooterSep />}
-                  <span style={{ color: theme.secondary }}>{`\u2387 ${state.gitBranch}`}</span>
-                </>
-              )}
-              {runningTaskCount > 0 && (
-                <>
-                  {(state?.cwd || state?.gitBranch) && <FooterSep />}
-                  <BackgroundTasksButton tasks={tasks} />
-                </>
-              )}
-              {state?.planMode && (
-                <>
-                  {(state?.cwd || state?.gitBranch || runningTaskCount > 0) && <FooterSep />}
-                  <span className="footer-plan">
-                    <ShimmerText base={theme.secondary} bright="#ddd6fe">
-                      {"\u25C6 plan mode"}
-                    </ShimmerText>
+            {workspaceMode === "chat" ? (
+              <span
+                className="footer-left footer-reveal"
+                style={{ color: theme.textDim, fontFamily: "var(--mono)" }}
+              >
+                {state?.chatAgent === "therapist"
+                  ? "Therapist Agent"
+                  : state?.chatAgent === "research"
+                    ? "Research Agent"
+                    : "General Agent"}
+              </span>
+            ) : (
+              <span className="footer-left footer-reveal" style={{ fontFamily: "var(--mono)" }}>
+                {state?.cwd && (
+                  <span className="footer-cwd" style={{ color: theme.textDim }}>
+                    {basename(state.cwd)}
                   </span>
-                </>
-              )}
-            </span>
+                )}
+                {state?.gitBranch && (
+                  <>
+                    {state?.cwd && <FooterSep />}
+                    <span style={{ color: theme.secondary }}>{`\u2387 ${state.gitBranch}`}</span>
+                  </>
+                )}
+                {runningTaskCount > 0 && (
+                  <>
+                    {(state?.cwd || state?.gitBranch) && <FooterSep />}
+                    <BackgroundTasksButton tasks={tasks} />
+                  </>
+                )}
+                {state?.planMode && (
+                  <>
+                    {(state?.cwd || state?.gitBranch || runningTaskCount > 0) && <FooterSep />}
+                    <span className="footer-plan">
+                      <ShimmerText base={theme.secondary} bright="#ddd6fe">
+                        {"\u25C6 plan mode"}
+                      </ShimmerText>
+                    </span>
+                  </>
+                )}
+              </span>
+            )}
             <span className="footer-right footer-reveal">
-              {contextPct > 0 && (
+              {workspaceMode === "code" && contextPct > 0 && (
                 <>
                   <ContextMeter pct={contextPct} />
                   <FooterSep />
@@ -2325,7 +2376,7 @@ function App(): React.ReactElement {
                     currentModel={state?.model ?? ""}
                     onSelect={onSelectModel}
                     onClose={() => setModelMenuOpen(false)}
-                    title="GG Coder model"
+                    title={workspaceMode === "chat" ? "GG model" : "GG Coder model"}
                   />
                 )}
                 <span className="model-label" style={{ color: theme.text }}>
@@ -2335,7 +2386,7 @@ function App(): React.ReactElement {
                   className="model-button"
                   style={{ color: theme.text }}
                   disabled={running || models.length === 0}
-                  title="Switch GG Coder's model"
+                  title={workspaceMode === "chat" ? "Switch GG's model" : "Switch GG Coder's model"}
                   onClick={() => {
                     setKenModelMenuOpen(false);
                     setModelMenuOpen((o) => !o);
@@ -2344,39 +2395,43 @@ function App(): React.ReactElement {
                   {modelName(state?.model)}
                 </button>
               </span>
-              <FooterSep />
-              <span className="model-anchor">
-                {kenModelMenuOpen && models.length > 0 && (
-                  <ModelMenu
-                    models={models}
-                    currentModel={state?.kenModel ?? state?.model ?? ""}
-                    onSelect={(id) => onSelectKenModel(id)}
-                    onClose={() => setKenModelMenuOpen(false)}
-                    title="Ken's model"
-                    onSelectFollow={() => onSelectKenModel(null)}
-                    followActive={!state?.kenModelOverride}
-                  />
-                )}
-                <span className="model-label" style={{ color: theme.ken }}>
-                  Ken
-                </span>
-                <button
-                  className="model-button"
-                  style={{ color: theme.ken }}
-                  disabled={models.length === 0}
-                  title={
-                    state?.kenModelOverride
-                      ? "Ken is pinned to his own model — click to change"
-                      : "Ken follows GG Coder's model — click to pin one"
-                  }
-                  onClick={() => {
-                    setModelMenuOpen(false);
-                    setKenModelMenuOpen((o) => !o);
-                  }}
-                >
-                  {modelName(state?.kenModel ?? state?.model)}
-                </button>
-              </span>
+              {workspaceMode === "code" && (
+                <>
+                  <FooterSep />
+                  <span className="model-anchor">
+                    {kenModelMenuOpen && models.length > 0 && (
+                      <ModelMenu
+                        models={models}
+                        currentModel={state?.kenModel ?? state?.model ?? ""}
+                        onSelect={(id) => onSelectKenModel(id)}
+                        onClose={() => setKenModelMenuOpen(false)}
+                        title="Ken's model"
+                        onSelectFollow={() => onSelectKenModel(null)}
+                        followActive={!state?.kenModelOverride}
+                      />
+                    )}
+                    <span className="model-label" style={{ color: theme.ken }}>
+                      Ken
+                    </span>
+                    <button
+                      className="model-button"
+                      style={{ color: theme.ken }}
+                      disabled={models.length === 0}
+                      title={
+                        state?.kenModelOverride
+                          ? "Ken is pinned to his own model — click to change"
+                          : "Ken follows GG Coder's model — click to pin one"
+                      }
+                      onClick={() => {
+                        setModelMenuOpen(false);
+                        setKenModelMenuOpen((o) => !o);
+                      }}
+                    >
+                      {modelName(state?.kenModel ?? state?.model)}
+                    </button>
+                  </span>
+                </>
+              )}
             </span>
           </>
         )}
@@ -2399,7 +2454,7 @@ function App(): React.ReactElement {
         </div>
       )}
 
-      {showInitGit && (
+      {workspaceMode === "code" && showInitGit && (
         <InitGitModal
           defaultName={defaultRepoName}
           onClose={() => setShowInitGit(false)}
@@ -2412,16 +2467,20 @@ function App(): React.ReactElement {
 
       {confirmNewSession && (
         <ConfirmModal
-          title="New Session"
-          message="This will create a new session for this project. The current conversation will be cleared. Are you sure?"
-          confirmLabel="New Session"
+          title={workspaceMode === "chat" ? "New Chat" : "New Session"}
+          message={
+            workspaceMode === "chat"
+              ? "This will create a new chat. The current conversation will be cleared. Are you sure?"
+              : "This will create a new session for this project. The current conversation will be cleared. Are you sure?"
+          }
+          confirmLabel={workspaceMode === "chat" ? "New Chat" : "New Session"}
           busy={newSessionBusy}
           onConfirm={() => void startNewSession()}
           onClose={() => setConfirmNewSession(false)}
         />
       )}
 
-      {planReview !== null && (
+      {workspaceMode === "code" && planReview !== null && (
         <PlanReviewModal
           content={planReview}
           // Autopilot Ken reviews submitted plans himself; the indicator tells
@@ -2433,7 +2492,11 @@ function App(): React.ReactElement {
         />
       )}
 
-      {showNotes && (
+      {workspaceMode === "chat" && showMemories && (
+        <MemoryModal onClose={() => setShowMemories(false)} />
+      )}
+
+      {workspaceMode === "code" && showNotes && (
         <NotesModal
           value={notes}
           onChange={handleNotesChange}
@@ -2445,7 +2508,7 @@ function App(): React.ReactElement {
         <ScorecardModal snapshot={progress} onClose={() => setShowScorecard(false)} />
       )}
 
-      {showTasks && (
+      {workspaceMode === "code" && showTasks && (
         <TasksModal
           tasks={projectTasks}
           running={running}

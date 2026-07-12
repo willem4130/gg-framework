@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as ConfigModule from "../config.js";
 import { encodeCwd } from "./encode-cwd.js";
-import { discoverProjects } from "./project-discovery.js";
+import { discoverProjects, listRecentSessions } from "./project-discovery.js";
 
 // Holder the hoisted mock reads at call time (vi.mock is hoisted above imports,
 // so it can't close over a value assigned later without this indirection).
@@ -91,6 +91,22 @@ describe("discoverProjects (ggcoder store)", () => {
     // The decode of "arbitrary-store-name" (an existing-looking rel path) must
     // not surface as its own phantom project.
     expect(projects.some((p) => p.path.endsWith("arbitrary-store-name"))).toBe(false);
+  });
+
+  it("lists recent sessions only from an explicit agent session root", async () => {
+    const projectPath = path.join(tmp, "projects", "shared-root");
+    const chatSessionsDir = path.join(tmp, ".gg", "chat-sessions", "general");
+    await fs.mkdir(projectPath, { recursive: true });
+    await writeSession(path.join(state.sessionsDir, encodeCwd(projectPath)), projectPath);
+    await writeSession(path.join(chatSessionsDir, encodeCwd(projectPath)), projectPath);
+
+    const coder = await listRecentSessions(projectPath);
+    const chat = await listRecentSessions(projectPath, 5, chatSessionsDir);
+
+    expect(coder).toHaveLength(1);
+    expect(chat).toHaveLength(1);
+    expect(coder[0]?.path.startsWith(state.sessionsDir)).toBe(true);
+    expect(chat[0]?.path.startsWith(chatSessionsDir)).toBe(true);
   });
 
   // The best-effort decode only round-trips for underscore-free absolute paths

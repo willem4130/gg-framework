@@ -685,7 +685,7 @@ body {
   font-size: 13px;
   padding: 8px 16px;
 }
-/* Projects + its settings icon sit on one row; the pill flexes, icon is fixed. */
+/* Home action rows share width; primary row fits Code, Chat, and Settings. */
 .home-projects-row {
   display: flex;
   gap: 10px;
@@ -693,6 +693,13 @@ body {
 }
 .home-projects-row .home-btn {
   flex: 1 1 auto;
+}
+.home-primary-row {
+  gap: 8px;
+}
+.home-primary-row .home-btn {
+  min-width: 0;
+  padding-inline: 12px;
 }
 .home-settings {
   flex: 0 0 auto;
@@ -1575,6 +1582,63 @@ body {
 .task-row {
   margin: 2px 0 6px;
 }
+.chat-agent-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 12px 0;
+}
+
+.chat-agent-tab {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast),
+    background var(--t-fast),
+    color var(--t-fast);
+}
+
+.chat-agent-tab span,
+.chat-agent-tab small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-agent-tab span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-agent-tab small {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.chat-agent-tab:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-1);
+}
+
+.chat-agent-tab.active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--text);
+}
+
+.chat-agent-tab:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .picker-list {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -3508,6 +3572,12 @@ body {
   position: relative;
   z-index: 2;
 }
+.footer-chat {
+  justify-content: flex-end;
+}
+.footer-chat .footer-right {
+  margin-left: auto;
+}
 
 /* Footer clusters reveal as one faded unit once the session has hydrated,
    instead of cwd/git/thinking/model popping in piecemeal and reflowing. The
@@ -4718,4 +4788,122 @@ body {
   .title-usage-particle {
     animation: none;
   }
+}
+
+/* ── Durable chat memories ── */
+.memory-modal {
+  width: min(780px, 92vw);
+  padding: 20px;
+}
+.memory-modal .modal-head {
+  margin-bottom: 6px;
+}
+.memory-modal-count {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.memory-modal-note {
+  margin-bottom: 14px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.memory-table-wrap {
+  max-height: min(480px, 64vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+.memory-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.memory-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.memory-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.memory-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.memory-table-text {
+  min-width: 250px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.memory-category {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+.memory-importance,
+.memory-updated {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.memory-delete-cell {
+  width: 30px;
+  text-align: right;
+}
+.memory-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.memory-delete:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface-1);
+  color: var(--error);
+}
+.memory-delete:disabled {
+  cursor: wait;
+  opacity: 0.35;
+}
+.memory-modal-state {
+  padding: 44px 20px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
+.memory-modal-error {
+  color: var(--error);
+}
+.memory-table .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

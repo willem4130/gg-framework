@@ -18,7 +18,7 @@ export interface AgentDefinition {
  * so user agents override bundled when names collide.
  */
 export async function discoverAgents(options: {
-  globalAgentsDir: string;
+  globalAgentsDir?: string;
   projectDir?: string;
 }): Promise<AgentDefinition[]> {
   const agents: AgentDefinition[] = [];
@@ -31,8 +31,10 @@ export async function discoverAgents(options: {
   }
 
   // Global agents: ~/.gg/agents/*.md
-  const globalAgents = await loadAgentsFromDir(options.globalAgentsDir, "global");
-  agents.push(...globalAgents);
+  if (options.globalAgentsDir) {
+    const globalAgents = await loadAgentsFromDir(options.globalAgentsDir, "global");
+    agents.push(...globalAgents);
+  }
 
   // Bundled defaults — shipped with ggcoder, user-defined agents with the same
   // name take precedence because they come first in the array.

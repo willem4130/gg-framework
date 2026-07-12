@@ -95,6 +95,34 @@ function currentWindowLabel(seconds: unknown, fallbackHours: number): string {
   return `${hours}-hour`;
 }
 
+function codexWindowKind(
+  window: CodexWindow,
+  fallback: "current" | "weekly",
+): "current" | "weekly" {
+  const duration = finiteNumber(window.limit_window_seconds);
+  if (duration === undefined) return fallback;
+  // The API can put its seven-day limit in either primary or secondary.
+  // Classify by duration without mislabeling a future 24-hour window as weekly.
+  return duration >= 6 * 24 * 60 * 60 ? "weekly" : "current";
+}
+
+function normalizedCodexWindow(
+  window: CodexWindow | null | undefined,
+  fallbackKind: "current" | "weekly",
+  now: number,
+): SubscriptionUsageWindow | null {
+  if (!window) return null;
+  const usedPercent = clampPercent(window.used_percent);
+  if (usedPercent === undefined) return null;
+  const kind = codexWindowKind(window, fallbackKind);
+  return {
+    kind,
+    label: kind === "weekly" ? "Weekly" : currentWindowLabel(window.limit_window_seconds, 5),
+    usedPercent,
+    resetsAt: codexResetAt(window, now),
+  };
+}
+
 async function readUsageResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!response.ok) {
@@ -170,27 +198,14 @@ async function fetchCodexUsage(
   if (credentials.accountId) headers["ChatGPT-Account-Id"] = credentials.accountId;
   const response = await fetchFn(CODEX_USAGE_URL, { method: "GET", signal, headers });
   const data = (await readUsageResponse(response)) as CodexUsageResponse;
-  const windows: SubscriptionUsageWindow[] = [];
-  const current = data.rate_limit?.primary_window;
-  const currentPercent = clampPercent(current?.used_percent);
-  if (current && currentPercent !== undefined) {
-    windows.push({
-      kind: "current",
-      label: currentWindowLabel(current.limit_window_seconds, 5),
-      usedPercent: currentPercent,
-      resetsAt: codexResetAt(current, now()),
-    });
-  }
-  const weekly = data.rate_limit?.secondary_window;
-  const weeklyPercent = clampPercent(weekly?.used_percent);
-  if (weekly && weeklyPercent !== undefined) {
-    windows.push({
-      kind: "weekly",
-      label: "Weekly",
-      usedPercent: weeklyPercent,
-      resetsAt: codexResetAt(weekly, now()),
-    });
-  }
+  const windows = [
+    normalizedCodexWindow(data.rate_limit?.primary_window, "current", now()),
+    normalizedCodexWindow(data.rate_limit?.secondary_window, "weekly", now()),
+  ].filter((window): window is SubscriptionUsageWindow => window !== null);
+  windows.sort((left, right) => {
+    if (left.kind === right.kind) return 0;
+    return left.kind === "current" ? -1 : 1;
+  });
   return {
     provider: "openai",
     displayName: "Codex",
