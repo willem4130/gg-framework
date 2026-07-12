@@ -22,6 +22,17 @@ export interface ChangelogEntry {
 /** Newest first. Prepended by the `/release` flow. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.19.0",
+    date: "2026-07-13",
+    items: [
+      "Chat just became a whole new side of GG Coder. I built `General`, `Therapist`, and `Research` companions with their own conversation history, then gave them durable memory you can inspect and clean up anytime.",
+      "Your windows now wake up exactly where you left them. I hardened restored sessions, rapid project switches, and reused window slots, so even a `4 window` workspace opens cleanly with every chat attached to the right place.",
+      "Web research is faster, cleaner, and much harder to knock over. I made `Web Search` share fresh results across windows and gave `Web Fetch` smarter extraction, strict download guards, and quicker document discovery.",
+      "Image batches finally deliver what you asked for. I fixed `Generate Image` so requests for up to `4 images` produce the full set instead of getting rejected by the provider.",
+      "Your `Codex` limit meter tells the truth at a glance. I taught it to recognize weekly windows wherever the provider sends them and made long reset times read naturally in days.",
+    ],
+  },
+  {
     version: "0.18.3",
     date: "2026-07-12",
     items: [
