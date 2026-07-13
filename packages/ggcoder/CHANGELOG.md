@@ -1,5 +1,17 @@
 # @kenkaiiii/ggcoder
 
+## 5.15.0
+
+### Minor Changes
+
+- Make chat-agent delegation switch the active agent in place while preserving conversation history and restoring handoffs across resumed sessions.
+
+### Patch Changes
+
+- @kenkaiiii/gg-ai@5.15.0
+- @kenkaiiii/gg-agent@5.15.0
+- @kenkaiiii/gg-core@5.15.0
+
 ## 5.14.0
 
 ### Minor Changes
