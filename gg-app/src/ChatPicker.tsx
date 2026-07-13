@@ -22,19 +22,12 @@ interface Props {
   initialAgent?: ChatAgentId;
 }
 
-const CHAT_AGENTS: Array<{ id: ChatAgentId; label: string; description: string }> = [
-  { id: "general", label: "General", description: "Everyday thinking and help" },
-  { id: "therapist", label: "Therapist", description: "Supportive conversation" },
-  { id: "research", label: "Research", description: "Evidence-backed research" },
-];
-
 /** Agent and session chooser rooted at the configured projects folder. */
 export function ChatPicker({
   onChosen,
   onClose,
   initialAgent = "general",
 }: Props): React.ReactElement {
-  const [agent, setAgent] = useState<ChatAgentId>(initialAgent);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [sessions, setSessions] = useState<RecentSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,7 +60,7 @@ export function ChatPicker({
         if (!root) throw new Error("Choose a projects folder in Settings before starting a chat.");
         if (!cancelled) setProjectsRoot(root);
         await waitForReady();
-        return listSessions(root, agent);
+        return listSessions(root, "all");
       })
       .then((recent) => {
         if (!cancelled) setSessions(recent);
@@ -83,12 +76,12 @@ export function ChatPicker({
     return () => {
       cancelled = true;
     };
-  }, [agent]);
+  }, []);
 
-  function choose(sessionPath?: string): void {
+  function choose(session?: RecentSession): void {
     if (busy || !projectsRoot) return;
     setBusy(true);
-    void selectWorkspace("chat", projectsRoot, sessionPath, agent)
+    void selectWorkspace("chat", projectsRoot, session?.path, session?.chatAgent ?? initialAgent)
       .then(() => onChosen(projectsRoot))
       .catch(() => setBusy(false));
   }
@@ -110,23 +103,6 @@ export function ChatPicker({
           <RadioButton />
           <WindowLayoutButton />
         </span>
-      </div>
-
-      <div className="chat-agent-tabs" role="tablist" aria-label="Chat agent">
-        {CHAT_AGENTS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            role="tab"
-            aria-selected={agent === option.id}
-            className={`chat-agent-tab${agent === option.id ? " active" : ""}`}
-            disabled={busy}
-            onClick={() => setAgent(option.id)}
-          >
-            <span>{option.label}</span>
-            <small>{option.description}</small>
-          </button>
-        ))}
       </div>
 
       <div className="picker-list">
@@ -151,7 +127,7 @@ export function ChatPicker({
                 key={session.id}
                 className="picker-item"
                 disabled={busy}
-                onClick={() => choose(session.path)}
+                onClick={() => choose(session)}
               >
                 <span className="picker-row">
                   <span className="picker-name picker-preview" style={{ color: theme.text }}>

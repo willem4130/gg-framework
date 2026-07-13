@@ -214,6 +214,7 @@ export interface RecentSession {
   preview: string;
   lastActiveDisplay: string;
   messageCount: number;
+  chatAgent?: ChatAgentId;
 }
 
 export interface SwitchModelResult extends ThinkingState {
@@ -885,8 +886,11 @@ export async function searchFiles(query: string): Promise<FileHit[]> {
   }
 }
 
-/** List the latest sessions for a project or chat-agent namespace. */
-export async function listSessions(cwd: string, chatAgent?: ChatAgentId): Promise<RecentSession[]> {
+/** List the latest sessions for a project, one chat agent, or every chat agent. */
+export async function listSessions(
+  cwd: string,
+  chatAgent?: ChatAgentId | "all",
+): Promise<RecentSession[]> {
   try {
     const res = await invoke<{ sessions: RecentSession[] }>("agent_sessions", {
       cwd,

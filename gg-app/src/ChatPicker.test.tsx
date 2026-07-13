@@ -34,6 +34,7 @@ const session: RecentSession = {
   preview: "Plan my week",
   lastActiveDisplay: "2m ago",
   messageCount: 4,
+  chatAgent: "therapist",
 };
 
 afterEach(() => {
@@ -53,7 +54,7 @@ describe("ChatPicker", () => {
 
     expect(await screen.findByText("Plan my week")).toBeDefined();
     expect(waitForReadyMock).toHaveBeenCalledOnce();
-    expect(listSessionsMock).toHaveBeenCalledWith("/workspaces", "general");
+    expect(listSessionsMock).toHaveBeenCalledWith("/workspaces", "all");
 
     fireEvent.click(screen.getByText("Plan my week"));
     await waitFor(() => {
@@ -61,7 +62,7 @@ describe("ChatPicker", () => {
         "chat",
         "/workspaces",
         "/sessions/chat-1.jsonl",
-        "general",
+        "therapist",
       );
       expect(onChosen).toHaveBeenCalledWith("/workspaces");
     });
@@ -82,21 +83,18 @@ describe("ChatPicker", () => {
     });
   });
 
-  it("switches agent namespaces and starts the selected specialist", async () => {
+  it("starts a new chat with the initially active agent", async () => {
     getSettingsMock.mockResolvedValue({ projectsRoot: "/workspaces", configured: true });
     waitForReadyMock.mockResolvedValue();
     listSessionsMock.mockResolvedValue([]);
     selectWorkspaceMock.mockResolvedValue();
 
-    render(<ChatPicker onChosen={vi.fn()} />);
-    await screen.findAllByRole("button", { name: "+ New chat" });
-    fireEvent.click(screen.getByRole("tab", { name: /Research/ }));
+    render(<ChatPicker onChosen={vi.fn()} initialAgent="research" />);
+    const newChatButtons = await screen.findAllByRole("button", { name: "+ New chat" });
+    fireEvent.click(newChatButtons[0]);
 
     await waitFor(() => {
-      expect(listSessionsMock).toHaveBeenLastCalledWith("/workspaces", "research");
-    });
-    fireEvent.click(screen.getAllByRole("button", { name: "+ New chat" })[0]);
-    await waitFor(() => {
+      expect(listSessionsMock).toHaveBeenCalledWith("/workspaces", "all");
       expect(selectWorkspaceMock).toHaveBeenCalledWith(
         "chat",
         "/workspaces",
@@ -104,6 +102,7 @@ describe("ChatPicker", () => {
         "research",
       );
     });
+    expect(screen.queryByRole("tab")).toBeNull();
   });
 
   it("shows a clear prerequisite error when projectsRoot is unavailable", async () => {

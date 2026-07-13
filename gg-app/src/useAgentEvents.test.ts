@@ -193,6 +193,13 @@ describe("useAgentEvents", () => {
     expect(setTokens).toHaveBeenLastCalledWith(15);
   });
 
+  it("updates the active chat agent after a handoff", () => {
+    const { hook, getState } = setup(() => false, { chatAgent: "general" });
+    act(() => {
+      hook.result.current.handleEvent(ev("chat_agent_change", { chatAgent: "therapist" }));
+    });
+    expect(getState()).toMatchObject({ chatAgent: "therapist" });
+  });
   it("delegates ken_ events to handleKenEvent and does not handle them locally", () => {
     const handleKenEvent = vi.fn(() => true);
     const { hook, getItems, setRunning } = setup(handleKenEvent);

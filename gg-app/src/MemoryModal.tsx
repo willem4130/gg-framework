@@ -8,6 +8,7 @@ import {
   type Memory,
   type MemorySnapshot,
 } from "./agent";
+import { Badge } from "./Badge";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -62,19 +63,13 @@ export function MemoryModal({ onClose }: Props): React.ReactElement {
   return (
     <Modal
       title={
-        <span>
-          Memories{" "}
-          <span className="memory-modal-count">
-            {snapshot.memories.length} / {snapshot.hardLimit}
-          </span>
+        <span className="memory-modal-title">
+          Memories {!loading && <Badge>{snapshot.memories.length}</Badge>}
         </span>
       }
       onClose={onClose}
       className="memory-modal"
     >
-      <div className="memory-modal-note">
-        Related memories are consolidated once the list reaches {snapshot.softLimit}.
-      </div>
       <div className="memory-table-wrap">
         {loading ? (
           <div className="memory-modal-state">Loading memories…</div>

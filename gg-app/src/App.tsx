@@ -80,6 +80,7 @@ import { ChatPicker } from "./ChatPicker";
 import { BackButton } from "./BackButton";
 import { AutopilotToggle } from "./AutopilotToggle";
 import { HomeScreen } from "./HomeScreen";
+import { initialEntryView, type EntryView } from "./app-entry-view";
 import { Toaster } from "./Toaster";
 import { Confetti } from "./Confetti";
 import { RankBadge } from "./RankBadge";
@@ -455,11 +456,8 @@ function App(): React.ReactElement {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("code");
   // False until the boot-time workspace-restore check resolves.
   const [restoreChecked, setRestoreChecked] = useState(false);
-  // Entry-screen routing while no workspace is open. Secondary windows skip the
-  // home screen and land on the code project chooser.
-  const [entryView, setEntryView] = useState<"home" | "projects" | "chats" | "login">(
-    isSecondaryWindow ? "projects" : "home",
-  );
+  // Every window starts from the mode-neutral home screen before choosing Code or Chat.
+  const [entryView, setEntryView] = useState<EntryView>(initialEntryView(isSecondaryWindow));
   // Re-open the matching session picker over an already-open workspace.
   const [showPicker, setShowPicker] = useState(false);
   // Bumped on each workspace/session choice to force re-hydration.

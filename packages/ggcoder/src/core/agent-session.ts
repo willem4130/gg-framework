@@ -1392,6 +1392,21 @@ export class AgentSession {
     return this.processManager.stop(id);
   }
 
+  /** Replace a host-owned system prompt in place without resetting conversation history. */
+  setCustomSystemPrompt(systemPrompt: string, promptCacheKeyPrefix?: string): void {
+    this.customSystemPrompt = systemPrompt;
+    this.baseSystemPrompt = systemPrompt;
+    this.opts.systemPrompt = systemPrompt;
+    if (promptCacheKeyPrefix) this.opts.promptCacheKeyPrefix = promptCacheKeyPrefix;
+    const content = this.withSystemPromptTail(systemPrompt);
+    if (this.messages[0]?.role === "system") {
+      this.messages[0] = { role: "system", content };
+    } else {
+      this.messages.unshift({ role: "system", content });
+    }
+    this.syncUltraOrchestrationPrompt();
+  }
+
   /**
    * Toggle plan mode: flips the shared ref (so tools enforce read-only
    * restrictions) and rebuilds the system prompt in place so the model is told

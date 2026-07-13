@@ -753,6 +753,7 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
           break;
         }
         case "model_change":
+        case "chat_agent_change":
           setState((s) => (s ? { ...s, ...(d as Partial<AgentState>) } : s));
           break;
         // Ken's effective model changed — either his pin was set/cleared or he

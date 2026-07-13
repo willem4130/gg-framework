@@ -25,6 +25,8 @@ describe("specialist chat agents", () => {
     expect(options.sessionRootDir).toBe("/tmp/gg/chat-sessions/therapist");
     expect(options.allowedTools).toBeUndefined();
     expect(options.additionalTools?.map((tool) => tool.name)).toContain("delegate_to_agent");
+    expect(options.systemPrompt).toContain("hand the entire conversation");
+    expect(options.systemPrompt).toContain("not a one-off subtask");
     expect(options.systemPrompt).toContain("Durable memory curation:");
     expect(options.selfCorrectionHooks).toBe(false);
   });
@@ -40,7 +42,7 @@ describe("specialist chat agents", () => {
     expect(options.additionalTools?.map((tool) => tool.name)).toContain("delegate_to_agent");
   });
 
-  it("retains memory tools and dynamic context for delegated specialists without recursive delegation", () => {
+  it("retains memory tools and dynamic context when handoff is disabled", () => {
     const memoryTool: AgentTool = {
       name: "remember",
       description: "test memory tool",
@@ -63,6 +65,47 @@ describe("specialist chat agents", () => {
     const options = (delegated as unknown as { opts: AgentSessionOptions }).opts;
     expect(options.additionalTools?.map((tool) => tool.name)).toEqual(["remember"]);
     expect(options.getSystemPromptTail).toBe(getSystemPromptTail);
+  });
+
+  it("hands off the live session while preserving its conversation", async () => {
+    const changed: string[] = [];
+    const agent = createChatAgent("general", {
+      provider: "anthropic",
+      model: "claude-test",
+      cwd: "/tmp/workspace",
+      sessionsDir: "/tmp/gg/sessions",
+      onAgentChange: (agentId) => {
+        changed.push(agentId);
+      },
+    });
+    const internals = agent as unknown as {
+      opts: AgentSessionOptions;
+      messages: Array<{ role: "system" | "user"; content: string }>;
+    };
+    internals.messages = [
+      { role: "system", content: String(internals.opts.systemPrompt) },
+      { role: "user", content: "existing conversation sentinel" },
+    ];
+    const tool = internals.opts.additionalTools?.find(
+      (candidate) => candidate.name === "delegate_to_agent",
+    );
+
+    const result = await tool?.execute({ agent: "therapist" }, {
+      signal: new AbortController().signal,
+    } as never);
+
+    expect(String(result)).toContain("Therapist Agent is now the active agent");
+    expect(changed).toEqual(["therapist"]);
+    expect(agent.getMessages()).toHaveLength(2);
+    expect(agent.getMessages()[1]?.content).toBe("existing conversation sentinel");
+    expect(agent.getMessages()[0]?.content).toContain(THERAPIST_CHAT_SYSTEM_PROMPT);
+    expect(agent.getMessages()[0]?.content).toContain("- Active agent: therapist");
+
+    await tool?.execute({ agent: "general" }, {
+      signal: new AbortController().signal,
+    } as never);
+    expect(changed).toEqual(["therapist", "general"]);
+    expect(agent.getMessages()[0]?.content).toContain("- Active agent: general");
   });
 
   it("defaults unknown persisted agent ids to General", () => {

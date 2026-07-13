@@ -55,12 +55,14 @@ afterEach(() => {
 });
 
 describe("MemoryModal", () => {
-  it("displays memory metadata, current limit, and consolidation threshold", async () => {
+  it("displays memory metadata and the total in a badge", async () => {
     render(<MemoryModal onClose={vi.fn()} />);
 
     expect(await screen.findByText("Ken prefers concise, scannable answers.")).toBeDefined();
-    expect(screen.getByText("1 / 90")).toBeDefined();
-    expect(screen.getByText(/consolidated once the list reaches 60/)).toBeDefined();
+    const title = document.querySelector(".memory-modal-title");
+    expect(title?.textContent).toContain("Memories");
+    expect(title?.querySelector(".badge")?.textContent).toBe("1");
+    expect(screen.queryByText(/Related memories/)).toBeNull();
     expect(screen.getByText("preference")).toBeDefined();
     expect(screen.getByLabelText("Importance 5 of 5")).toBeDefined();
   });
@@ -75,7 +77,7 @@ describe("MemoryModal", () => {
 
     await waitFor(() => expect(deleteMemoryMock).toHaveBeenCalledWith("memory-1"));
     expect(await screen.findByText("No durable memories yet.")).toBeDefined();
-    expect(screen.getByText("0 / 90")).toBeDefined();
+    expect(document.querySelector(".memory-modal .badge")?.textContent).toBe("0");
   });
 
   it("renders a compact empty state", async () => {
@@ -107,12 +109,12 @@ describe("MemoryModal", () => {
     };
     listMemoriesMock.mockResolvedValueOnce(populated).mockResolvedValueOnce(refreshed);
     render(<MemoryModal onClose={vi.fn()} />);
-    await screen.findByText("1 / 90");
+    await screen.findByText("Ken prefers concise, scannable answers.");
 
     eventHandler?.({ type: "memory_change", data: { count: 2 } });
 
     expect(await screen.findByText("Ken is building durable chat memory.")).toBeDefined();
-    expect(screen.getByText("2 / 90")).toBeDefined();
+    expect(document.querySelector(".memory-modal .badge")?.textContent).toBe("2");
     expect(isMemoryChangeEventMock).toHaveBeenCalled();
     expect(subscribeMock).toHaveBeenCalledOnce();
   });

@@ -30,6 +30,7 @@ import {
   createChatAgent,
   parseChatAgentId,
   sessionsDirForChatAgent,
+  switchChatAgent,
   type ChatAgentId,
 } from "./chat-agents/index.js";
 import { buildMemoryTools, MemoryStore } from "./chat-agents/memory.js";
@@ -1196,7 +1197,7 @@ async function createSession(
   const { auth, progress, memoryStore } = deps;
   const paths = deps.paths;
   const mode = opts.mode;
-  const chatAgent = opts.chatAgent;
+  let chatAgent = opts.chatAgent;
   const cwd = opts.cwd;
   // Base host for parsing request-URL query params (value is irrelevant to
   // parsing); the daemon owns the real listen host.
@@ -1343,6 +1344,15 @@ async function createSession(
       sessionsDir: paths.sessionsDir,
       additionalTools: buildMemoryTools(memoryStore),
       getSystemPromptTail: () => memoryStore.renderForPrompt(),
+      onAgentChange: async (nextAgent) => {
+        chatAgent = nextAgent;
+        broadcast("chat_agent_change", { chatAgent: nextAgent });
+        await session.persistAppMarker("agent_handoff", { chatAgent: nextAgent }).catch((error) => {
+          log("WARN", "app-sidecar", "agent handoff marker persist failed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
     });
   } else {
     session = new AgentSession({
@@ -1368,6 +1378,15 @@ async function createSession(
     });
   }
   await session.initialize();
+  if (mode === "chat") {
+    const restoredAgent = [...session.getAppMarkers()]
+      .reverse()
+      .find((marker) => marker.kind === "agent_handoff")?.data.chatAgent;
+    if (typeof restoredAgent === "string") {
+      chatAgent = parseChatAgentId(restoredAgent);
+      await switchChatAgent(session, chatAgent, false);
+    }
+  }
   log("INFO", "app-sidecar", "session ready", { provider, model, mode, chatAgent, cwd });
 
   // Footer extras (context window, git branch, background tasks). The git
@@ -2316,6 +2335,36 @@ async function createSession(
         return;
       }
       const requestedAgent = new URL(url, `http://${host}`).searchParams.get("chatAgent");
+      if (requestedAgent === "all") {
+        void Promise.all(
+          CHAT_AGENT_IDS.map(async (agentId) => {
+            const agentSessions = await listRecentSessions(
+              target,
+              5,
+              chatAgentSessionsDir(paths.sessionsDir, agentId),
+            );
+            return agentSessions.map((item) => ({ ...item, chatAgent: agentId }));
+          }),
+        )
+          .then(async (groups) => {
+            const dated = await Promise.all(
+              groups.flat().map(async (item) => ({
+                item,
+                mtime: await fs
+                  .stat(item.path)
+                  .then((stat) => stat.mtimeMs)
+                  .catch(() => 0),
+              })),
+            );
+            const recent = dated
+              .sort((left, right) => right.mtime - left.mtime)
+              .slice(0, 5)
+              .map(({ item }) => item);
+            json(res, 200, { sessions: recent });
+          })
+          .catch(() => json(res, 200, { sessions: [] }));
+        return;
+      }
       const sessionsDir =
         mode === "chat" || requestedAgent
           ? sessionsDirForChatAgent(paths.sessionsDir, requestedAgent ?? chatAgent)
@@ -3232,7 +3281,10 @@ async function createSession(
       }
       void session
         .newSession()
-        .then(() => {
+        .then(async () => {
+          if (mode === "chat") {
+            await session.persistAppMarker("agent_handoff", { chatAgent });
+          }
           injectedAutopilotPrompts = [];
           clearPendingPlan();
           broadcast("session_reset", {});
@@ -3735,7 +3787,9 @@ async function createSession(
   return {
     id: opts.id,
     mode,
-    chatAgent,
+    get chatAgent() {
+      return chatAgent;
+    },
     cwd,
     sessionPath: opts.sessionPath,
     session,

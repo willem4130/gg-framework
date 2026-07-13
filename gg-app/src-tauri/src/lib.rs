@@ -2445,18 +2445,15 @@ async fn agent_sessions(
     webview: WebviewWindow,
     client: State<'_, reqwest::Client>,
     cwd: String,
-    chat_agent: Option<ChatAgent>,
+    chat_agent: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("daemon not ready")?;
     let gg_sid = session_for(&webview).ok_or("session not ready")?;
     let encoded = urlencoding(&cwd);
     let mut url = format!("{}/sessions?cwd={}", sidecar_base(port), encoded);
     if let Some(agent) = chat_agent {
-        let value = serde_json::to_value(agent).unwrap_or_default();
-        if let Some(id) = value.as_str() {
-            url.push_str("&chatAgent=");
-            url.push_str(id);
-        }
+        url.push_str("&chatAgent=");
+        url.push_str(&urlencoding(&agent));
     }
     let res = client
         .get(url)

@@ -303,6 +303,28 @@ describe("SessionManager.getAppMarkers", () => {
     ]);
   });
 
+  it("accepts the active-agent handoff marker used to restore resumed chats", () => {
+    const markers = manager.getAppMarkers([
+      autopilotEntry(
+        "handoff-1",
+        {
+          version: 1,
+          kind: "agent_handoff",
+          afterMessageCount: 4,
+          data: { chatAgent: "therapist" },
+        },
+        APP_MARKER_CUSTOM_KIND,
+      ),
+    ]);
+    expect(markers).toEqual([
+      {
+        version: 1,
+        kind: "agent_handoff",
+        afterMessageCount: 4,
+        data: { chatAgent: "therapist" },
+      },
+    ]);
+  });
   it("keeps app markers out of the LLM message history on a written file", async () => {
     const sessionsDir = await makeTempDir();
     const manager2 = new SessionManager(sessionsDir);
