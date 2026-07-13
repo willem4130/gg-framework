@@ -1,5 +1,14 @@
 # @kenkaiiii/ggcoder
 
+## 5.15.1
+
+### Patch Changes
+
+- Restore previous coding sessions in the desktop project picker after switching from Chat.
+  - @kenkaiiii/gg-ai@5.15.1
+  - @kenkaiiii/gg-agent@5.15.1
+  - @kenkaiiii/gg-core@5.15.1
+
 ## 5.15.0
 
 ### Minor Changes
