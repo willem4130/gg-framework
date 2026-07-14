@@ -1,5 +1,18 @@
 # @kenkaiiii/ggcoder
 
+## 5.16.0
+
+### Minor Changes
+
+- Add persistent Jiwa behavior instructions for GG Chat, with dedicated curation tools and safer loop detection that avoids interrupting healthy progress.
+
+### Patch Changes
+
+- 25601bd: Bundle the evidence-led UI skill for every GG Coder installation, require models to invoke matching skills before acting, honor explicit exclusions and precedence, and align GG Coder and Ken's UI guidance around evidence-led implementation.
+  - @kenkaiiii/gg-ai@5.16.0
+  - @kenkaiiii/gg-agent@5.16.0
+  - @kenkaiiii/gg-core@5.16.0
+
 ## 5.15.1
 
 ### Patch Changes
