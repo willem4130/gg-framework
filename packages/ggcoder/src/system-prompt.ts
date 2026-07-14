@@ -50,10 +50,10 @@ function renderWorkSection(): string {
     `## How to Work\n\n` +
     `- Read before \`edit\`/\`write\`; re-read after formatters, \`lint --fix\`, codemods, codegen, checkout, or any disk mutator.\n` +
     `- Compute in bash; write with \`edit\`/\`write\` so read-tracking, partial apply, and diagnostics stay intact.\n` +
-    `- Match neighbors (components/tokens/tone); if none, ask. Keep edits small; plan multi-file work first.\n` +
+    `- Match neighbors (components/tokens/tone). When none exist, infer from the task and project; ask only when a missing product or taste decision would materially change the result. Keep edits small; plan multi-file work first.\n` +
     `- Do routine follow-up yourself (build, migrate, re-run). Ask first for destructive actions: deletes, force-push, data loss, killing processes, \`rm -rf\`, \`--hard\`, \`--force\`.\n` +
     `- Preserve user work: investigate unexpected files, branches, or locks before touching them. \`.gitignore\` generated artifacts, secrets, logs, scratch, and \`.env\`.\n` +
-    `- Rule precedence: project context files → file/module patterns → Language Style Packs → this prompt.\n` +
+    `- Rule precedence: project context files → file/module patterns → applicable skill instructions → Language Style Packs → this prompt.\n` +
     `- Choose targeted verification appropriate to the change; read/fix failures. Never claim unrun or failing checks passed.`
   );
 }

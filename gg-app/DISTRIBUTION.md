@@ -21,9 +21,11 @@ to make that work:
 
 2. **A single-file sidecar bundle** (`scripts/bundle-sidecar.mjs`). esbuild
    bundles `packages/ggcoder/dist/app-sidecar.js` → `src-tauri/sidecar/app-sidecar.mjs`
-   (ESM, `platform=node`) and ships it under `bundle.resources`. Native / heavy
-   optional packages can't be inlined, so they are marked `external` and copied
-   verbatim (with their dependency trees, pnpm symlinks dereferenced) into
+   (ESM, `platform=node`) and ships it under `bundle.resources`. Bundled default
+   skills are copied into `src-tauri/sidecar/skills/` so every installed app can
+   discover them without a user-local setup step. Native / heavy optional packages
+   can't be inlined, so they are marked `external` and copied verbatim (with their
+   dependency trees, pnpm symlinks dereferenced) into
    `src-tauri/sidecar/node_modules/`.
 
 At runtime the Rust shell resolves both from the bundle in production and falls

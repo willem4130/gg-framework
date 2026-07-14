@@ -27,6 +27,8 @@ const sidecarEntry = join(
 const outDir = join(here, "..", "src-tauri", "sidecar");
 const outFile = join(outDir, "app-sidecar.mjs");
 const nodeModulesOut = join(outDir, "node_modules");
+const bundledSkillsSource = join(repoRoot, "packages", "ggcoder", "assets", "skills");
+const bundledSkillsOut = join(outDir, "skills");
 
 // Packages that must NOT be inlined: native addons + lazily-loaded optional
 // heavy deps. They are copied verbatim with their dependency trees instead.
@@ -196,8 +198,12 @@ async function main() {
       `sidecar entry missing: ${sidecarEntry} (build @kenkaiiii/ggcoder first)`,
     );
   }
+  if (!existsSync(bundledSkillsSource)) {
+    throw new Error(`bundled skills missing: ${bundledSkillsSource}`);
+  }
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
+  cpSync(bundledSkillsSource, bundledSkillsOut, { recursive: true });
 
   await build({
     entryPoints: [sidecarEntry],

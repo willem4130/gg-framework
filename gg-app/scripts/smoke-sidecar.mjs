@@ -2,8 +2,8 @@
 // BUNDLED daemon, wait for the GG_APP_LISTENING handshake, create a session
 // (POST /session), hit /state for that session, then terminate and assert a
 // clean shutdown. Proves the per-platform runtime + single-file bundle + copied
-// native deps (sharp) actually load on this OS, AND that the shared-daemon
-// session protocol works in the bundle.
+// native deps (sharp) actually load on this OS, bundled default skills are
+// present, AND the shared-daemon session protocol works in the bundle.
 //
 // Run AFTER `stage:node` + `bundle:sidecar`. Exits non-zero on any failure so
 // it can gate CI.
@@ -16,6 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const srcTauri = join(here, "..", "src-tauri");
 const binDir = join(srcTauri, "binaries");
 const sidecar = join(srcTauri, "sidecar", "app-sidecar.mjs");
+const evidenceSkill = join(srcTauri, "sidecar", "skills", "evidence-led-ui", "SKILL.md");
 
 function fail(msg) {
   console.error(`SMOKE FAIL: ${msg}`);
@@ -93,6 +94,7 @@ async function smokeKencode(node) {
 
 async function main() {
   if (!existsSync(sidecar)) fail(`bundled sidecar missing: ${sidecar}`);
+  if (!existsSync(evidenceSkill)) fail(`bundled evidence-led-ui skill missing: ${evidenceSkill}`);
   const node = nodeBin();
   console.log(`smoke: ${node} ${sidecar}`);
 
