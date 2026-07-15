@@ -1013,6 +1013,7 @@ body {
   margin-bottom: 20px;
 }
 .modal-title {
+  margin: 0;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -3351,8 +3352,12 @@ body {
   padding: 0;
   transition: color var(--t-fast);
 }
-.cancel:hover {
+.cancel:hover:not(:disabled) {
   text-decoration: underline;
+}
+.cancel:disabled {
+  cursor: wait;
+  text-decoration: none;
 }
 
 /* App-update banner — its own row below the footer so it reads as a distinct,

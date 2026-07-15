@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  clampProviderContextImages,
   downgradeUnsupportedVideos,
   toAnthropicMessages,
   toAnthropicThinking,
@@ -24,6 +25,99 @@ const exampleTools: Tool[] = [
 ];
 
 const MAX_TOKENS = 16_000;
+
+const image = (data: string) => ({ type: "image" as const, mediaType: "image/png", data });
+
+describe("provider image budgeting", () => {
+  it.each([
+    ["anthropic", 90],
+    ["minimax", 90],
+    ["openai", 200],
+    ["gemini", 200],
+    ["openrouter", 90],
+    ["palsu", 5],
+  ] as const)("caps %s context at %i images", (provider, budget) => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: Array.from({ length: budget + 2 }, (_, index) => image(String(index))),
+      },
+    ];
+    const result = clampProviderContextImages(messages, provider, true);
+    const user = result[0];
+    expect(user?.role).toBe("user");
+    expect(
+      user?.role === "user" && Array.isArray(user.content)
+        ? user.content.filter((part) => part.type === "image").length
+        : 0,
+    ).toBe(budget);
+  });
+
+  it("is a no-op while supported context is within budget", () => {
+    const messages: Message[] = [{ role: "user", content: [image("one"), image("two")] }];
+    expect(clampProviderContextImages(messages, "openai", true)).toBe(messages);
+  });
+
+  it("removes oldest user/tool images first and preserves newest attachments", () => {
+    const messages: Message[] = [
+      { role: "user", content: [image("old-user")] },
+      {
+        role: "tool",
+        content: [{ type: "tool_result", toolCallId: "t1", content: [image("old-tool")] }],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "new" },
+          image("new-1"),
+          image("new-2"),
+          image("new-3"),
+          image("new-4"),
+          image("new-5"),
+        ],
+      },
+    ];
+
+    const result = clampProviderContextImages(messages, "palsu", true);
+    expect(result[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "[image omitted: provider image limit]" }],
+    });
+    expect(result[1]).toEqual({
+      role: "tool",
+      content: [
+        {
+          type: "tool_result",
+          toolCallId: "t1",
+          content: [{ type: "text", text: "[image omitted: provider image limit]" }],
+        },
+      ],
+    });
+    expect(JSON.stringify(result)).toContain("new-1");
+    expect(JSON.stringify(result)).toContain("new-5");
+  });
+
+  it("does not mutate persisted source messages", () => {
+    const messages: Message[] = Array.from({ length: 6 }, (_, index) => ({
+      role: "user" as const,
+      content: [image(`image-${index}`)],
+    }));
+    const before = structuredClone(messages);
+    const result = clampProviderContextImages(messages, "palsu", true);
+    expect(messages).toEqual(before);
+    expect(result).not.toBe(messages);
+    expect(JSON.stringify(result)).not.toContain("image-0");
+    expect(JSON.stringify(result)).toContain("image-5");
+  });
+
+  it("leaves unsupported-image history for the existing downgrade pass", () => {
+    const messages: Message[] = Array.from({ length: 6 }, (_, index) => ({
+      role: "user" as const,
+      content: [image(`image-${index}`)],
+    }));
+    expect(clampProviderContextImages(messages, "palsu", false)).toBe(messages);
+  });
+});
 
 describe("Anthropic transform", () => {
   it("splits system prompt into cached and uncached blocks at the marker", () => {

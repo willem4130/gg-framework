@@ -65,6 +65,10 @@ describe("model registry invariants", () => {
           model.codexContextWindow,
           `${model.id} codexContextWindow <= contextWindow`,
         ).toBeLessThanOrEqual(model.contextWindow);
+        expect(
+          model.maxOutputTokens,
+          `${model.id} maxOutputTokens <= codexContextWindow`,
+        ).toBeLessThanOrEqual(model.codexContextWindow);
       }
     }
   });
@@ -102,21 +106,24 @@ describe("getFastModel", () => {
 });
 
 describe("model registry context windows", () => {
-  it("uses the public API context window for OpenAI API-key requests", () => {
-    expect(getContextWindow("gpt-5.5", { provider: "openai" })).toBe(1_050_000);
-    // 5.6 models: context_window AND max_context_window are both 372K in the
-    // Codex repo, so no split between API and Codex-transport windows.
-    expect(getContextWindow("gpt-5.6-sol", { provider: "openai" })).toBe(372_000);
+  it.each([
+    ["gpt-5.5", 1_050_000],
+    ["gpt-5.6-sol", 1_050_000],
+    ["gpt-5.6-terra", 1_050_000],
+    ["gpt-5.6-luna", 1_050_000],
+  ] as const)("uses the %s public API context window without an OAuth account", (model, limit) => {
+    expect(getContextWindow(model, { provider: "openai" })).toBe(limit);
   });
 
-  it("uses the Codex product context window for OpenAI OAuth requests", () => {
+  it.each([
+    ["gpt-5.5", 272_000],
+    ["gpt-5.6-sol", 372_000],
+    ["gpt-5.6-terra", 372_000],
+    ["gpt-5.6-luna", 372_000],
+  ] as const)("uses the %s Codex product window for OpenAI OAuth", (model, limit) => {
     const options = { provider: "openai" as const, accountId: "acct_123" };
-
     expect(usesOpenAICodexTransport(options)).toBe(true);
-    // 5.5 keeps its split: 1M public API, 272K Codex transport.
-    expect(getContextWindow("gpt-5.5", options)).toBe(272_000);
-    // 5.6 models have no split — 372K in both transports.
-    expect(getContextWindow("gpt-5.6-sol", options)).toBe(372_000);
+    expect(getContextWindow(model, options)).toBe(limit);
   });
 
   it("keeps non-OpenAI providers on their model context windows", () => {

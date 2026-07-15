@@ -5,6 +5,7 @@ import type {
   ContentPart,
   ImageContent,
   Message,
+  Provider,
   StopReason,
   TextContent,
   ThinkingContent,
@@ -179,6 +180,86 @@ function toAnthropicAssistantContent(
     })
     .map((part) => toAnthropicAssistantPart(part, idMap))
     .filter((b): b is Anthropic.ContentBlockParam => b !== null);
+}
+
+const PROVIDER_IMAGE_LIMIT_PLACEHOLDER = "[image omitted: provider image limit]";
+
+const PROVIDER_IMAGE_BUDGETS: Partial<Record<Provider, number>> = {
+  anthropic: 90,
+  minimax: 90,
+  openai: 200,
+  gemini: 200,
+  openrouter: 90,
+};
+
+function countContextImages(messages: Message[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.role === "user" && Array.isArray(message.content)) {
+      count += message.content.filter((part) => part.type === "image").length;
+    } else if (message.role === "tool") {
+      for (const result of message.content) {
+        if (Array.isArray(result.content)) {
+          count += result.content.filter((part) => part.type === "image").length;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * Cap historical images before provider dispatch, removing the oldest first.
+ * The persisted/live conversation is never mutated; only modified messages and
+ * tool results are cloned for the outgoing request.
+ */
+export function clampProviderContextImages(
+  messages: Message[],
+  provider: Provider,
+  supportsImages: boolean | undefined,
+): Message[] {
+  if (supportsImages === false) return messages;
+  const budget = PROVIDER_IMAGE_BUDGETS[provider] ?? 5;
+  let remainingToRemove = countContextImages(messages) - budget;
+  if (remainingToRemove <= 0) return messages;
+
+  return messages.map((message): Message => {
+    if (message.role === "user" && Array.isArray(message.content)) {
+      const content = message.content.filter((part) => {
+        if (part.type !== "image" || remainingToRemove <= 0) return true;
+        remainingToRemove--;
+        return false;
+      });
+      return {
+        ...message,
+        content:
+          content.length > 0
+            ? content
+            : [{ type: "text" as const, text: PROVIDER_IMAGE_LIMIT_PLACEHOLDER }],
+      };
+    }
+    if (message.role === "tool") {
+      return {
+        ...message,
+        content: message.content.map((result) => {
+          if (!Array.isArray(result.content)) return result;
+          const content = result.content.filter((part) => {
+            if (part.type !== "image" || remainingToRemove <= 0) return true;
+            remainingToRemove--;
+            return false;
+          });
+          return {
+            ...result,
+            content:
+              content.length > 0
+                ? content
+                : [{ type: "text" as const, text: PROVIDER_IMAGE_LIMIT_PLACEHOLDER }],
+          };
+        }),
+      };
+    }
+    return message;
+  });
 }
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";

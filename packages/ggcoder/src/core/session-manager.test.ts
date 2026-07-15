@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, utimes, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +8,9 @@ import {
   KEN_TURN_CUSTOM_KIND,
   AUTOPILOT_MARKER_CUSTOM_KIND,
   APP_MARKER_CUSTOM_KIND,
+  TURN_METRIC_CUSTOM_KIND,
   type SessionEntry,
+  type TurnMetricPayload,
   type CustomEntry,
 } from "./session-manager.js";
 
@@ -33,6 +35,47 @@ function entry(id: string): SessionEntry {
     message: { role: "user", content: "hi" },
   };
 }
+
+describe("SessionManager redaction boundary", () => {
+  it("persists sanitized clones for message and custom success/failure entries", async () => {
+    const dir = await makeTempDir();
+    const file = path.join(dir, "session.jsonl");
+    await writeFile(file, "", "utf-8");
+    const canary = "opaque-session-canary-value-123456";
+    const previous = process.env.GG_SESSION_TEST_SECRET;
+    process.env.GG_SESSION_TEST_SECRET = canary;
+    const manager = new SessionManager(dir);
+    const messageEntry: SessionEntry = {
+      type: "message",
+      id: "message",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content: `use ${canary}` },
+    };
+    const customEntry: CustomEntry = {
+      type: "custom",
+      kind: "test_failure",
+      id: "custom",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      data: { error: `failed with ${canary}`, accessToken: canary },
+    };
+
+    try {
+      await manager.appendEntry(file, messageEntry);
+      await manager.appendEntry(file, customEntry);
+    } finally {
+      if (previous === undefined) delete process.env.GG_SESSION_TEST_SECRET;
+      else process.env.GG_SESSION_TEST_SECRET = previous;
+    }
+
+    const persisted = await readFile(file, "utf-8");
+    expect(persisted).not.toContain(canary);
+    expect(persisted).toContain("[REDACTED]");
+    expect(messageEntry.message.content).toContain(canary);
+    expect(customEntry.data).toEqual({ error: `failed with ${canary}`, accessToken: canary });
+  });
+});
 
 describe("SessionManager persistence failure handling", () => {
   it("appendEntry does not throw when the write fails (e.g. disk full)", async () => {
@@ -344,6 +387,52 @@ describe("SessionManager.getAppMarkers", () => {
     expect(manager2.getAppMarkers(loaded.entries)).toEqual([
       { version: 1, kind: "user_hint", afterMessageCount: 1, data: { kenSent: true } },
     ]);
+  });
+});
+
+describe("SessionManager turn metrics", () => {
+  const metric: TurnMetricPayload = {
+    version: 1,
+    turn: 1,
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    stopReason: "end_turn",
+    usage: { inputTokens: 100, outputTokens: 25, cacheRead: 50 },
+    timing: {
+      startedAt: 1_000,
+      firstProviderEventAt: 1_020,
+      completedAt: 1_100,
+      providerDurationMs: 80,
+      ttftMs: 20,
+      outputTokensPerSecond: 312.5,
+    },
+    cost: { status: "unavailable", reason: "No authoritative pricing" },
+  };
+
+  it("persists and reads validated metrics without putting them on the message DAG", async () => {
+    const sessionsDir = await makeTempDir();
+    const manager = new SessionManager(sessionsDir);
+    const created = await manager.create("/project", "openai", "gpt-5.6-sol");
+    await manager.appendTurnMetric(created.path, metric);
+    const loaded = await manager.load(created.path);
+
+    expect(manager.getTurnMetrics(loaded.entries)).toEqual([metric]);
+    expect(manager.getMessages(loaded.entries)).toEqual([]);
+  });
+
+  it("ignores malformed legacy metric entries", () => {
+    const manager = new SessionManager("/unused");
+    const entries: SessionEntry[] = [
+      autopilotEntry("bad-version", { ...metric, version: 0 }, TURN_METRIC_CUSTOM_KIND),
+      autopilotEntry(
+        "bad-timing",
+        { ...metric, timing: { ...metric.timing, completedAt: "later" } },
+        TURN_METRIC_CUSTOM_KIND,
+      ),
+      autopilotEntry("valid", metric, TURN_METRIC_CUSTOM_KIND),
+    ];
+
+    expect(manager.getTurnMetrics(entries)).toEqual([metric]);
   });
 });
 

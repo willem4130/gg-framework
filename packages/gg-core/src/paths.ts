@@ -4,6 +4,8 @@ import os from "node:os";
 export interface AppPaths {
   agentDir: string;
   sessionsDir: string;
+  subagentSessionsDir: string;
+  subagentsDir: string;
   settingsFile: string;
   authFile: string;
   telegramFile: string;
@@ -23,6 +25,8 @@ export function getAppPaths(): AppPaths {
   return {
     agentDir,
     sessionsDir: path.join(agentDir, "sessions"),
+    subagentSessionsDir: path.join(agentDir, "subagent-sessions"),
+    subagentsDir: path.join(agentDir, "subagents"),
     settingsFile: path.join(agentDir, "settings.json"),
     authFile: path.join(agentDir, "auth.json"),
     telegramFile: path.join(agentDir, "telegram.json"),

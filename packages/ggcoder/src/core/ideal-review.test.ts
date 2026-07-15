@@ -1,5 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { buildIdealReviewMessage, detectTestDrift, evaluateIdealReview } from "./ideal-review.js";
+import {
+  buildIdealReviewMessage,
+  buildReviewCoverageMessage,
+  detectTestDrift,
+  evaluateIdealReview,
+  ReviewCoverageTracker,
+} from "./ideal-review.js";
+
+describe("ReviewCoverageTracker", () => {
+  it("counts only successful read callbacks after review starts", () => {
+    const tracker = new ReviewCoverageTracker("/project");
+    tracker.recordChanged("src/a.ts");
+    tracker.recordRead("src/a.ts");
+    tracker.start();
+    expect(tracker.evidence()).toEqual({
+      expected: ["src/a.ts"],
+      covered: [],
+      missing: ["src/a.ts"],
+    });
+    tracker.recordRead("/project/src/a.ts");
+    expect(tracker.evidence().missing).toEqual([]);
+  });
+
+  it("expands expected coverage for review-time edits and deduplicates paths", () => {
+    const tracker = new ReviewCoverageTracker("/project");
+    tracker.recordChanged("src/a.ts");
+    tracker.recordChanged("/project/src/a.ts");
+    tracker.start();
+    tracker.recordChanged("src/../src/b.ts");
+    tracker.recordRead("src/a.ts");
+    expect(tracker.evidence()).toEqual({
+      expected: ["src/a.ts", "src/b.ts"],
+      covered: ["src/a.ts"],
+      missing: ["src/b.ts"],
+    });
+  });
+
+  it("builds a deterministic fail-closed follow-up", () => {
+    const message = buildReviewCoverageMessage(["src/a.ts", "src/b.ts"]);
+    expect(message.content).toContain("model-authored claims do not count");
+    expect(message.content).toContain("- src/a.ts\n- src/b.ts");
+  });
+});
 
 describe("evaluateIdealReview", () => {
   it("skips tiny text-only changes", () => {

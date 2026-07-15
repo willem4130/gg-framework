@@ -133,13 +133,11 @@ export const MODELS: ModelInfo[] = [
     maxThinkingLevel: "high",
   },
   // ── OpenAI (Codex) ─────────────────────────────────────
-  // GPT-5.6 family — three agentic coding tiers launched July 2026. All share a
-  // 372K context window: the Codex repo's models.json lists both `context_window`
-  // AND `max_context_window` as 372000 for every 5.6 variant, so (unlike 5.4/5.5,
-  // whose public-API 1M window exceeds the Codex-product cap) there's no split
-  // between the API and Codex-transport windows — a single `contextWindow` is
-  // correct in both code paths. All three take text+image input, freeform
-  // apply_patch, text+image web search, and parallel tool calls.
+  // GPT-5.6 family — three agentic coding tiers launched July 2026. The public
+  // Responses API advertises a 1.05M context window; OpenAI's Codex product
+  // catalog advertises 372K on the ChatGPT OAuth route. All three take
+  // text+image input, freeform apply_patch, text+image web search, and parallel
+  // tool calls.
   {
     // Sol — "Latest frontier agentic coding model." (priority 1, default low).
     // Reasoning ladder: low → medium → high → xhigh → max → ultra. Ultra is a
@@ -148,7 +146,8 @@ export const MODELS: ModelInfo[] = [
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
     provider: "openai",
-    contextWindow: 372_000,
+    contextWindow: 1_050_000,
+    codexContextWindow: 372_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,
@@ -158,11 +157,12 @@ export const MODELS: ModelInfo[] = [
   },
   {
     // Terra — "Balanced agentic coding model for everyday work." (priority 2,
-    // default medium). Same 372K context + ultra reasoning ladder as Sol.
+    // default medium).
     id: "gpt-5.6-terra",
     name: "GPT-5.6 Terra",
     provider: "openai",
-    contextWindow: 372_000,
+    contextWindow: 1_050_000,
+    codexContextWindow: 372_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,
@@ -172,11 +172,12 @@ export const MODELS: ModelInfo[] = [
   },
   {
     // Luna — "Fast and affordable agentic coding model." (priority 3, default
-    // medium). Same 372K context; reasoning tops out at `max` (no `ultra` rung).
+    // medium). Reasoning tops out at `max`.
     id: "gpt-5.6-luna",
     name: "GPT-5.6 Luna",
     provider: "openai",
-    contextWindow: 372_000,
+    contextWindow: 1_050_000,
+    codexContextWindow: 372_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     supportsImages: true,

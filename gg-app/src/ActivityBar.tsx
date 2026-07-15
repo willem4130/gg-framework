@@ -39,6 +39,8 @@ export function formatTokenCount(n: number): string {
 
 interface Props {
   running: boolean;
+  /** Cancellation was requested and is awaiting provider settlement. */
+  cancelling?: boolean;
   /** Accumulated output tokens for the current/just-finished run. */
   tokens: number;
   /** Done-status phrase shown when a run just finished (e.g. "Brewed up a response in 12s"). */
@@ -103,6 +105,7 @@ function ToolsToggle({
  */
 export function ActivityBar({
   running,
+  cancelling = false,
   tokens,
   doneStatus,
   isThinking,
@@ -211,9 +214,18 @@ export function ActivityBar({
   if (thinkingLabel) meta.push({ text: thinkingLabel, thinking: true });
 
   return (
-    <div className="statusrow running" style={{ color: theme.textMuted }}>
+    <div
+      className="statusrow running"
+      style={{ color: theme.textMuted }}
+      role="status"
+      aria-live="polite"
+    >
       <span className="statusrow-left">
-        <span className="statusrow-icon spinner" style={{ color: theme.primary }}>
+        <span
+          className="statusrow-icon spinner"
+          style={{ color: theme.primary }}
+          aria-hidden="true"
+        >
           {FRAMES[frame]}
         </span>
         <span className="working" style={{ color: theme.text }}>
@@ -245,8 +257,14 @@ export function ActivityBar({
         {showToolsToggle && onToggleTools && (
           <ToolsToggle hidden={toolsHidden} onToggle={onToggleTools} />
         )}
-        <button className="cancel" style={{ color: theme.error }} onClick={onCancel}>
-          esc to cancel
+        <button
+          className="cancel"
+          style={{ color: cancelling ? theme.textMuted : theme.error }}
+          onClick={onCancel}
+          disabled={cancelling}
+          aria-label={cancelling ? "Cancellation in progress" : "Cancel agent run"}
+        >
+          {cancelling ? "Cancelling..." : "esc to cancel"}
         </button>
       </span>
     </div>

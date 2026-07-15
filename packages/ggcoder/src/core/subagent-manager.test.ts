@@ -1,7 +1,11 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentDefinition } from "./agents.js";
-import { SubAgentManager } from "./subagent-manager.js";
+import { buildSubAgentCompletionFollowUp, SubAgentManager } from "./subagent-manager.js";
+import { SubAgentStore, type PersistedSubAgentRecord } from "./subagent-store.js";
 
 const workerEntry = fileURLToPath(
   new URL("../tools/__fixtures__/fake-subagent-worker.mjs", import.meta.url),
@@ -16,10 +20,25 @@ const agents: AgentDefinition[] = [
   },
 ];
 const managers: SubAgentManager[] = [];
+const tempDirs: string[] = [];
 
-function manager(options: { idleTimeoutMs?: number; agentDefs?: AgentDefinition[] } = {}) {
+async function tempDir(): Promise<string> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gg-subagent-manager-"));
+  tempDirs.push(directory);
+  return directory;
+}
+
+function manager(
+  options: {
+    idleTimeoutMs?: number;
+    agentDefs?: AgentDefinition[];
+    store?: SubAgentStore;
+    cwd?: string;
+    sessionRootDir?: string;
+  } = {},
+) {
   const instance = new SubAgentManager({
-    cwd: process.cwd(),
+    cwd: options.cwd ?? process.cwd(),
     agents: options.agentDefs ?? agents,
     getProvider: () => "openai",
     getModel: () => "gpt-5.6-sol",
@@ -27,13 +46,20 @@ function manager(options: { idleTimeoutMs?: number; agentDefs?: AgentDefinition[
     getCacheKey: () => "parent-cache",
     workerEntry,
     idleTimeoutMs: options.idleTimeoutMs,
+    store: options.store,
+    sessionRootDir: options.sessionRootDir,
   });
   managers.push(instance);
   return instance;
 }
 
 afterEach(async () => {
-  await Promise.all(managers.splice(0).map((instance) => instance.shutdownAll()));
+  const activeManagers = managers.splice(0);
+  await Promise.all(activeManagers.map((instance) => instance.shutdownAll()));
+  await Promise.all(activeManagers.map((instance) => instance.waitForPersistence()));
+  await Promise.all(
+    tempDirs.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })),
+  );
 });
 
 describe("SubAgentManager", () => {
@@ -118,6 +144,25 @@ describe("SubAgentManager", () => {
     await rejection;
   });
 
+  it("keeps internally interrupted results uncollected until the parent waits", async () => {
+    const instance = manager();
+    const child = await instance.spawn("cancelled-child", "slow", "fake");
+
+    await instance.interruptAll();
+    expect(instance.list()).toEqual([
+      expect.objectContaining({
+        agent_id: child.agent_id,
+        state: "interrupted",
+        collected: false,
+      }),
+    ]);
+    expect(instance.completionGate()).toMatchObject({ unresolved: 1 });
+
+    const collected = await instance.wait([child.agent_id], "all", 500);
+    expect(collected.agents[0]?.collected).toBe(true);
+    expect(instance.completionGate().unresolved).toBe(0);
+  });
+
   it("reaps idle workers and retains a bounded closed snapshot", async () => {
     const instance = manager({ idleTimeoutMs: 5 });
     const child = await instance.spawn("short", "fast", "fake");
@@ -125,5 +170,158 @@ describe("SubAgentManager", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(instance.list().find((item) => item.agent_id === child.agent_id)?.state).toBe("closed");
     await expect(instance.followup(child.agent_id, "late")).rejects.toThrow("reaped");
+  });
+
+  it("fails closed until active and terminal child results are collected", async () => {
+    const instance = manager();
+    const child = await instance.spawn("gate-child", "slow", "fake");
+    expect(instance.completionGate()).toMatchObject({ unresolved: 1 });
+    expect(instance.completionGateMessage()).toContain(child.agent_id);
+    expect(buildSubAgentCompletionFollowUp(instance)?.[0]?.content).toContain(child.agent_id);
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(instance.completionGate()).toMatchObject({
+      active: [],
+      uncollected: [expect.objectContaining({ agent_id: child.agent_id })],
+      unresolved: 1,
+    });
+
+    const collected = await instance.wait([child.agent_id], "all", 500);
+    expect(collected.agents[0]?.collected).toBe(true);
+    expect(instance.completionGateMessage()).toBeUndefined();
+    expect(buildSubAgentCompletionFollowUp(instance)).toBeNull();
+  });
+
+  it("hydrates interrupted state and lazily respawns a recovered child session", async () => {
+    const root = await tempDir();
+    const cwd = path.join(root, "project");
+    const store = new SubAgentStore(path.join(root, "state"));
+    await fs.mkdir(cwd, { recursive: true });
+    const sessionRootDir = path.join(root, "sessions");
+    const recovered: PersistedSubAgentRecord = {
+      agent_id: "recovered-child",
+      task_name: "durable-child",
+      state: "running",
+      started_at: 1,
+      updated_at: 2,
+      elapsed_ms: 1,
+      turn_count: 1,
+      tool_use_count: 0,
+      token_usage: { input: 2, output: 3 },
+      agent_name: "fake",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      child_session_id: "child-session",
+      child_session_path: path.join(sessionRootDir, "project", "child.jsonl"),
+      collected: false,
+    };
+    await store.save(cwd, "parent-a", [recovered]);
+    const instance = manager({ store, cwd, sessionRootDir });
+    await instance.hydrate("parent-a");
+    expect(instance.list()[0]).toMatchObject({ state: "interrupted", recovered: true });
+
+    const requestSpy = vi.spyOn(
+      instance as unknown as { request: (...args: unknown[]) => Promise<Record<string, unknown>> },
+      "request",
+    );
+    await instance.followup("recovered-child", "resume");
+    const initialize = requestSpy.mock.calls.find(([, command]) => command === "initialize");
+    expect(initialize?.[2]).toMatchObject({
+      options: { childSessionPath: recovered.child_session_path },
+    });
+    const result = await instance.wait(["recovered-child"], "all", 500);
+    expect(result.agents[0]).toMatchObject({ state: "completed", collected: true });
+  });
+
+  it("rejects recovered child paths outside the dedicated session root", async () => {
+    const root = await tempDir();
+    const cwd = path.join(root, "project");
+    const sessionRootDir = path.join(root, "sessions");
+    const store = new SubAgentStore(path.join(root, "state"));
+    await fs.mkdir(cwd, { recursive: true });
+    await store.save(cwd, "parent-a", [
+      {
+        agent_id: "outside-child",
+        task_name: "outside",
+        state: "interrupted",
+        started_at: 1,
+        updated_at: 2,
+        elapsed_ms: 1,
+        turn_count: 0,
+        tool_use_count: 0,
+        token_usage: { input: 0, output: 0 },
+        child_session_path: path.join(root, "outside.jsonl"),
+      },
+    ]);
+    const instance = manager({ store, cwd, sessionRootDir });
+    await instance.hydrate("parent-a");
+
+    await expect(instance.followup("outside-child", "resume")).rejects.toThrow(
+      "outside the subagent session root",
+    );
+  });
+
+  it("waits for an in-flight shutdown before resetting parent state", async () => {
+    const root = await tempDir();
+    const store = new SubAgentStore(path.join(root, "state"));
+    const instance = manager({ store });
+    await instance.hydrate("parent-a");
+    await instance.spawn("shutdown-child", "slow", "fake");
+
+    const shutdown = instance.shutdownAll();
+    await instance.resetParentSession("parent-new");
+    await shutdown;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(instance.list()).toEqual([]);
+    expect(await store.load(process.cwd(), "parent-new")).toEqual([]);
+  });
+
+  it("prunes unreferenced child transcripts older than 30 days", async () => {
+    const root = await tempDir();
+    const sessionRootDir = path.join(root, "sessions");
+    const oldSession = path.join(sessionRootDir, "project", "old.jsonl");
+    await fs.mkdir(path.dirname(oldSession), { recursive: true });
+    await fs.writeFile(oldSession, "{}\n");
+    const old = new Date(Date.now() - 31 * 86_400_000);
+    await fs.utimes(oldSession, old, old);
+    const instance = manager({
+      store: new SubAgentStore(path.join(root, "state")),
+      sessionRootDir,
+    });
+
+    await instance.hydrate("parent-a");
+
+    await expect(fs.stat(oldSession)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("copies history to a compacted parent and resets a genuinely new parent", async () => {
+    const root = await tempDir();
+    const cwd = path.join(root, "project");
+    const store = new SubAgentStore(path.join(root, "state"));
+    const completed: PersistedSubAgentRecord = {
+      agent_id: "history-child",
+      task_name: "history",
+      state: "completed",
+      started_at: 1,
+      updated_at: 2,
+      elapsed_ms: 1,
+      turn_count: 1,
+      tool_use_count: 0,
+      token_usage: { input: 2, output: 3 },
+      output: "done",
+      collected: true,
+    };
+    await store.save(cwd, "parent-before", [completed]);
+    const instance = manager({ store, cwd });
+    await instance.hydrate("parent-before");
+    await instance.rebindParentSession("parent-compacted");
+    expect(await store.load(cwd, "parent-compacted")).toEqual([
+      expect.objectContaining({ agent_id: "history-child", output: "done" }),
+    ]);
+
+    await instance.resetParentSession("parent-new");
+    expect(instance.list()).toEqual([]);
+    expect(await store.load(cwd, "parent-new")).toEqual([]);
   });
 });

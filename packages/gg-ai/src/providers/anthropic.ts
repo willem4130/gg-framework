@@ -13,7 +13,9 @@ import {
   readHeader,
   isHardBillingMessage,
   isRawJsonErrorEcho,
+  isRawHtmlErrorEcho,
   emptyProviderErrorMessage,
+  providerHtmlErrorMessage,
 } from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import {
@@ -826,15 +828,18 @@ function toError(err: unknown): ProviderError {
           : typeof (err as unknown as { type?: unknown }).type === "string"
             ? ((err as unknown as { type: string }).type as string)
             : undefined;
-    // When neither the nested nor top-level body carries a usable message, the
-    // SDK's err.message is a raw JSON echo of the (often near-empty) error body
-    // — swap in a clean fallback rather than showing that to the user (see
-    // isRawJsonErrorEcho).
+    // The SDK may expose raw JSON or a whole HTML edge/proxy page through either
+    // the parsed body or err.message. Preserve the original on `cause`, but never
+    // send transport markup to the user.
     const fallbackMessage = isRawJsonErrorEcho(err.message)
       ? emptyProviderErrorMessage(err.status)
       : err.message;
-    const message =
-      bodyType && bodyMessage ? `${bodyType}: ${bodyMessage}` : (bodyMessage ?? fallbackMessage);
+    const messageCandidate = bodyMessage ?? err.message;
+    const message = isRawHtmlErrorEcho(messageCandidate)
+      ? providerHtmlErrorMessage(err.status)
+      : bodyType && bodyMessage
+        ? `${bodyType}: ${bodyMessage}`
+        : (bodyMessage ?? fallbackMessage);
 
     // Subscription (OAuth) usage-window exhaustion. Anthropic returns 429 with
     // the unified rate-limit headers; a "rejected" status — or a reset stamp

@@ -58,6 +58,10 @@ describe("LspManager", () => {
 
     expect(result).toContain("Diagnostics in broken.fake");
     expect(result).toContain("L2:5 fake error on line 2 (fake)");
+    expect(manager.getLatestOutcome(filePath)).toMatchObject({
+      kind: "diagnostics",
+      filePath: path.resolve(filePath),
+    });
   });
 
   it("returns empty string once a follow-up edit fixes the file", async () => {
@@ -74,6 +78,37 @@ describe("LspManager", () => {
     expect(rebroken).toContain("fake error on line 2");
   });
 
+  it("records a high-confidence clean outcome", async () => {
+    const manager = makeManager(fakeSpec());
+    const filePath = path.join(tmpDir, "clean.fake");
+    const outcome = await manager.diagnosticsAfterWriteDetailed(filePath, "all good\n");
+    expect(outcome).toMatchObject({ kind: "clean", filePath: path.resolve(filePath) });
+  });
+
+  it("records low confidence for an empty result while indexing is active", async () => {
+    const manager = makeManager(fakeSpec(["--progress"]));
+    const filePath = path.join(tmpDir, "indexing.fake");
+    const outcome = await manager.diagnosticsAfterWriteDetailed(filePath, "all good\n");
+    expect(outcome.kind).toBe("low_confidence");
+    expect(await manager.diagnosticsAfterWrite(filePath, "still good\n")).toBe("");
+  });
+
+  it("keeps found errors high confidence while indexing is active", async () => {
+    const manager = makeManager(fakeSpec(["--progress"]));
+    const filePath = path.join(tmpDir, "indexing-error.fake");
+    const outcome = await manager.diagnosticsAfterWriteDetailed(filePath, "ERROR\n");
+    expect(outcome.kind).toBe("diagnostics");
+  });
+
+  it("records clean after indexing progress ends", async () => {
+    const manager = makeManager(fakeSpec(["--progress-end"]));
+    const outcome = await manager.diagnosticsAfterWriteDetailed(
+      path.join(tmpDir, "indexed.fake"),
+      "all good\n",
+    );
+    expect(outcome.kind).toBe("clean");
+  });
+
   it("works with pull-diagnostics servers", async () => {
     const manager = makeManager(fakeSpec(["--pull"]));
     const filePath = path.join(tmpDir, "pull.fake");
@@ -83,12 +118,14 @@ describe("LspManager", () => {
     expect(result).toContain("fake error on line 1");
   });
 
-  it("returns empty string for unsupported extensions without spawning", async () => {
+  it("returns empty string and records unsupported extensions without spawning", async () => {
     const manager = makeManager(fakeSpec());
+    const filePath = path.join(tmpDir, "readme.md");
 
-    const result = await manager.diagnosticsAfterWrite(path.join(tmpDir, "readme.md"), "# hi");
+    const result = await manager.diagnosticsAfterWrite(filePath, "# hi");
 
     expect(result).toBe("");
+    expect(manager.getLatestOutcome(filePath)?.kind).toBe("unsupported");
   });
 
   it("returns empty string when the time budget is exceeded", async () => {
@@ -100,6 +137,7 @@ describe("LspManager", () => {
 
     expect(result).toBe("");
     expect(Date.now() - started).toBeLessThan(1500);
+    expect(manager.getLatestOutcome(filePath)?.kind).toBe("timeout");
   });
 
   it("marks a server broken after spawn failure and never retries", async () => {
@@ -118,13 +156,43 @@ describe("LspManager", () => {
     expect(resolveCalls).toBe(1);
   });
 
-  it("returns empty string when no server command resolves", async () => {
+  it("returns empty string and records unavailable when no server command resolves", async () => {
     const spec = fakeSpec([], { resolveCommand: () => null });
     const manager = makeManager(spec);
+    const filePath = path.join(tmpDir, "a.fake");
 
-    const result = await manager.diagnosticsAfterWrite(path.join(tmpDir, "a.fake"), "ERROR\n");
+    const result = await manager.diagnosticsAfterWrite(filePath, "ERROR\n");
 
     expect(result).toBe("");
+    expect(manager.getLatestOutcome(filePath)?.kind).toBe("unavailable");
+  });
+
+  it("records initialization failure separately", async () => {
+    const manager = makeManager(fakeSpec(["--init-error"]));
+    const outcome = await manager.diagnosticsAfterWriteDetailed(
+      path.join(tmpDir, "init-failed.fake"),
+      "ERROR\n",
+    );
+    expect(outcome.kind).toBe("server_failed");
+  });
+
+  it("records a post-initialization server crash", async () => {
+    const manager = makeManager(fakeSpec(["--crash-on-open"]));
+    const outcome = await manager.diagnosticsAfterWriteDetailed(
+      path.join(tmpDir, "crashed.fake"),
+      "ERROR\n",
+    );
+    expect(outcome.kind).toBe("server_failed");
+  });
+
+  it("bounds latest per-file outcomes", async () => {
+    const manager = new LspManager(tmpDir, { catalog: [fakeSpec()], snapshotLimit: 2 });
+    managers.push(manager);
+    for (const name of ["one.md", "two.md", "three.md"]) {
+      await manager.diagnosticsAfterWriteDetailed(path.join(tmpDir, name), "safe");
+    }
+    expect(manager.getLatestOutcomes()).toHaveLength(2);
+    expect(manager.getLatestOutcome(path.join(tmpDir, "one.md"))).toBeUndefined();
   });
 
   it("performs the shutdown handshake on shutdownAll", async () => {

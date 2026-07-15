@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { environmentSecrets, redactText, redactValue } from "@kenkaiiii/gg-ai";
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "DEBUG";
 
@@ -14,6 +15,7 @@ let fd: number | null = null;
 let sessionId = "";
 let appName = "app";
 let cleanups: (() => void)[] = [];
+let exactSecrets: string[] = [];
 
 function rotateIfNeeded(filePath: string): void {
   try {
@@ -43,6 +45,7 @@ function rotateIfNeeded(filePath: string): void {
 export function openLog(filePath: string, name: string): boolean {
   if (fd !== null) return false;
   appName = name;
+  exactSecrets = environmentSecrets(process.env);
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   } catch {
@@ -84,10 +87,16 @@ export function log(
 ): void {
   if (fd === null) return;
   const ts = new Date().toISOString();
-  let line = `[${ts}] [sid=${sessionId}] [${level}] [${category}] ${message}`;
+  const safeMessage = redactText(message, { secrets: exactSecrets });
+  let line = `[${ts}] [sid=${sessionId}] [${level}] [${category}] ${safeMessage}`;
   if (data) {
-    const pairs = Object.entries(data)
-      .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    const safeData = redactValue(data, { secrets: exactSecrets });
+    const pairs = Object.entries(safeData)
+      .map(([k, v]) => {
+        if (typeof v === "string") return `${k}=${v}`;
+        if (typeof v === "bigint") return `${k}=${String(v)}`;
+        return `${k}=${JSON.stringify(v)}`;
+      })
       .join(" ");
     if (pairs) line += ` ${pairs}`;
   }
@@ -121,6 +130,7 @@ export function closeLogger(opts?: { shutdownLine?: boolean }): void {
     // Ignore close errors
   }
   fd = null;
+  exactSecrets = [];
   for (const unsub of cleanups) unsub();
   cleanups = [];
 }

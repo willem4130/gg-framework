@@ -79,11 +79,27 @@ export interface AgentToolCallEndEvent {
   durationMs: number;
 }
 
+export interface AgentTurnTiming {
+  /** Logical turn start, before context transforms or provider retries. Unix epoch milliseconds. */
+  startedAt: number;
+  /** First provider event, or full-response arrival for non-streaming fallback. */
+  firstProviderEventAt?: number;
+  /** Successful provider response completion. Unix epoch milliseconds. */
+  completedAt: number;
+  /** Time spent awaiting provider attempts, including failed attempts but excluding retry backoff. */
+  providerDurationMs: number;
+  /** Time from logical turn start to the first provider event. */
+  ttftMs?: number;
+  /** Output tokens divided by total provider duration. Omitted when no rate is measurable. */
+  outputTokensPerSecond?: number;
+}
+
 export interface AgentTurnEndEvent {
   type: "turn_end";
   turn: number;
   stopReason: StopReason;
   usage: Usage;
+  timing: AgentTurnTiming;
 }
 
 export interface AgentDoneEvent {
@@ -194,6 +210,8 @@ export interface AgentOptions {
   priorMessages?: Message[];
   tools?: AgentTool[];
   serverTools?: ServerToolDefinition[];
+  /** Control whether tools may/must be called, or select a named tool when supported. */
+  toolChoice?: StreamOptions["toolChoice"];
   maxTurns?: number;
   maxTokens?: number;
   temperature?: number;

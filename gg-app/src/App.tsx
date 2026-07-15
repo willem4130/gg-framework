@@ -395,6 +395,19 @@ function App(): React.ReactElement {
   // once its slide-out animation finishes.
   const [kenPowerBanner, setKenPowerBanner] = useState<"on" | "off" | null>(null);
   const [running, setRunning] = useState(false);
+  const cancelling = state?.runState === "cancelling";
+  const requestCancel = useCallback(() => {
+    if (cancelling) return;
+    void cancel().catch(() => {
+      // Native/sidecar transport failures may prevent the SSE cancel_failed
+      // frame; restore the owned-running affordance so retry remains possible.
+      setState((previous) =>
+        previous ? { ...previous, running: true, runState: "running" } : previous,
+      );
+      setRunning(true);
+      setStatus("cancellation failed; agent still running");
+    });
+  }, [cancelling]);
   const [status, setStatus] = useState("connecting to agent\u2026");
   const [liveToolFeed, setLiveToolFeed] = useState<LiveToolEntry[]>([]);
   const [tokens, setTokens] = useState(0);
@@ -945,7 +958,8 @@ function App(): React.ReactElement {
       const st = await getState().catch(() => null);
       if (st) {
         setState(st);
-        setStatus("ready");
+        setRunning(st.running);
+        setStatus(st.runState === "cancelling" ? "cancelling..." : "ready");
       }
       const available = await listModels();
       if (available.length > 0) setModels(available);
@@ -2041,7 +2055,7 @@ function App(): React.ReactElement {
 
       <div className="liveregion">
         {workspaceMode === "code" && autopilotReviewing && (
-          <AutopilotReviewBar onCancel={() => void cancel()} />
+          <AutopilotReviewBar onCancel={requestCancel} />
         )}
         {workspaceMode === "code" && kenRunning && (
           <KenActivityBar
@@ -2060,6 +2074,7 @@ function App(): React.ReactElement {
         {(workspaceMode === "chat" || running || (!kenRunning && !autopilotReviewing)) && (
           <ActivityBar
             running={running}
+            cancelling={cancelling}
             tokens={tokens}
             doneStatus={doneStatus}
             isThinking={isThinking}
@@ -2067,7 +2082,7 @@ function App(): React.ReactElement {
             thinkingAccumMs={thinkingAccumMs}
             planTotal={workspaceMode === "chat" ? 0 : planTotal}
             planDone={workspaceMode === "chat" ? 0 : Math.min(planDone.size, planTotal)}
-            onCancel={() => void cancel()}
+            onCancel={requestCancel}
             toolsHidden={toolsHidden}
             hasToolFeed={liveToolFeed.length > 0}
             onToggleTools={toggleTools}
@@ -2224,7 +2239,7 @@ function App(): React.ReactElement {
                   // Cancel the build if it's running; otherwise cancel Ken so the
                   // "esc to cancel" on his bar actually works.
                   if (slashOpen) setInput("");
-                  else if (running) void cancel();
+                  else if (running && !cancelling) requestCancel();
                   else if (kenRunning) void cancelKen();
                 }
               }}

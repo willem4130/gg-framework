@@ -8,8 +8,15 @@ import type {
   StreamResponse,
   Tool,
   ToolCall,
+  ToolChoice,
 } from "../types.js";
-import { ProviderError, readHeader } from "../errors.js";
+import {
+  GGAIError,
+  ProviderError,
+  isRawHtmlErrorEcho,
+  providerHtmlErrorMessage,
+  readHeader,
+} from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import { providerDiag } from "../utils/diag.js";
 import { resolveToolSchema } from "../utils/zod-to-json-schema.js";
@@ -38,6 +45,22 @@ function isVisibleOutputItem(itemType: string | undefined): boolean {
   return itemType === "message";
 }
 
+function toCodexToolChoice(choice: ToolChoice | undefined, tools: Tool[] | undefined): string {
+  const resolved = choice ?? "auto";
+  if (typeof resolved === "object") {
+    throw new GGAIError(
+      `OpenAI Codex does not support selecting the named tool \`${resolved.name}\`; use auto, none, or required.`,
+      { source: "capability" },
+    );
+  }
+  if (resolved === "required" && !tools?.length) {
+    throw new GGAIError("OpenAI Codex cannot require a tool call when no tools are configured.", {
+      source: "capability",
+    });
+  }
+  return resolved;
+}
+
 export function streamOpenAICodex(options: StreamOptions): StreamResult {
   return new StreamResult(runStream(options), options.signal);
 }
@@ -58,7 +81,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
     stream: true,
     instructions: system,
     input,
-    tool_choice: "auto",
+    tool_choice: toCodexToolChoice(options.toolChoice, options.tools),
     parallel_tool_calls: !responsesLite,
     include: ["reasoning.encrypted_content"],
   };
@@ -112,8 +135,9 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
   // share a cache key when their static prefixes match, but each child keeps an
   // independent transport identity so sticky session state cannot bleed across.
   if (options.transportSessionId) {
-    headers["session_id"] = options.transportSessionId;
-    headers["x-client-request-id"] = options.transportSessionId;
+    const transportSessionId = normalizePromptCacheKey(options.transportSessionId);
+    headers["session_id"] = transportSessionId;
+    headers["x-client-request-id"] = transportSessionId;
   }
 
   const response = await fetch(url, {
@@ -125,7 +149,7 @@ async function* runStream(options: StreamOptions): AsyncGenerator<StreamEvent, S
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    const parsed = parseCodexErrorBody(text);
+    const parsed = parseCodexErrorBody(text, response.status);
     const message = parsed.message ?? `Codex API returned HTTP ${response.status}.`;
     const requestId =
       parsed.requestId ??
@@ -677,10 +701,13 @@ function toCodexTools(tools: Tool[]): unknown[] {
   }));
 }
 
-// HTTP error bodies come back as JSON or plain text. Try to extract a clean
-// message string + request_id (and the raw error object) so we never spill the
-// raw JSON into the UI.
-function parseCodexErrorBody(text: string): {
+// HTTP error bodies may be JSON, useful plain text, or an HTML edge/proxy page.
+// Extract a bounded message plus request ID while keeping raw JSON and markup out
+// of every user-facing error path.
+function parseCodexErrorBody(
+  text: string,
+  statusCode: number,
+): {
   message?: string;
   requestId?: string;
   errorObj?: Record<string, unknown>;
@@ -690,10 +717,14 @@ function parseCodexErrorBody(text: string): {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     const error = parsed.error as Record<string, unknown> | undefined;
     const detail = parsed.detail as unknown;
-    const message =
+    const rawMessage =
       (error?.message as string | undefined) ??
       (parsed.message as string | undefined) ??
       (typeof detail === "string" ? detail : undefined);
+    const message =
+      rawMessage && isRawHtmlErrorEcho(rawMessage)
+        ? providerHtmlErrorMessage(statusCode)
+        : rawMessage;
     const requestId =
       (parsed.request_id as string | undefined) ??
       (error?.request_id as string | undefined) ??
@@ -708,10 +739,13 @@ function parseCodexErrorBody(text: string): {
       ...(errorObj ? { errorObj } : {}),
     };
   } catch {
-    // Non-JSON body — return the trimmed text directly, capped so we never
-    // splat a huge HTML error page.
-    const trimmed = text.trim().slice(0, 240);
-    return trimmed ? { message: trimmed } : {};
+    const trimmed = text.trim();
+    if (isRawHtmlErrorEcho(trimmed)) {
+      return { message: providerHtmlErrorMessage(statusCode) };
+    }
+    // Preserve useful plain-text errors, capped to keep accidental proxy output bounded.
+    const bounded = trimmed.slice(0, 240);
+    return bounded ? { message: bounded } : {};
   }
 }
 

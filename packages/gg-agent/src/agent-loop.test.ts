@@ -310,6 +310,18 @@ describe("agentLoop", () => {
     expect(result.totalTurns).toBe(1);
     expect(result.totalUsage.inputTokens).toBe(100);
     expect(result.totalUsage.outputTokens).toBe(50);
+    const turnEnd = events.find((event) => event.type === "turn_end");
+    expect(turnEnd?.type === "turn_end" ? turnEnd.timing : undefined).toMatchObject({
+      startedAt: expect.any(Number),
+      firstProviderEventAt: expect.any(Number),
+      completedAt: expect.any(Number),
+      providerDurationMs: expect.any(Number),
+      ttftMs: expect.any(Number),
+    });
+    if (turnEnd?.type === "turn_end") {
+      expect(turnEnd.timing.completedAt).toBeGreaterThanOrEqual(turnEnd.timing.startedAt);
+      expect(turnEnd.timing.providerDurationMs).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("forwards Codex transport identity separately from prompt cache routing", async () => {
@@ -320,12 +332,14 @@ describe("agentLoop", () => {
       model: "gpt-5.6-luna",
       transportSessionId: "transport-session",
       promptCacheKey: "shared-cache-family",
+      toolChoice: "none",
     });
 
     expect(mockStream).toHaveBeenCalledWith(
       expect.objectContaining({
         transportSessionId: "transport-session",
         promptCacheKey: "shared-cache-family",
+        toolChoice: "none",
       }),
     );
   });
@@ -790,6 +804,11 @@ describe("agentLoop", () => {
 
     expect(events.some((e) => e.type === "agent_done")).toBe(true);
     expect(result.totalTurns).toBe(1); // stall retries don't count as turns
+    const turnEnd = events.find((event) => event.type === "turn_end");
+    expect(turnEnd?.type === "turn_end" ? turnEnd.timing.ttftMs : 0).toBeGreaterThanOrEqual(90_000);
+    expect(
+      turnEnd?.type === "turn_end" ? turnEnd.timing.providerDurationMs : 0,
+    ).toBeGreaterThanOrEqual(90_000);
   }, 30_000);
 
   it("preserves partial streamed text across a transport-failure retry", async () => {
@@ -1030,6 +1049,91 @@ describe("agentLoop", () => {
     );
 
     expect(calls).toEqual(["mutate:start", "mutate:end", "read_after"]);
+  });
+
+  it("redacts successful tool output before events and provider context", async () => {
+    const canary = "sk-ant-api03-canarysecret123456";
+    mockStream
+      .mockReturnValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield* [];
+        },
+        response: Promise.resolve({
+          message: {
+            role: "assistant" as const,
+            content: [{ type: "tool_call" as const, id: "t1", name: "secret", args: {} }],
+          },
+          stopReason: "tool_use",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        }),
+      } as unknown as ReturnType<typeof stream>)
+      .mockReturnValueOnce(mockOkResult("done") as unknown as ReturnType<typeof stream>);
+
+    const messages: Message[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "test" },
+    ];
+    const { events } = await collectLoop(messages, {
+      provider: "anthropic",
+      model: "test",
+      tools: [
+        {
+          name: "secret",
+          description: "returns a canary",
+          parameters: emptyParams,
+          execute: () => ({ content: `result ${canary}`, details: { apiKey: canary } }),
+        },
+      ],
+    });
+
+    const serializedEvents = JSON.stringify(events);
+    const serializedMessages = JSON.stringify(messages);
+    expect(serializedEvents).not.toContain(canary);
+    expect(serializedMessages).not.toContain(canary);
+    expect(serializedEvents).toContain("[REDACTED]");
+    expect(serializedMessages).toContain("[REDACTED]");
+  });
+
+  it("redacts failed tool output before events and provider context", async () => {
+    const canary = "sk-ant-api03-failuresecret123456";
+    mockStream
+      .mockReturnValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield* [];
+        },
+        response: Promise.resolve({
+          message: {
+            role: "assistant" as const,
+            content: [{ type: "tool_call" as const, id: "t1", name: "secret", args: {} }],
+          },
+          stopReason: "tool_use",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        }),
+      } as unknown as ReturnType<typeof stream>)
+      .mockReturnValueOnce(mockOkResult("done") as unknown as ReturnType<typeof stream>);
+
+    const messages: Message[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "test" },
+    ];
+    const { events } = await collectLoop(messages, {
+      provider: "anthropic",
+      model: "test",
+      tools: [
+        {
+          name: "secret",
+          description: "throws a canary",
+          parameters: emptyParams,
+          execute: () => {
+            throw new Error(`request failed with ${canary}`);
+          },
+        },
+      ],
+    });
+
+    expect(JSON.stringify(events)).not.toContain(canary);
+    expect(JSON.stringify(messages)).not.toContain(canary);
+    expect(JSON.stringify(messages)).toContain("[REDACTED]");
   });
 
   it("stops after repeated invalid tool arguments with non-empty args", async () => {

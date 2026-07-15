@@ -27,8 +27,12 @@ function shortModel(model: string): string {
   return SHORT_MODELS[model] ?? model;
 }
 
-export function getBossFooterContextPercent(model: string, tokensIn: number): number {
-  const limit = getContextWindow(model);
+export function getBossFooterContextPercent(
+  model: string,
+  tokensIn: number,
+  contextWindow = getContextWindow(model),
+): number {
+  const limit = contextWindow;
   if (!limit || tokensIn === 0) return 0;
   return Math.round((tokensIn / limit) * 100);
 }
@@ -59,6 +63,7 @@ interface BossFooterProps {
   workerModel: string;
   /** Total input tokens of the boss's last turn — drives the context bar. */
   tokensIn: number;
+  contextWindow?: number;
   exitPending: boolean;
   /** Boss extended-thinking level. Falsy when thinking is off. */
   bossThinkingLevel?: ThinkingLevel;
@@ -110,6 +115,7 @@ export function BossFooter({
   bossModel,
   workerModel,
   tokensIn,
+  contextWindow,
   exitPending,
   bossThinkingLevel,
   updatePending,
@@ -127,7 +133,7 @@ export function BossFooter({
     );
   }
 
-  const contextPct = getBossFooterContextPercent(bossModel, tokensIn);
+  const contextPct = getBossFooterContextPercent(bossModel, tokensIn, contextWindow);
   const contextColor = getContextColor(contextPct, theme);
   const sep = <Text color={theme.border}>{" │ "}</Text>;
   const bossName = shortModel(bossModel);

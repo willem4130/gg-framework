@@ -14,6 +14,8 @@ export interface SubagentWorkerInitialize {
   thinkingLevel?: ThinkingLevel;
   allowedTools?: string[];
   promptCacheKey?: string;
+  sessionRootDir: string;
+  childSessionPath?: string;
 }
 
 type WorkerCommand =
@@ -73,11 +75,13 @@ export async function runSubagentWorkerMode(): Promise<void> {
   };
 
   const createSession = async (options: SubagentWorkerInitialize): Promise<AgentSession> => {
-    const { fallbackModel: _fallbackModel, ...sessionOptions } = options;
+    const { fallbackModel: _fallbackModel, childSessionPath, ...sessionOptions } = options;
     const next = new AgentSession({
       ...sessionOptions,
       maxTurns: 50,
-      transient: true,
+      transient: false,
+      sessionRootDir: options.sessionRootDir,
+      sessionId: childSessionPath,
       signal: controller.signal,
       subagentWorker: true,
     });
@@ -128,6 +132,7 @@ export async function runSubagentWorkerMode(): Promise<void> {
         status: interrupted ? "interrupted" : "completed",
         output: boundSubAgentOutput(output),
         ...(interrupted ? { error: "Interrupted" } : {}),
+        model: initializeOptions?.model,
       });
     })()
       .catch((error: unknown) => {
@@ -139,6 +144,7 @@ export async function runSubagentWorkerMode(): Promise<void> {
           status: interrupted ? "interrupted" : "failed",
           output: boundSubAgentOutput(output),
           error: interrupted ? "Interrupted" : errorMessage(error),
+          model: initializeOptions?.model,
         });
       })
       .finally(() => {
@@ -159,7 +165,13 @@ export async function runSubagentWorkerMode(): Promise<void> {
           initializeOptions = command.options;
           session = await createSession(initializeOptions);
           setState("idle");
-          acknowledge(command.request_id);
+          const state = session.getState();
+          initializeOptions = { ...initializeOptions, childSessionPath: state.sessionPath };
+          acknowledge(command.request_id, {
+            child_session_id: state.sessionId,
+            child_session_path: state.sessionPath,
+            model: initializeOptions.model,
+          });
           return;
         }
         case "start":

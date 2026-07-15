@@ -28,6 +28,7 @@ export type {
   AgentSteeringMessageEvent,
   AgentFollowUpMessageEvent,
   AgentRetryEvent,
+  AgentTurnTiming,
   AgentTurnEndEvent,
   AgentDoneEvent,
   AgentErrorEvent,

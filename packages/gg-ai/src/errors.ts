@@ -249,6 +249,26 @@ export function isRawJsonErrorEcho(message: string): boolean {
   }
 }
 
+/**
+ * Detect a raw HTML document returned by a provider edge, proxy, or status page.
+ * SDKs preserve non-JSON response bodies in `err.message`, sometimes prefixed by
+ * the HTTP status. HTML is diagnostic transport debris, not a user-facing error.
+ */
+export function isRawHtmlErrorEcho(message: string): boolean {
+  const withoutStatus = message
+    .trimStart()
+    .replace(/^\d{3}\s+/, "")
+    .trimStart();
+  return /^<!doctype\s+html(?:\s|>)/i.test(withoutStatus) || /^<html(?:\s|>)/i.test(withoutStatus);
+}
+
+/** Clean fallback when an API endpoint returned an HTML page instead of API JSON. */
+export function providerHtmlErrorMessage(statusCode: number | undefined): string {
+  return statusCode
+    ? `The provider returned an HTML error page (HTTP ${statusCode}) instead of an API response.`
+    : "The provider returned an HTML error page instead of an API response.";
+}
+
 /** Clean fallback message when a provider's error body carried no usable text. */
 export function emptyProviderErrorMessage(statusCode: number | undefined): string {
   return statusCode
@@ -259,7 +279,7 @@ export function emptyProviderErrorMessage(statusCode: number | undefined): strin
 export function formatError(err: unknown): FormattedError {
   if (err instanceof ProviderError) {
     const name = providerDisplayName(err.provider);
-    const cleanMessage = cleanProviderMessage(err.message);
+    const cleanMessage = cleanProviderMessage(err.message, err.statusCode);
     if (isMythosAccessError(cleanMessage)) {
       return {
         headline: "Claude Mythos 5 is invitation-only.",
@@ -384,8 +404,9 @@ export function formatErrorForDisplay(err: unknown): string {
  * so older ProviderError messages render cleanly under the new headline
  * system without doubling up.
  */
-function cleanProviderMessage(message: string): string {
-  return message.replace(/^\[[^\]]+\]\s*/, "").trim();
+function cleanProviderMessage(message: string, statusCode?: number): string {
+  const clean = message.replace(/^\[[^\]]+\]\s*/, "").trim();
+  return isRawHtmlErrorEcho(clean) ? providerHtmlErrorMessage(statusCode) : clean;
 }
 
 function inferSource(err: Error): ErrorSource {

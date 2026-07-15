@@ -969,24 +969,48 @@ async fn agent_prompt(
     Ok(())
 }
 
+async fn sidecar_get_json(
+    webview: &WebviewWindow,
+    client: &reqwest::Client,
+    path: &str,
+) -> Result<serde_json::Value, String> {
+    let port = port_for(webview).ok_or("daemon not ready")?;
+    let gg_sid = session_for(webview).ok_or("session not ready")?;
+    let res = client
+        .get(format!("{}{}", sidecar_base(port), path))
+        .header("x-gg-session", &gg_sid)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status();
+    let body = res
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if status.is_success() {
+        return Ok(body);
+    }
+    Err(body
+        .get("message")
+        .or_else(|| body.get("error"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_else(|| {
+            status
+                .canonical_reason()
+                .unwrap_or("sidecar request failed")
+        })
+        .to_string())
+}
+
 /// Proxy: resumed conversation history (user + assistant text) for hydration.
 #[tauri::command]
 async fn agent_history(
     webview: WebviewWindow,
     client: State<'_, reqwest::Client>,
 ) -> Result<serde_json::Value, String> {
-    let port = port_for(&webview).ok_or("daemon not ready")?;
-    let gg_sid = session_for(&webview).ok_or("session not ready")?;
-    let res = client
-        .get(format!("{}/history", sidecar_base(port)))
-        .header("x-gg-session", &gg_sid)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    res.json::<serde_json::Value>()
-        .await
-        .map_err(|e| e.to_string())
+    sidecar_get_json(&webview, &client, "/history").await
 }
+
 
 /// Proxy: start a fresh session (clears history) for this window's project.
 #[tauri::command]
@@ -1281,21 +1305,38 @@ async fn agent_accept_plan(
     Ok(())
 }
 
-/// Proxy: cancel the in-flight run.
+fn parse_cancel_response(
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if status.is_success() {
+        return Ok(body);
+    }
+    // Preserve the typed sidecar payload (cancel_failed, reason, runState) so
+    // the webview can recover honestly instead of seeing only an HTTP code.
+    Err(body.to_string())
+}
+
+/// Proxy: cancel the in-flight run and reject non-2xx acknowledgements.
 #[tauri::command]
 async fn agent_cancel(
     webview: WebviewWindow,
     client: State<'_, reqwest::Client>,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let port = port_for(&webview).ok_or("daemon not ready")?;
     let gg_sid = session_for(&webview).ok_or("session not ready")?;
-    client
+    let response = client
         .post(format!("{}/cancel", sidecar_base(port)))
         .header("x-gg-session", &gg_sid)
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    let status = response.status();
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_cancel_response(status, body)
 }
 
 /// Proxy: ask Ken Kai (the read-only mentor agent). Reply streams back via the
@@ -4019,6 +4060,28 @@ fn refresh_live_sessions(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_response_accepts_acknowledged_success() {
+        let body = serde_json::json!({ "cancelled": true, "runState": "idle" });
+        assert_eq!(
+            parse_cancel_response(reqwest::StatusCode::OK, body.clone()).unwrap(),
+            body
+        );
+    }
+
+    #[test]
+    fn cancel_response_rejects_typed_non_success_body() {
+        let body = serde_json::json!({
+            "error": "cancel_failed",
+            "reason": "timeout",
+            "runState": "running"
+        });
+        let error = parse_cancel_response(reqwest::StatusCode::GATEWAY_TIMEOUT, body).unwrap_err();
+        assert!(error.contains("cancel_failed"));
+        assert!(error.contains("runState"));
+        assert!(error.contains("running"));
+    }
 
     #[test]
     fn keep_for_snapshot_excludes_picker_windows() {

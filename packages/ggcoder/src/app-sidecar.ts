@@ -18,12 +18,18 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
-import { formatError, type ToolResultContent } from "@kenkaiiii/gg-ai";
+import {
+  environmentSecrets,
+  formatError,
+  redactValue,
+  type ToolResultContent,
+} from "@kenkaiiii/gg-ai";
 import type { AddressInfo } from "node:net";
 import { runJsonMode } from "./modes/json-mode.js";
 import { runSubagentWorkerMode } from "./modes/subagent-worker-mode.js";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "./core/agent-session.js";
+import { RunLifecycle } from "./core/run-lifecycle.js";
 import {
   CHAT_AGENT_IDS,
   chatAgentSessionsDir,
@@ -1247,7 +1253,8 @@ async function createSession(
   let clientSeq = 0;
 
   function broadcast(type: string, data: unknown): void {
-    const frame = `data: ${JSON.stringify({ type, data })}\n\n`;
+    const safePayload = redactValue({ type, data }, { secrets: environmentSecrets(process.env) });
+    const frame = `data: ${JSON.stringify(safePayload)}\n\n`;
     for (const c of clients) c.res.write(frame);
   }
 
@@ -1467,6 +1474,12 @@ async function createSession(
   session.eventBus.on("compaction_end", (d) => broadcast("compaction_end", d));
 
   let running = false;
+  const runLifecycle = new RunLifecycle((runState) => {
+    running = runState !== "idle";
+    if (runState === "cancelling") broadcast("run_cancelling", { runState });
+  });
+  const cancelledRunEndGenerations = new Set<number>();
+  let pendingCancelDrain: { generation: number; text: string } | null = null;
   let titleGenerated = false;
   // Bumped by /cancel — a run whose cancel generation changed mid-flight was
   // canceled and earns no XP.
@@ -1489,6 +1502,7 @@ async function createSession(
   let autopilotCancelled = false;
   // Hard cap on review→prompt→review rounds per user turn (loop safety).
   const MAX_AUTOPILOT_ROUNDS = 3;
+  const CANCEL_TIMEOUT_MS = 5_000;
   // Prompt bodies Autopilot Ken injected into the BUILD session this
   // conversation. Passed into every Ken digest so injected prompts render as
   // "Ken autopilot (injected)" instead of `**User:**` — otherwise multi-round
@@ -1701,28 +1715,62 @@ async function createSession(
     }
   }
 
-  // Core run lifecycle shared by /prompt and the task runner: flips `running`,
-  // brackets the run with run_start/run_end, refreshes the footer extras, and
-  // generates the session title once. `label` is the text shown live with the
-  // run_start frame.
+  function abortOwnedWork(): void {
+    cancelGeneration++;
+    abort.abort();
+    // Stop a run-all sweep and every async child through AgentSession's signal.
+    taskRunAll = false;
+    autopilotCancelled = true;
+    kenAutoAbort.abort();
+  }
+
+  function installFreshRunControllers(): void {
+    abort = new AbortController();
+    session.setSignal(abort.signal);
+    kenAutoAbort = new AbortController();
+    kenAutoSession?.setSignal(kenAutoAbort.signal);
+  }
+
+  function finishOwnedGeneration(generation: number, emitCancelledFallback: boolean): boolean {
+    const cancelled = runLifecycle.isCancellationRequested(generation);
+    const settlement = runLifecycle.settle(generation);
+    if (!settlement.settled) return cancelled;
+    // A replacement signal is safe only after the provider-backed owner settled.
+    installFreshRunControllers();
+    if (cancelled && emitCancelledFallback && !cancelledRunEndGenerations.has(generation)) {
+      cancelledRunEndGenerations.add(generation);
+      broadcast("run_end", { cancelled: true, runState: runLifecycle.state });
+    }
+    return cancelled;
+  }
+
+  // Core provider-run bracket. Standalone runs own a lifecycle generation;
+  // injected autopilot runs share the cycle's outer generation.
   async function runAgent(label: string, run: () => Promise<void>): Promise<void> {
-    running = true;
+    const ownsGeneration = !runLifecycle.running;
+    const generation = ownsGeneration
+      ? runLifecycle.begin(abortOwnedWork).generation
+      : runLifecycle.generation;
+    if (ownsGeneration) pendingCancelDrain = null;
     // Progress (Ranks): completed, non-canceled runs with ≥1 assistant turn earn
     // XP — prompt + any commits authored during the run window.
     const runStartedAt = Date.now();
     const cancelGenAtStart = cancelGeneration;
     const assistantsBeforeRun = countAssistantMessages(session.getMessages());
     let runSucceeded = false;
-    broadcast("run_start", { text: label });
+    broadcast("run_start", { text: label, runState: runLifecycle.state });
     try {
-      await run();
+      if (!runLifecycle.isCancellationRequested(generation)) await run();
       runSucceeded = true;
     } catch (err) {
-      broadcastError("error", "run failed", err);
+      if (!runLifecycle.isCancellationRequested(generation)) {
+        broadcastError("error", "run failed", err);
+      }
     } finally {
-      running = false;
+      const cancelled = runLifecycle.isCancellationRequested(generation);
       if (
         runSucceeded &&
+        !cancelled &&
         cancelGeneration === cancelGenAtStart &&
         countAssistantMessages(session.getMessages()) > assistantsBeforeRun
       ) {
@@ -1733,21 +1781,22 @@ async function createSession(
       // background tasks — refresh the footer extras once it settles.
       gitBranch = await getGitBranch(cwd).catch(() => gitBranch);
       gitIsRepo = await isGitRepo(cwd).catch(() => gitIsRepo);
-      broadcast("run_end", {});
+      if (ownsGeneration) finishOwnedGeneration(generation, false);
+      // A cancelled injected run is still owned by the surrounding autopilot
+      // cycle; its outer finalizer emits the one terminal cancelled run_end.
+      if (!(cancelled && !ownsGeneration)) {
+        if (cancelled) cancelledRunEndGenerations.add(generation);
+        broadcast("run_end", {
+          ...(cancelled ? { cancelled: true } : {}),
+          runState: runLifecycle.state,
+        });
+      }
       // Autopilot's review loop is driven explicitly from POST /prompt (see
-      // runAutopilotCycle), NOT from this shared finally — that keeps the
-      // injected GG Coder runs this cycle triggers from recursively re-entering
-      // the loop through the same bracket.
-      // The agent may have marked project tasks done during the run — prune the
-      // completed ones so they drop out of the Tasks modal automatically (users
-      // never have to delete finished tasks by hand).
+      // runAutopilotCycle), NOT from this shared finally — that keeps injected
+      // runs from recursively entering the same review loop.
       broadcast("tasks_list", { tasks: pruneDoneTasksSync(cwd) });
-      // Queue drains into the run as steering, so it's empty by run_end —
-      // sync the webview indicator.
       broadcast("queued", { count: session.getQueuedCount() });
       broadcast("extras", footerExtras());
-      // Generate a session title once, after the first run, for the title bar
-      // (best-effort, async — don't block the response).
       if (!titleGenerated) {
         titleGenerated = true;
         void session.generateTitle().then((title) => {
@@ -1779,7 +1828,7 @@ async function createSession(
       await ken.prompt(digest);
       return parseAutopilotVerdict(lastAssistantText(ken.getMessages()));
     } catch (err) {
-      broadcastError("autopilot_error", "autopilot review failed", err);
+      if (!autopilotCancelled) broadcastError("autopilot_error", "autopilot review failed", err);
       return null;
     } finally {
       autopilotReviewing = false;
@@ -1849,6 +1898,8 @@ async function createSession(
   // every exit path is unit-tested; this only wires the real dependencies.
   async function runAutopilotCycle(originalRequest: string): Promise<void> {
     if (!autopilot || autopilotCancelled) return;
+    const generation = runLifecycle.begin(abortOwnedWork).generation;
+    pendingCancelDrain = null;
     autopilotActive = true;
     // Generation captured by the last plan review; acceptPlan re-checks it so
     // a user Accept/Reject landing mid-review always wins.
@@ -1959,6 +2010,8 @@ async function createSession(
       });
     } finally {
       autopilotActive = false;
+      finishOwnedGeneration(generation, true);
+      queueMicrotask(() => void runStrandedQueue());
     }
   }
 
@@ -2143,7 +2196,7 @@ async function createSession(
   }
 
   function json(res: http.ServerResponse, status: number, body: unknown): void {
-    const payload = JSON.stringify(body);
+    const payload = JSON.stringify(redactValue(body, { secrets: environmentSecrets(process.env) }));
     res.writeHead(status, {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
@@ -2165,6 +2218,7 @@ async function createSession(
         mode,
         chatAgent,
         running,
+        runState: runLifecycle.state,
         ready: true,
         thinkingLevel: session.getThinkingLevel() ?? null,
         supportedThinkingLevels: getSupportedThinkingLevels(st.provider, st.model),
@@ -2251,6 +2305,7 @@ async function createSession(
             mode,
             chatAgent,
             running,
+            runState: runLifecycle.state,
             thinkingLevel: session.getThinkingLevel() ?? null,
             supportedThinkingLevels: getSupportedThinkingLevels(st.provider, st.model),
             supportsVideo: getModel(st.model)?.supportsVideo ?? false,
@@ -2790,6 +2845,13 @@ async function createSession(
           json(res, 400, { error: "empty prompt" });
           return;
         }
+        if (runLifecycle.running && runLifecycle.isCancellationRequested(runLifecycle.generation)) {
+          json(res, 409, {
+            error: runLifecycle.state === "cancelling" ? "run_cancelling" : "cancel_failed",
+            runState: runLifecycle.state,
+          });
+          return;
+        }
         if (running || autopilotActive) {
           // Queue prompts as mid-run steering (mirrors the CLI). Also queue while
           // an autopilot cycle is active but between injected runs (build idle,
@@ -3288,26 +3350,51 @@ async function createSession(
     }
 
     if (method === "POST" && url === "/cancel") {
-      cancelGeneration++;
-      abort.abort();
-      abort = new AbortController();
-      session.setSignal(abort.signal);
-      running = false;
-      // Stop a run-all sweep so the next pending task isn't auto-started.
-      taskRunAll = false;
-      // Stop any in-flight autopilot cycle: flag it so the loop bails between
-      // steps, and abort a review that's mid-prompt on the kenAuto session.
-      autopilotCancelled = true;
-      kenAutoAbort.abort();
-      kenAutoAbort = new AbortController();
-      kenAutoSession?.setSignal(kenAutoAbort.signal);
-      autopilotReviewing = false;
-      // Drop any queued steering and return it so the webview can restore it to
-      // the composer.
-      const drained = session.drainQueue();
-      broadcast("run_end", { cancelled: true });
-      broadcast("queued", { count: 0 });
-      json(res, 200, { cancelled: true, drained });
+      void (async () => {
+        // Even between task runs, cancellation stops the sweep. Active provider
+        // ownership invokes the full abort hook exactly once through lifecycle.
+        taskRunAll = false;
+        autopilotCancelled = true;
+        if (!runLifecycle.running) {
+          kenAutoAbort.abort();
+          kenAutoAbort = new AbortController();
+          kenAutoSession?.setSignal(kenAutoAbort.signal);
+        }
+
+        const generation = runLifecycle.generation;
+        if (!pendingCancelDrain || pendingCancelDrain.generation !== generation) {
+          pendingCancelDrain = { generation, text: session.drainQueue() };
+          broadcast("queued", { count: 0 });
+        }
+        const result = await runLifecycle.cancel(CANCEL_TIMEOUT_MS);
+        const drained = pendingCancelDrain.text;
+        if (result.status === "failed") {
+          broadcast("cancel_failed", {
+            error: "cancel_failed",
+            reason: result.reason,
+            runState: runLifecycle.state,
+          });
+          json(res, 504, {
+            error: "cancel_failed",
+            reason: result.reason,
+            runState: runLifecycle.state,
+            drained,
+          });
+          return;
+        }
+        json(res, 200, {
+          cancelled: result.status === "cancelled",
+          runState: runLifecycle.state,
+          drained,
+        });
+      })().catch((error) => {
+        broadcast("cancel_failed", { error: "cancel_failed", runState: runLifecycle.state });
+        json(res, 500, {
+          error: "cancel_failed",
+          message: error instanceof Error ? error.message : String(error),
+          runState: runLifecycle.state,
+        });
+      });
       return;
     }
 

@@ -109,6 +109,36 @@ function setup(
 describe("useAgentEvents", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("keeps the run owned while cancellation is pending", () => {
+    const { hook, getState, setRunning } = setup(() => false, {
+      running: true,
+      runState: "running",
+    });
+    act(() => hook.result.current.handleEvent(ev("run_cancelling", { runState: "cancelling" })));
+    expect(getState()).toMatchObject({ running: true, runState: "cancelling" });
+    expect(setRunning).toHaveBeenLastCalledWith(true);
+  });
+
+  it("restores the running affordance after cancellation failure", () => {
+    const { hook, getState, setRunning } = setup(() => false, {
+      running: true,
+      runState: "cancelling",
+    });
+    act(() => hook.result.current.handleEvent(ev("cancel_failed", { runState: "running" })));
+    expect(getState()).toMatchObject({ running: true, runState: "running" });
+    expect(setRunning).toHaveBeenLastCalledWith(true);
+  });
+
+  it("becomes idle only when the owning run emits run_end", () => {
+    const { hook, getState, setRunning } = setup(() => false, {
+      running: true,
+      runState: "cancelling",
+    });
+    act(() => hook.result.current.handleEvent(ev("run_end", { cancelled: true })));
+    expect(getState()).toMatchObject({ running: false, runState: "idle" });
+    expect(setRunning).toHaveBeenLastCalledWith(false);
+  });
+
   it("text_delta streams assistant text into a single item", () => {
     const { hook, getItems } = setup();
     act(() => {

@@ -23,6 +23,15 @@ interface DiagnosticWaiter {
   resolve: (diagnostics: LspDiagnostic[]) => void;
 }
 
+interface ProgressParams {
+  token: string | number;
+  value?: { kind?: "begin" | "report" | "end" };
+}
+
+function progressTokenKey(token: string | number): string {
+  return `${typeof token}:${String(token)}`;
+}
+
 const SERVER_CANCELLED = -32802;
 const METHOD_NOT_FOUND = -32601;
 const PULL_POLL_INTERVAL_MS = 300;
@@ -48,6 +57,7 @@ export class LspClient {
   private readonly published = new Map<string, LspDiagnostic[]>();
   private waiters: DiagnosticWaiter[] = [];
   private hasPullDiagnostics = false;
+  private readonly activeProgressTokens = new Set<string>();
   private alive = true;
 
   private readonly initializationOptions: unknown;
@@ -81,10 +91,22 @@ export class LspClient {
         return false;
       });
     });
+    this.conn.onNotification("$/progress", (params) => {
+      const progress = params as ProgressParams;
+      if (progress?.token === undefined) return;
+      const key = progressTokenKey(progress.token);
+      if (progress.value?.kind === "begin") this.activeProgressTokens.add(key);
+      else if (progress.value?.kind === "end") this.activeProgressTokens.delete(key);
+    });
   }
 
   get isAlive(): boolean {
     return this.alive;
+  }
+
+  /** True while the server reports indexing/analysis through LSP work progress. */
+  get hasActiveProgress(): boolean {
+    return this.activeProgressTokens.size > 0;
   }
 
   async initialize(timeoutMs: number): Promise<void> {
@@ -103,6 +125,7 @@ export class LspClient {
             diagnostic: { dynamicRegistration: false, relatedDocumentSupport: false },
           },
           workspace: { configuration: true, workspaceFolders: true },
+          window: { workDoneProgress: true },
         },
       },
       timeoutMs,
@@ -189,6 +212,7 @@ export class LspClient {
 
   private markDead(): void {
     this.alive = false;
+    this.activeProgressTokens.clear();
     this.conn.dispose();
     const waiters = this.waiters;
     this.waiters = [];

@@ -3,7 +3,14 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { Message, Provider } from "@kenkaiiii/gg-ai";
+import {
+  environmentSecrets,
+  redactValue,
+  type Message,
+  type Provider,
+  type Usage,
+} from "@kenkaiiii/gg-ai";
+import type { AgentTurnTiming } from "@kenkaiiii/gg-agent";
 import { log } from "./logger.js";
 import { encodeCwd } from "./encode-cwd.js";
 import type { CompletedItem } from "../ui/app-items.js";
@@ -51,6 +58,67 @@ export interface CustomEntry extends BaseEntry {
 }
 
 export const DISPLAY_ITEM_CUSTOM_KIND = "display_item";
+export const TURN_METRIC_CUSTOM_KIND = "turn_metric";
+
+export type TurnMetricCost =
+  | { status: "known"; usd: number; source: string; effectiveAt: string }
+  | { status: "unavailable"; reason: string };
+
+export interface TurnMetricPayload {
+  version: 1;
+  turn: number;
+  provider: Provider;
+  model: string;
+  stopReason: string;
+  usage: Usage;
+  timing: AgentTurnTiming;
+  cost: TurnMetricCost;
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseTurnMetric(value: unknown): TurnMetricPayload | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const payload = value as Partial<TurnMetricPayload>;
+  const usage = payload.usage as Partial<Usage> | undefined;
+  const timing = payload.timing as Partial<AgentTurnTiming> | undefined;
+  const cost = payload.cost as Partial<TurnMetricCost> | undefined;
+  if (
+    payload.version !== 1 ||
+    !finiteNumber(payload.turn) ||
+    typeof payload.provider !== "string" ||
+    typeof payload.model !== "string" ||
+    typeof payload.stopReason !== "string" ||
+    !usage ||
+    !finiteNumber(usage.inputTokens) ||
+    !finiteNumber(usage.outputTokens) ||
+    !timing ||
+    !finiteNumber(timing.startedAt) ||
+    !finiteNumber(timing.completedAt) ||
+    !finiteNumber(timing.providerDurationMs) ||
+    !cost ||
+    (cost.status !== "known" && cost.status !== "unavailable")
+  ) {
+    return undefined;
+  }
+  if (
+    (usage.cacheRead !== undefined && !finiteNumber(usage.cacheRead)) ||
+    (usage.cacheWrite !== undefined && !finiteNumber(usage.cacheWrite)) ||
+    (timing.firstProviderEventAt !== undefined && !finiteNumber(timing.firstProviderEventAt)) ||
+    (timing.ttftMs !== undefined && !finiteNumber(timing.ttftMs)) ||
+    (timing.outputTokensPerSecond !== undefined && !finiteNumber(timing.outputTokensPerSecond)) ||
+    (cost.status === "known" &&
+      (!finiteNumber(cost.usd) ||
+        typeof cost.source !== "string" ||
+        typeof cost.effectiveAt !== "string")) ||
+    (cost.status === "unavailable" && typeof cost.reason !== "string")
+  ) {
+    return undefined;
+  }
+  return payload as TurnMetricPayload;
+}
 
 interface DisplayItemPayload {
   version: 1;
@@ -433,10 +501,25 @@ export class SessionManager {
 
   async appendEntry(sessionPath: string, entry: SessionEntry): Promise<void> {
     try {
-      await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n", "utf-8");
+      // Persist a sanitized clone. The live conversation remains untouched so
+      // credentials can still be used by the current in-memory run.
+      const safeEntry = redactValue(entry, { secrets: environmentSecrets(process.env) });
+      await fs.appendFile(sessionPath, JSON.stringify(safeEntry) + "\n", "utf-8");
     } catch (error) {
       this.handlePersistError(error, "appendEntry");
     }
+  }
+
+  async appendTurnMetric(sessionPath: string, payload: TurnMetricPayload): Promise<void> {
+    const entry: CustomEntry = {
+      type: "custom",
+      kind: TURN_METRIC_CUSTOM_KIND,
+      id: crypto.randomUUID(),
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      data: payload,
+    };
+    await this.appendEntry(sessionPath, entry);
   }
 
   async updateLeaf(sessionPath: string, leafId: string): Promise<void> {
@@ -555,6 +638,15 @@ export class SessionManager {
         ];
       }
       return [];
+    });
+  }
+
+  /** Read validated per-turn usage and timing records in file order. */
+  getTurnMetrics(entries: SessionEntry[]): TurnMetricPayload[] {
+    return entries.flatMap((entry): TurnMetricPayload[] => {
+      if (entry.type !== "custom" || entry.kind !== TURN_METRIC_CUSTOM_KIND) return [];
+      const metric = parseTurnMetric(entry.data);
+      return metric ? [metric] : [];
     });
   }
 

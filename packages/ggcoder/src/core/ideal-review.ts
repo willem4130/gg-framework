@@ -18,6 +18,81 @@ export interface IdealReviewDecision {
   reasons: string[];
 }
 
+export interface ReviewCoverageEvidence {
+  expected: string[];
+  covered: string[];
+  missing: string[];
+}
+
+/**
+ * Harness-owned proof that every successfully changed file was opened with the
+ * read tool after Ideal review began. Model-authored claims never enter it.
+ */
+export class ReviewCoverageTracker {
+  private readonly expected = new Set<string>();
+  private readonly covered = new Set<string>();
+  private active = false;
+
+  constructor(private readonly cwd: string) {}
+
+  reset(): void {
+    this.expected.clear();
+    this.covered.clear();
+    this.active = false;
+  }
+
+  /** Successful mutations are retained before and during review. */
+  recordChanged(filePath: string): void {
+    this.expected.add(this.normalize(filePath));
+  }
+
+  /** Start the evidence window; reads observed before this call never count. */
+  start(changedFiles: Iterable<string> = []): void {
+    for (const filePath of changedFiles) this.recordChanged(filePath);
+    this.covered.clear();
+    this.active = true;
+  }
+
+  /** Called only by the successful read-tool callback. */
+  recordRead(filePath: string): void {
+    if (!this.active) return;
+    const normalized = this.normalize(filePath);
+    if (this.expected.has(normalized)) this.covered.add(normalized);
+  }
+
+  evidence(): ReviewCoverageEvidence {
+    const expected = [...this.expected].sort();
+    const covered = expected.filter((filePath) => this.covered.has(filePath));
+    const missing = expected.filter((filePath) => !this.covered.has(filePath));
+    return {
+      expected: expected.map((filePath) => this.display(filePath)),
+      covered: covered.map((filePath) => this.display(filePath)),
+      missing: missing.map((filePath) => this.display(filePath)),
+    };
+  }
+
+  private normalize(filePath: string): string {
+    return path.normalize(path.resolve(this.cwd, filePath));
+  }
+
+  private display(filePath: string): string {
+    const relative = path.relative(this.cwd, filePath);
+    return relative && !relative.startsWith(`..${path.sep}`) && relative !== ".."
+      ? relative
+      : filePath;
+  }
+}
+
+export function buildReviewCoverageMessage(missingFiles: readonly string[]): Message {
+  return {
+    role: "user",
+    content:
+      "Ideal review coverage is incomplete. Open every changed file below with the read tool " +
+      "before finalizing; model-authored claims do not count as evidence:\n" +
+      missingFiles.map((filePath) => `- ${filePath}`).join("\n"),
+  };
+}
+
 export const IDEAL_REVIEW_PROMPT =
   "Ideal? Review the actual work against the user's request before the final response. " +
   "Is it simple, focused, correct, and aligned? Did you over-edit, leave TODOs, miss an obvious " +

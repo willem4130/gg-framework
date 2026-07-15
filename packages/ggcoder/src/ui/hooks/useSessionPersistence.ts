@@ -4,7 +4,7 @@ import {
   appendMessagesToSession as appendSessionMessages,
   createCompactedSessionCheckpoint,
 } from "../../core/session-compaction.js";
-import type { SessionManager } from "../../core/session-manager.js";
+import type { SessionManager, TurnMetricPayload } from "../../core/session-manager.js";
 import { log } from "../../core/logger.js";
 import type { SessionStats } from "../session-summary.js";
 
@@ -21,10 +21,12 @@ interface UseSessionPersistenceOptions {
   sessionStatsRef: MutableRefObject<SessionStats>;
   persistedIndexRef: MutableRefObject<number>;
   messagesRef: MutableRefObject<Message[]>;
+  turnMetricsRef: MutableRefObject<TurnMetricPayload[]>;
   cwdRef: MutableRefObject<string>;
   currentProvider: Provider;
   currentModel: string;
   sessionStore?: PersistenceSessionStore;
+  onCompactedSession?: (sessionId: string) => Promise<void>;
 }
 
 export interface SessionPersistence {
@@ -48,10 +50,12 @@ export function useSessionPersistence({
   sessionStatsRef,
   persistedIndexRef,
   messagesRef,
+  turnMetricsRef,
   cwdRef,
   currentProvider,
   currentModel,
   sessionStore,
+  onCompactedSession,
 }: UseSessionPersistenceOptions): SessionPersistence {
   const appendMessagesToSession = useCallback(
     async (sessionPath: string, messages: readonly Message[], startIndex: number) => {
@@ -74,6 +78,10 @@ export function useSessionPersistence({
       });
       sessionPathRef.current = session.path;
       sessionStatsRef.current.sessionId = session.id;
+      for (const metric of turnMetricsRef.current) {
+        await sm.appendTurnMetric(session.path, metric);
+      }
+      await onCompactedSession?.(session.id);
       persistedIndexRef.current = compactedMessages.length;
       if (sessionStore) {
         sessionStore.sessionPath = session.path;
@@ -86,11 +94,13 @@ export function useSessionPersistence({
       currentModel,
       currentProvider,
       sessionStore,
+      onCompactedSession,
       sessionManagerRef,
       sessionPathRef,
       sessionStatsRef,
       persistedIndexRef,
       cwdRef,
+      turnMetricsRef,
     ],
   );
 

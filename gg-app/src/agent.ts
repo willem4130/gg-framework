@@ -139,6 +139,7 @@ export interface AgentState {
   mode: WorkspaceMode;
   chatAgent?: ChatAgentId;
   running: boolean;
+  runState?: "idle" | "running" | "cancelling";
   /** Current reasoning level, or null when thinking is off. May be absent on
    * frames from older sidecars / partial model_change spreads. */
   thinkingLevel?: string | null;
@@ -466,11 +467,48 @@ export async function sendPrompt(
   }
 }
 
-export async function cancel(): Promise<void> {
+export interface CancelResult {
+  cancelled: boolean;
+  runState: "idle" | "running" | "cancelling";
+  drained: string;
+}
+
+export interface CancelFailure {
+  error: "cancel_failed";
+  reason?: "timeout";
+  runState?: "running" | "cancelling";
+  message?: string;
+  drained?: string;
+}
+
+export class AgentCancelError extends Error {
+  constructor(readonly failure: CancelFailure) {
+    super(failure.message ?? `Cancellation failed${failure.reason ? `: ${failure.reason}` : ""}.`);
+    this.name = "AgentCancelError";
+  }
+}
+
+export function parseCancelFailure(error: unknown): CancelFailure {
+  if (typeof error === "object" && error !== null && "error" in error) {
+    return error as CancelFailure;
+  }
+  const text = String(error);
   try {
-    await invoke("agent_cancel");
-  } catch (e) {
-    await logError(`agent_cancel failed: ${String(e)}`);
+    const parsed = JSON.parse(text) as Partial<CancelFailure>;
+    if (parsed.error === "cancel_failed") return parsed as CancelFailure;
+  } catch {
+    // Tauri/native transport failures are not JSON; normalize below.
+  }
+  return { error: "cancel_failed", message: text };
+}
+
+export async function cancel(): Promise<CancelResult> {
+  try {
+    return await invoke<CancelResult>("agent_cancel");
+  } catch (error) {
+    const failure = parseCancelFailure(error);
+    await logError(`agent_cancel failed: ${JSON.stringify(failure)}`);
+    throw new AgentCancelError(failure);
   }
 }
 

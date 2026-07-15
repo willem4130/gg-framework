@@ -11,7 +11,9 @@ import {
   readHeader,
   isHardBillingMessage,
   isRawJsonErrorEcho,
+  isRawHtmlErrorEcho,
   emptyProviderErrorMessage,
+  providerHtmlErrorMessage,
 } from "../errors.js";
 import { StreamResult } from "../utils/event-stream.js";
 import {
@@ -522,12 +524,17 @@ function toError(err: unknown, provider: string = "openai"): ProviderError {
     const bodyMessage =
       typeof body?.message === "string" && body.message.trim() ? body.message.trim() : undefined;
     const modelName = typeof body?.model === "string" ? body.model : "";
-    // When the body has no usable message, the SDK's err.message is a raw
-    // JSON echo of the (often near-empty) error body — swap in a clean fallback
-    // rather than showing that to the user (see isRawJsonErrorEcho).
-    const cleanMessage =
-      bodyMessage ??
-      (isRawJsonErrorEcho(err.message) ? emptyProviderErrorMessage(err.status) : err.message);
+    // The SDK may expose a whole HTML edge/proxy page either as the parsed body
+    // message or as err.message. Preserve the original on `cause`, but never send
+    // transport markup to the user.
+    const messageCandidate = bodyMessage ?? err.message;
+    const cleanMessage = isRawHtmlErrorEcho(messageCandidate)
+      ? providerHtmlErrorMessage(err.status)
+      : bodyMessage
+        ? bodyMessage
+        : isRawJsonErrorEcho(err.message)
+          ? emptyProviderErrorMessage(err.status)
+          : err.message;
 
     let hint: string | undefined;
     if (modelName === "codex-mini-latest" || cleanMessage.includes("codex-mini-latest")) {

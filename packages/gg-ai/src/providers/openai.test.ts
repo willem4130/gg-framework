@@ -385,4 +385,26 @@ describe("streamOpenAI hard/transient limit classification", () => {
       },
     );
   });
+
+  it("replaces a raw HTML response body with a clean provider message", async () => {
+    const err = await makeApiError({
+      status: 500,
+      error: {},
+      message: "500 <html><head><title>Internal Server Error</title></head></html>",
+    });
+    const result = streamWithError("openai", err);
+
+    await result.response.then(
+      () => {
+        throw new Error("expected rejection");
+      },
+      (caught: unknown) => {
+        const e = caught as Error;
+        expect(e.message).toBe(
+          "The provider returned an HTML error page (HTTP 500) instead of an API response.",
+        );
+        expect(e.message).not.toContain("<html>");
+      },
+    );
+  });
 });

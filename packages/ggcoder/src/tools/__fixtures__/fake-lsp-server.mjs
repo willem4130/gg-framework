@@ -10,6 +10,11 @@
  *   --pull               advertise pull diagnostics (diagnosticProvider)
  *   --delay-ms=N         delay publishing diagnostics by N milliseconds
  *   --shutdown-file=PATH write PATH when the shutdown request arrives
+ *   --progress            begin indexing progress and leave it active
+ *   --progress-end        end indexing progress after publishing
+ *   --init-error          fail initialization
+ *   --crash-on-open       exit after initialization when a document opens
+ *   --silent              never publish diagnostics
  */
 import fs from "node:fs";
 
@@ -17,6 +22,11 @@ const args = process.argv.slice(2);
 const hasPull = args.includes("--pull");
 const delayMs = Number(args.find((a) => a.startsWith("--delay-ms="))?.split("=")[1] ?? 0);
 const shutdownFile = args.find((a) => a.startsWith("--shutdown-file="))?.split("=")[1];
+const hasProgress = args.includes("--progress") || args.includes("--progress-end");
+const endsProgress = args.includes("--progress-end");
+const initError = args.includes("--init-error");
+const crashOnOpen = args.includes("--crash-on-open");
+const silent = args.includes("--silent");
 
 const documents = new Map(); // uri -> text
 
@@ -42,27 +52,48 @@ function diagnosticsFor(text) {
 }
 
 function publish(uri) {
+  if (silent) return;
   const text = documents.get(uri) ?? "";
-  const fire = () =>
+  if (hasProgress) {
+    send({
+      jsonrpc: "2.0",
+      method: "$/progress",
+      params: { token: "index", value: { kind: "begin", title: "Indexing" } },
+    });
+  }
+  const fire = () => {
+    if (endsProgress) {
+      send({
+        jsonrpc: "2.0",
+        method: "$/progress",
+        params: { token: "index", value: { kind: "end" } },
+      });
+    }
     send({
       jsonrpc: "2.0",
       method: "textDocument/publishDiagnostics",
       params: { uri, diagnostics: diagnosticsFor(text) },
     });
+  };
   if (delayMs > 0) setTimeout(fire, delayMs);
   else fire();
 }
 
 function onMessage(msg) {
   if (msg.method === "initialize") {
-    send({
-      jsonrpc: "2.0",
-      id: msg.id,
-      result: { capabilities: hasPull ? { diagnosticProvider: {} } : {} },
-    });
+    if (initError) {
+      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "init failed" } });
+    } else {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { capabilities: hasPull ? { diagnosticProvider: {} } : {} },
+      });
+    }
     return;
   }
   if (msg.method === "textDocument/didOpen") {
+    if (crashOnOpen) process.exit(2);
     const { uri, text } = msg.params.textDocument;
     documents.set(uri, text);
     publish(uri);

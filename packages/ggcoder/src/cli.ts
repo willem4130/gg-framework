@@ -69,7 +69,7 @@ import { formatUserError } from "./utils/error-handler.js";
 import type { Message, Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import type { ThemeName } from "./ui/theme/theme.js";
 import { AuthStorage } from "./core/auth-storage.js";
-import { SessionManager } from "./core/session-manager.js";
+import { SessionManager, type TurnMetricPayload } from "./core/session-manager.js";
 import { ensureAppDirs, getAppPaths, loadSavedSettings } from "./config.js";
 import { initLogger, log, closeLogger } from "./core/logger.js";
 import { setStreamDiagnostic } from "@kenkaiiii/gg-agent";
@@ -78,6 +78,7 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { PROMPT_COMMANDS } from "./core/prompt-commands.js";
 import { createTools } from "./tools/index.js";
 import { CheckpointStore } from "./core/checkpoint-store.js";
+import { ReviewCoverageTracker } from "./core/ideal-review.js";
 import { shouldCompact, compact } from "./core/compaction/compactor.js";
 import {
   createCompactedSessionCheckpoint,
@@ -585,6 +586,7 @@ async function runInkTUI(opts: {
   // Holder so the (cwd-bound) tools can snapshot pre-mutation file state for
   // /rewind. The store is created once the session id is known (below).
   const checkpointRef: { current: CheckpointStore | null } = { current: null };
+  const reviewCoverageTracker = new ReviewCoverageTracker(cwd);
   const onPreFileMutation = (filePath: string): Promise<void> =>
     checkpointRef.current?.recordPreMutation(filePath) ?? Promise.resolve();
   let activeProvider = provider;
@@ -600,6 +602,8 @@ async function runInkTUI(opts: {
       model,
       planModeRef,
       onPreFileMutation,
+      onFileRead: (filePath) => reviewCoverageTracker.recordRead(filePath),
+      onFileMutated: (filePath) => reviewCoverageTracker.recordChanged(filePath),
       lspDiagnostics: opts.lspDiagnostics,
       authStorage,
       onEnterPlan: (reason) => planToolCallbacks.onEnterPlan?.(reason),
@@ -658,6 +662,7 @@ async function runInkTUI(opts: {
   let sessionPath: string | undefined;
   let sessionId: string | undefined;
   let initialHistory: CompletedItem[] | undefined;
+  let turnMetrics: TurnMetricPayload[] = [];
 
   // Determine which session to resume (explicit path or most recent)
   const explicitResumePath = opts.resumeSessionPath
@@ -672,6 +677,7 @@ async function runInkTUI(opts: {
     try {
       const loaded = await sessionManager.load(resumePath);
       const loadedMessages = sessionManager.getMessages(loaded.entries);
+      turnMetrics = sessionManager.getTurnMetrics(loaded.entries);
 
       if (loadedMessages.length > 0) {
         messages.push(...loadedMessages);
@@ -686,6 +692,7 @@ async function runInkTUI(opts: {
         // Without this, huge sessions (1M+ tokens) get loaded into memory and OOM.
         const contextWindow = getContextWindow(model, { provider, accountId: creds.accountId });
         if (shouldCompact(messages, contextWindow, 0.8)) {
+          await subAgentManager?.hydrate(loaded.header.id);
           log("INFO", "session", `Restored session exceeds context — auto-compacting`);
           const compactionAbort = new AbortController();
           const onSigint = () => compactionAbort.abort();
@@ -712,6 +719,10 @@ async function runInkTUI(opts: {
             });
             sessionPath = compactedSession.path;
             sessionId = compactedSession.id;
+            for (const metric of turnMetrics) {
+              await sessionManager.appendTurnMetric(sessionPath, metric);
+            }
+            await subAgentManager?.rebindParentSession(sessionId);
             messages.length = 0;
             messages.push(...compacted.messages);
             log("INFO", "session", `Auto-compaction complete`, {
@@ -755,6 +766,7 @@ async function runInkTUI(opts: {
   // Now that the session id is finalized, back /rewind with a checkpoint store.
   if (sessionId) {
     checkpointRef.current = new CheckpointStore({ sessionId, cwd });
+    await subAgentManager?.hydrate(sessionId);
   }
 
   // Prune old session transcripts in the background — they're append-only
@@ -797,11 +809,14 @@ async function runInkTUI(opts: {
     loggedInProviders,
     credentialsByProvider,
     initialHistory,
+    initialTurnMetrics: turnMetrics,
     sessionsDir: paths.sessionsDir,
     sessionPath,
     sessionId,
     processManager,
     subAgentManager,
+    lspManager,
+    reviewCoverageTracker,
     settingsFile: paths.settingsFile,
     mcpManager,
     authStorage,

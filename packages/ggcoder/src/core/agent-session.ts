@@ -1,4 +1,10 @@
-import { agentLoop, isAbortError, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
+import {
+  agentLoop,
+  isAbortError,
+  type AgentEvent,
+  type AgentTool,
+  type AgentTurnEndEvent,
+} from "@kenkaiiii/gg-agent";
 import {
   ProviderError,
   type Message,
@@ -31,6 +37,7 @@ import {
   type KenTurnPayload,
   type AutopilotMarkerPayload,
   type AppMarkerPayload,
+  type TurnMetricPayload,
 } from "./session-manager.js";
 import { ExtensionLoader } from "./extensions/loader.js";
 import type { ExtensionContext } from "./extensions/types.js";
@@ -46,7 +53,7 @@ import {
   type ProcessManager,
 } from "../tools/index.js";
 import type { BackgroundProcess } from "./process-manager.js";
-import type { SubAgentManager } from "./subagent-manager.js";
+import { buildSubAgentCompletionFollowUp, type SubAgentManager } from "./subagent-manager.js";
 import { applyAsyncSubagentPolicy } from "./subagent-policy.js";
 import { MCPClientManager, getAllMcpServers } from "./mcp/index.js";
 import { DeferredToolCatalog } from "./mcp/deferred-catalog.js";
@@ -61,7 +68,9 @@ import {
   type IdealReviewStats,
   evaluateIdealReview,
   buildIdealReviewMessage,
+  buildReviewCoverageMessage,
   detectTestDrift,
+  ReviewCoverageTracker,
 } from "./ideal-review.js";
 import {
   evaluateLoopBreak,
@@ -231,6 +240,7 @@ export class AgentSession {
   // display only, persisted + reloaded so a resumed session shows the same
   // transcript rows the live run showed.
   private appMarkers: AppMarkerPayload[] = [];
+  private turnMetrics: TurnMetricPayload[] = [];
   private tools: AgentTool[] = [];
   /** Rebuilds the read tool for a new model (video byte cap is baked in at
    *  creation). Called from switchModel so video-capable models get the
@@ -256,7 +266,8 @@ export class AgentSession {
   private hookProgressTracker = new ToolCallProgressTracker();
   private hookFileEditCounts = new Map<string, number>();
   private hookToolCalls = new Map<string, { name: string; args: Record<string, unknown> }>();
-  private idealReviewInjected = false;
+  private idealReviewPhase: "idle" | "reviewing" | "complete" = "idle";
+  private readonly reviewCoverage: ReviewCoverageTracker;
   private loopBreakInjected = false;
   private regroundingInjected = false;
   private compactionOccurred = false;
@@ -313,6 +324,7 @@ export class AgentSession {
     this.provider = options.provider;
     this.model = options.model;
     this.cwd = options.cwd;
+    this.reviewCoverage = new ReviewCoverageTracker(this.cwd);
     this.baseUrl = options.baseUrl;
     this.maxTokens = this.resolveMaxTokens(options.model);
     this.thinkingLevel = options.thinkingLevel;
@@ -392,6 +404,12 @@ export class AgentSession {
       model: this.model,
       lspDiagnostics: this.settingsManager.get("lspDiagnostics"),
       authStorage: this.authStorage,
+      onFileRead: (filePath) => this.reviewCoverage.recordRead(filePath),
+      onFileMutated: (filePath) => {
+        const relative = path.relative(this.cwd, filePath) || path.basename(filePath);
+        this.hookFileEditCounts.set(relative, (this.hookFileEditCounts.get(relative) ?? 0) + 1);
+        this.reviewCoverage.recordChanged(filePath);
+      },
       // Lazy — sessionId/model/provider can change after createTools() runs, so
       // sub-agent spawns read the current parent state at execution time.
       getProvider: () => this.provider,
@@ -469,6 +487,7 @@ export class AgentSession {
     } else {
       await this.createNewSession();
     }
+    if (this.sessionId) await this.subAgentManager?.hydrate(this.sessionId);
 
     // GG Coder owns its command registry. Other agents start with an isolated
     // empty registry and can register their own commands in their own file.
@@ -781,7 +800,8 @@ export class AgentSession {
     this.hookProgressTracker.reset();
     this.hookFileEditCounts.clear();
     this.hookToolCalls.clear();
-    this.idealReviewInjected = false;
+    this.reviewCoverage.reset();
+    this.idealReviewPhase = "idle";
     this.loopBreakInjected = false;
     this.regroundingInjected = false;
     this.compactionOccurred = false;
@@ -793,7 +813,7 @@ export class AgentSession {
    * the same signals the TUI's useAgentLoop collects, so the loop-break and
    * ideal-review decisions match across the CLI and the app.
    */
-  private trackHookEvent(event: AgentEvent): void {
+  private async trackHookEvent(event: AgentEvent): Promise<void> {
     switch (event.type) {
       case "text_delta":
         this.hookText += event.text;
@@ -817,13 +837,6 @@ export class AgentSession {
           event.result,
           event.isError,
         );
-        if ((name === "edit" || name === "write") && args) {
-          const filePath = (args as { file_path?: unknown }).file_path;
-          if (typeof filePath === "string") {
-            const fileNext = (this.hookFileEditCounts.get(filePath) ?? 0) + 1;
-            this.hookFileEditCounts.set(filePath, fileNext);
-          }
-        }
         if (name === "edit" && !event.isError) {
           const diff = (event.details as { diff?: string } | undefined)?.diff ?? event.result;
           const added = (diff.match(/^\+[^+]/gm) ?? []).length;
@@ -834,6 +847,7 @@ export class AgentSession {
       }
       case "turn_end":
         this.hookStats.turns = event.turn;
+        await this.persistTurnMetric(event);
         break;
     }
   }
@@ -893,21 +907,92 @@ export class AgentSession {
   }
 
   /**
-   * Pre-stop follow-up hook: runs the ideal review once, when the agent would
-   * otherwise finish and the change set is substantial enough to warrant it.
+   * Pre-stop Ideal review phase machine. Once review starts, completion is
+   * blocked until harness-owned post-injection reads cover every changed file.
    */
   private getHookFollowUpMessages(): Message[] | null {
+    const childCompletionFollowUp = buildSubAgentCompletionFollowUp(this.subAgentManager);
+    if (childCompletionFollowUp) return childCompletionFollowUp;
     if (this.opts.selfCorrectionHooks === false) return null;
+
+    if (this.idealReviewPhase === "reviewing") {
+      const coverage = this.reviewCoverage.evidence();
+      const lspEvidence = this.reviewLspEvidence(coverage.expected);
+      log("INFO", "ideal", "Ideal review coverage check", {
+        covered: coverage.covered,
+        missing: coverage.missing,
+        lspLowConfidence: lspEvidence.lowConfidence,
+        lspMissing: lspEvidence.missing,
+      });
+      if (coverage.missing.length > 0) {
+        return [
+          this.withReviewLspEvidence(buildReviewCoverageMessage(coverage.missing), lspEvidence),
+        ];
+      }
+      this.idealReviewPhase = "complete";
+      return null;
+    }
+    if (this.idealReviewPhase === "complete") return null;
     if (!this.settingsManager.get("idealReviewEnabled")) return null;
-    if (this.idealReviewInjected) return null;
+
     const decision = evaluateIdealReview(this.hookStats);
     // Test drift fires the review even on a small change the score would skip:
     // a green-but-stale test is exactly what the volume gate sleeps through.
     const driftedFiles = detectTestDrift(this.hookFileEditCounts.keys(), this.cwd).slice(0, 5);
     if (!decision.shouldReview && driftedFiles.length === 0) return null;
-    this.idealReviewInjected = true;
-    this.eventBus.emit("hook", { kind: "ideal" });
-    return [buildIdealReviewMessage(decision.reasons, driftedFiles)];
+
+    this.reviewCoverage.start(this.hookFileEditCounts.keys());
+    this.idealReviewPhase = "reviewing";
+    const coverage = this.reviewCoverage.evidence();
+    const lspEvidence = this.reviewLspEvidence(coverage.expected);
+    this.eventBus.emit("hook", {
+      kind: "ideal",
+      coverageExpected: coverage.expected,
+      coverageMissing: coverage.missing,
+    });
+    log("INFO", "ideal", "Injecting ideal review before final response", {
+      coverageExpected: coverage.expected,
+      coverageMissing: coverage.missing,
+      lspLowConfidence: lspEvidence.lowConfidence,
+      lspMissing: lspEvidence.missing,
+    });
+    return [
+      this.withReviewLspEvidence(
+        buildIdealReviewMessage(decision.reasons, driftedFiles),
+        lspEvidence,
+      ),
+    ];
+  }
+
+  private reviewLspEvidence(files: readonly string[]): {
+    lowConfidence: string[];
+    missing: string[];
+  } {
+    const lowConfidence: string[] = [];
+    const missing: string[] = [];
+    for (const filePath of files) {
+      const outcome = this.lspManager?.getLatestOutcome(filePath);
+      if (outcome?.kind === "low_confidence") lowConfidence.push(filePath);
+      else if (outcome?.kind !== "clean" && outcome?.kind !== "diagnostics") missing.push(filePath);
+    }
+    return { lowConfidence, missing };
+  }
+
+  private withReviewLspEvidence(
+    message: Message,
+    evidence: { lowConfidence: string[]; missing: string[] },
+  ): Message {
+    if (evidence.lowConfidence.length === 0 && evidence.missing.length === 0) return message;
+    const notes = [
+      ...(evidence.lowConfidence.length > 0
+        ? [`Diagnostics are low confidence while indexing: ${evidence.lowConfidence.join(", ")}.`]
+        : []),
+      ...(evidence.missing.length > 0
+        ? [`Diagnostics evidence is unavailable or missing: ${evidence.missing.join(", ")}.`]
+        : []),
+      "Do not describe those files as compiler-clean without other evidence.",
+    ];
+    return { role: "user", content: `${String(message.content)}\n\n${notes.join(" ")}` };
   }
 
   /** Auto-compact if needed, run agent loop with auth retry, and persist messages. */
@@ -1029,7 +1114,7 @@ export class AgentSession {
       });
 
       for await (const event of generator as AsyncIterable<AgentEvent>) {
-        this.trackHookEvent(event);
+        await this.trackHookEvent(event);
         this.eventBus.forwardAgentEvent(event);
       }
     };
@@ -1213,6 +1298,7 @@ export class AgentSession {
       const session = await this.sessionManager.create(this.cwd, this.provider, this.model);
       this.sessionId = session.id;
       this.sessionPath = session.path;
+      await this.subAgentManager?.rebindParentSession(this.sessionId);
 
       // Write compacted messages (skip system — it's rebuilt on load)
       for (const msg of this.messages) {
@@ -1220,7 +1306,8 @@ export class AgentSession {
         await this.persistMessage(msg);
       }
       this.lastPersistedIndex = this.messages.length;
-      // Carry Ken's advisory turns into the new file so they survive compaction.
+      // Carry evidence records into the new file so they survive compaction.
+      await this.rePersistTurnMetrics();
       await this.rePersistKenTurns();
       await this.rePersistAutopilotMarkers();
       await this.rePersistAppMarkers();
@@ -1249,6 +1336,7 @@ export class AgentSession {
     this.kenTurns = [];
     this.autopilotMarkers = [];
     this.appMarkers = [];
+    this.turnMetrics = [];
     const basePrompt =
       this.customSystemPrompt ??
       (await buildSystemPrompt(
@@ -1276,12 +1364,14 @@ export class AgentSession {
       this.lastPersistedIndex = this.messages.length;
     } else {
       await this.createNewSession();
+      await this.subAgentManager?.resetParentSession(this.sessionId);
     }
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
   }
 
   async loadSession(sessionPath: string): Promise<void> {
     await this.loadExistingSession(sessionPath);
+    if (this.sessionId) await this.subAgentManager?.hydrate(this.sessionId);
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
   }
 
@@ -1472,6 +1562,40 @@ export class AgentSession {
 
   getMessages(): Message[] {
     return this.messages;
+  }
+
+  getTurnMetrics(): TurnMetricPayload[] {
+    return this.turnMetrics.map((metric) => ({
+      ...metric,
+      usage: { ...metric.usage },
+      timing: { ...metric.timing },
+      cost: { ...metric.cost },
+    }));
+  }
+
+  private async persistTurnMetric(event: AgentTurnEndEvent): Promise<void> {
+    const payload: TurnMetricPayload = {
+      version: 1,
+      turn: event.turn,
+      provider: this.provider,
+      model: this.model,
+      stopReason: event.stopReason,
+      usage: { ...event.usage },
+      timing: { ...event.timing },
+      cost: {
+        status: "unavailable",
+        reason: "No authoritative effective-dated provider pricing is available",
+      },
+    };
+    this.turnMetrics.push(payload);
+    if (this.sessionPath) await this.sessionManager.appendTurnMetric(this.sessionPath, payload);
+  }
+
+  private async rePersistTurnMetrics(): Promise<void> {
+    if (!this.sessionPath) return;
+    for (const metric of this.turnMetrics) {
+      await this.sessionManager.appendTurnMetric(this.sessionPath, metric);
+    }
   }
 
   /** Ken Kai (mentor) turns recorded against this session, in record order. Used
@@ -1809,6 +1933,7 @@ export class AgentSession {
     this.autopilotMarkers = this.sessionManager.getAutopilotMarkers(loaded.entries);
     // Restore app transcript markers (plan banner / task header / errors / hints).
     this.appMarkers = this.sessionManager.getAppMarkers(loaded.entries);
+    this.turnMetrics = this.sessionManager.getTurnMetrics(loaded.entries);
 
     // Track the current leaf for subsequent entries
     this.currentLeafId = loaded.header.leafId;
@@ -1839,6 +1964,7 @@ export class AgentSession {
         getCompactionReserveTokens(this.maxTokens),
       )
     ) {
+      await this.subAgentManager?.hydrate(loaded.header.id);
       log("INFO", "session", `Restored session exceeds context — auto-compacting`);
       const compacted = await compact(this.messages, {
         provider: this.provider,
@@ -1863,6 +1989,7 @@ export class AgentSession {
       const session = await this.sessionManager.create(this.cwd, this.provider, this.model);
       this.sessionId = session.id;
       this.sessionPath = session.path;
+      await this.subAgentManager?.rebindParentSession(this.sessionId);
       this.currentLeafId = null;
 
       // Re-persist (compacted) messages — skip system, it's rebuilt on load
@@ -1871,7 +1998,8 @@ export class AgentSession {
         await this.persistMessage(msg);
       }
       this.lastPersistedIndex = this.messages.length;
-      // Carry Ken's restored turns into the continuation file.
+      // Carry restored evidence into the continuation file.
+      await this.rePersistTurnMetrics();
       await this.rePersistKenTurns();
       await this.rePersistAutopilotMarkers();
       await this.rePersistAppMarkers();

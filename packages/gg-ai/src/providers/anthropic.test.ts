@@ -260,6 +260,33 @@ describe("streamAnthropic error normalization", () => {
     await expect(result.response).rejects.not.toThrow(/"message"/);
   });
 
+  it("replaces a raw HTML response body with a clean provider message", async () => {
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const AnthropicMock = Anthropic as unknown as {
+      APIError: new (status: number, error: unknown, message: string) => Error;
+      nextError: Error | null;
+      nextEvents: unknown[] | null;
+    };
+    AnthropicMock.nextEvents = null;
+    AnthropicMock.nextError = new AnthropicMock.APIError(
+      500,
+      {},
+      "500 <!DOCTYPE html><html><body>Internal Server Error</body></html>",
+    );
+
+    const result = streamAnthropic({
+      provider: "anthropic",
+      model: "claude-test",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "sk-ant-test",
+    });
+
+    await expect(result.response).rejects.toMatchObject({
+      provider: "anthropic",
+      statusCode: 500,
+      message: "The provider returned an HTML error page (HTTP 500) instead of an API response.",
+    } satisfies Partial<ProviderError>);
+  });
   it("maps an OAuth usage-window 429 to a usage-limit error with reset time", async () => {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     const AnthropicMock = Anthropic as unknown as {

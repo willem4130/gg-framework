@@ -1,5 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
+import {
+  agentLoop,
+  type AgentEvent,
+  type AgentTool,
+  type AgentTurnTiming,
+} from "@kenkaiiii/gg-agent";
 import { ProviderError } from "@kenkaiiii/gg-ai";
 import type {
   Message,
@@ -9,7 +14,12 @@ import type {
   ImageContent,
   VideoContent,
 } from "@kenkaiiii/gg-ai";
-import type { IdealReviewStats } from "../../core/ideal-review.js";
+import {
+  buildReviewCoverageMessage,
+  type IdealReviewStats,
+  type ReviewCoverageTracker,
+} from "../../core/ideal-review.js";
+import type { LspManager } from "../../core/lsp/manager.js";
 import {
   detectTextRepetition,
   ToolCallProgressTracker,
@@ -88,6 +98,31 @@ export function shouldRetainThinkingDelta(): boolean {
   return false;
 }
 
+function withLspReviewEvidence(
+  message: Message,
+  files: readonly string[],
+  lspManager: LspManager | undefined,
+): Message {
+  const lowConfidence: string[] = [];
+  const missing: string[] = [];
+  for (const filePath of files) {
+    const outcome = lspManager?.getLatestOutcome(filePath);
+    if (outcome?.kind === "low_confidence") lowConfidence.push(filePath);
+    else if (outcome?.kind !== "clean" && outcome?.kind !== "diagnostics") missing.push(filePath);
+  }
+  if (lowConfidence.length === 0 && missing.length === 0) return message;
+  const notes = [
+    ...(lowConfidence.length > 0
+      ? [`Diagnostics are low confidence while indexing: ${lowConfidence.join(", ")}.`]
+      : []),
+    ...(missing.length > 0
+      ? [`Diagnostics evidence is unavailable or missing: ${missing.join(", ")}.`]
+      : []),
+    "Do not describe those files as compiler-clean without other evidence.",
+  ];
+  return { role: "user", content: `${String(message.content)}\n\n${notes.join(" ")}` };
+}
+
 export interface ActiveToolCall {
   toolCallId: string;
   name: string;
@@ -121,6 +156,10 @@ export interface AgentLoopOptions {
     options?: { force?: boolean },
   ) => Message[] | Promise<Message[]>;
   getIdealReviewMessage?: (stats: IdealReviewStats, touchedFiles: string[]) => Message | null;
+  /** Harness-owned successful read/mutation evidence for fail-closed Ideal review. */
+  reviewCoverageTracker?: ReviewCoverageTracker;
+  /** Detailed diagnostics evidence shown only to the internal review turn. */
+  lspManager?: LspManager;
   /** Polled mid-loop when the agent appears stuck (repeated failures / calls /
    *  edits, or degenerate output). Return a user message to break the loop. */
   getLoopBreakMessage?: (stats: LoopBreakStats) => Message | null;
@@ -232,6 +271,7 @@ export function useAgentLoop(
         cacheRead?: number;
         cacheWrite?: number;
       },
+      timing: AgentTurnTiming,
     ) => void;
     onDone?: (
       durationMs: number,
@@ -298,7 +338,7 @@ export function useAgentLoop(
     editCalls: 0,
     bashCalls: 0,
   });
-  const idealReviewInjectedRef = useRef(false);
+  const idealReviewPhaseRef = useRef<"idle" | "reviewing" | "complete">("idle");
   // ── Loop-breaker tracking ──
   const loopProgressTrackerRef = useRef(new ToolCallProgressTracker());
   const fileEditCountsRef = useRef<Map<string, number>>(new Map());
@@ -486,7 +526,8 @@ export function useAgentLoop(
           editCalls: 0,
           bashCalls: 0,
         };
-        idealReviewInjectedRef.current = false;
+        idealReviewPhaseRef.current = "idle";
+        options.reviewCoverageTracker?.reset();
         loopProgressTrackerRef.current.reset();
         fileEditCountsRef.current = new Map();
         consecutiveFailuresRef.current = 0;
@@ -664,14 +705,50 @@ export function useAgentLoop(
             getFollowUpMessages: async () => {
               const followUp = (await getFollowUpMessages?.()) ?? null;
               if (followUp && followUp.length > 0) return followUp;
-              if (idealReviewInjectedRef.current || !options.getIdealReviewMessage) return null;
+              const coverageTracker = options.reviewCoverageTracker;
+              if (idealReviewPhaseRef.current === "reviewing") {
+                const coverage = coverageTracker?.evidence() ?? {
+                  expected: [],
+                  covered: [],
+                  missing: [],
+                };
+                log("INFO", "ideal", "Ideal review coverage check", {
+                  covered: coverage.covered,
+                  missing: coverage.missing,
+                });
+                if (coverage.missing.length > 0) {
+                  return [
+                    withLspReviewEvidence(
+                      buildReviewCoverageMessage(coverage.missing),
+                      coverage.expected,
+                      options.lspManager,
+                    ),
+                  ];
+                }
+                idealReviewPhaseRef.current = "complete";
+                return null;
+              }
+              if (idealReviewPhaseRef.current === "complete" || !options.getIdealReviewMessage)
+                return null;
               const idealReviewMessage = options.getIdealReviewMessage(
                 { ...idealReviewStatsRef.current },
                 [...fileEditCountsRef.current.keys()],
               );
               if (!idealReviewMessage) return null;
-              idealReviewInjectedRef.current = true;
-              return [idealReviewMessage];
+              coverageTracker?.start();
+              idealReviewPhaseRef.current = "reviewing";
+              const coverage = coverageTracker?.evidence() ?? {
+                expected: [],
+                covered: [],
+                missing: [],
+              };
+              log("INFO", "ideal", "Ideal review coverage started", {
+                expected: coverage.expected,
+                missing: coverage.missing,
+              });
+              return [
+                withLspReviewEvidence(idealReviewMessage, coverage.expected, options.lspManager),
+              ];
             },
             // clearToolUses disabled — causes model to output unsolicited context
             // summaries ("KEY CONTEXT TO REMEMBER") when it sees gaps from stripped
@@ -831,7 +908,7 @@ export function useAgentLoop(
                   event.result,
                   event.isError,
                 );
-                if ((toolName === "edit" || toolName === "write") && tc?.args) {
+                if (!event.isError && (toolName === "edit" || toolName === "write") && tc?.args) {
                   const filePath = (tc.args as { file_path?: unknown }).file_path;
                   if (typeof filePath === "string") {
                     const next = (fileEditCountsRef.current.get(filePath) ?? 0) + 1;
@@ -955,7 +1032,7 @@ export function useAgentLoop(
                 flushStreamState();
                 setRetryInfo(null);
                 idealReviewStatsRef.current.turns = event.turn;
-                onTurnEnd?.(event.turn, event.stopReason, event.usage);
+                onTurnEnd?.(event.turn, event.stopReason, event.usage, event.timing);
                 setCurrentTurn(event.turn);
                 setTotalTokens((prev) => ({
                   input: prev.input + event.usage.inputTokens,

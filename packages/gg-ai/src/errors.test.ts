@@ -7,6 +7,8 @@ import {
   formatError,
   formatErrorForDisplay,
   isRawJsonErrorEcho,
+  isRawHtmlErrorEcho,
+  providerHtmlErrorMessage,
   isUsageLimitError,
   readHeader,
 } from "./errors.js";
@@ -209,6 +211,39 @@ describe("isRawJsonErrorEcho", () => {
 
   it("does not flag a message with a non-numeric prefix before a brace", () => {
     expect(isRawJsonErrorEcho("See docs at https://example.com/{id}")).toBe(false);
+  });
+});
+
+describe("raw HTML provider errors", () => {
+  it("detects bare, status-prefixed, and doctype HTML responses", () => {
+    expect(
+      isRawHtmlErrorEcho("<html><head><title>Internal Server Error</title></head></html>"),
+    ).toBe(true);
+    expect(isRawHtmlErrorEcho("502 <!DOCTYPE html><html><body>Bad Gateway</body></html>")).toBe(
+      true,
+    );
+  });
+
+  it("does not flag human-readable messages that merely mention HTML", () => {
+    expect(isRawHtmlErrorEcho("The response included an <html> tag.")).toBe(false);
+  });
+
+  it("replaces transport markup at the final formatting boundary", () => {
+    const formatted = formatError(
+      new ProviderError("openai", "500 <html><body>upstream failed</body></html>", {
+        statusCode: 500,
+      }),
+    );
+
+    expect(formatted.message).toBe(
+      "The provider returned an HTML error page (HTTP 500) instead of an API response.",
+    );
+    expect(formatted.message).not.toContain("<html>");
+    expect(formatted.guidance).toContain("status.openai.com");
+  });
+
+  it("omits the HTTP clause when the status is unknown", () => {
+    expect(providerHtmlErrorMessage(undefined)).not.toContain("HTTP");
   });
 });
 

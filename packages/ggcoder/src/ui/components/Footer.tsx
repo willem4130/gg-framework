@@ -58,7 +58,7 @@ function getShortModelName(model: string): string {
   return MODEL_SHORT_NAMES[model] ?? model;
 }
 
-function getContextPercent(
+export function getFooterContextPercent(
   model: string,
   tokensIn: number,
   options?: ContextWindowOptions,
@@ -185,7 +185,7 @@ export function doesFooterFitOnOneLine({
   if (statusBelow) return false;
   const parts = cwd.split("/").filter(Boolean);
   const displayPath = parts.length > 0 ? parts[parts.length - 1] : cwd;
-  const contextPct = getContextPercent(model, tokensIn, contextWindowOptions);
+  const contextPct = getFooterContextPercent(model, tokensIn, contextWindowOptions);
   const modelName = getShortModelName(model);
   const thinkingText = getThinkingFooterLabel(thinkingLevel);
   const planText = planMode ? "Plan on" : "Plan off";
@@ -223,7 +223,7 @@ export function Footer({
   const parts = cwd.split("/").filter(Boolean);
   const displayPath = parts.length > 0 ? parts[parts.length - 1] : cwd;
 
-  const contextPct = getContextPercent(model, tokensIn, contextWindowOptions);
+  const contextPct = getFooterContextPercent(model, tokensIn, contextWindowOptions);
   const contextColor = getContextColor(contextPct, theme);
   const sep = <Text color={theme.border}>{" \u2502 "}</Text>;
 

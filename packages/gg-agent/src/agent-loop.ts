@@ -11,6 +11,7 @@ import {
   type ContentPart,
   type AssistantMessage,
   isHardBillingMessage,
+  redactValue,
 } from "@kenkaiiii/gg-ai";
 import type {
   AgentEvent,
@@ -469,11 +470,15 @@ export async function* agentLoop(
   // enough to allow legitimate large file writes through `write`.
   const MAX_TOOLCALL_DELTA_CHARS = 1_000_000; // 1 MB of accumulated tool-call args
   const MAX_TOOLCALL_DELTA_EVENTS = 20_000; // 20k delta events in one stream
+  let logicalTurnStartedAt = 0;
+  let firstProviderEventAt: number | undefined;
+  let providerDurationMs = 0;
 
   try {
     while (turn < maxTurns) {
       options.signal?.throwIfAborted();
       turn++;
+      if (logicalTurnStartedAt === 0) logicalTurnStartedAt = Date.now();
       toolMap = new Map((options.tools ?? []).map((t) => [t.name, t]));
 
       // Estimate message payload size for diagnostics.
@@ -538,6 +543,7 @@ export async function* agentLoop(
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTimedOut = false;
+      let providerAttemptStartedAt: number | undefined;
 
       // Stream event counters — declared here so timeout callbacks can access them
       let streamEventCount = 0;
@@ -624,12 +630,14 @@ export async function* agentLoop(
       try {
         diag("stream_call", { nonStreaming: useNonStreamingFallback });
         streamCallStart = Date.now();
+        providerAttemptStartedAt = streamCallStart;
         const result = stream({
           provider: options.provider,
           model: options.model,
           messages,
           tools: options.tools,
           serverTools: options.serverTools,
+          toolChoice: options.toolChoice,
           webSearch: options.webSearch,
           maxTokens: options.maxTokens,
           temperature: options.temperature,
@@ -680,6 +688,7 @@ export async function* agentLoop(
           }
 
           streamEventCount++;
+          if (firstProviderEventAt === undefined) firstProviderEventAt = pullTime;
           eventTypeCounts[event.type] = (eventTypeCounts[event.type] ?? 0) + 1;
           lastEventType = event.type;
 
@@ -802,6 +811,7 @@ export async function* agentLoop(
           eventTypes: eventTypeCounts,
         });
         response = await result.response;
+        if (firstProviderEventAt === undefined) firstProviderEventAt = Date.now();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         diag("stream_error", {
@@ -1084,6 +1094,9 @@ export async function* agentLoop(
         });
         throw err;
       } finally {
+        if (providerAttemptStartedAt !== undefined) {
+          providerDurationMs += Date.now() - providerAttemptStartedAt;
+        }
         if (idleTimer) clearTimeout(idleTimer);
         if (hardTimer) clearTimeout(hardTimer);
         options.signal?.removeEventListener("abort", forwardAbort);
@@ -1148,11 +1161,33 @@ export async function* agentLoop(
       // Append assistant message to conversation
       messages.push(response.message);
 
+      const completedAt = Date.now();
+      const outputTokensPerSecond =
+        providerDurationMs > 0 && response.usage.outputTokens > 0
+          ? response.usage.outputTokens / (providerDurationMs / 1_000)
+          : undefined;
+      const timing = {
+        startedAt: logicalTurnStartedAt,
+        ...(firstProviderEventAt !== undefined
+          ? {
+              firstProviderEventAt,
+              ttftMs: Math.max(0, firstProviderEventAt - logicalTurnStartedAt),
+            }
+          : {}),
+        completedAt,
+        providerDurationMs,
+        ...(outputTokensPerSecond !== undefined ? { outputTokensPerSecond } : {}),
+      };
+      logicalTurnStartedAt = 0;
+      firstProviderEventAt = undefined;
+      providerDurationMs = 0;
+
       yield {
         type: "turn_end" as const,
         turn,
         stopReason: response.stopReason,
         usage: response.usage,
+        timing,
       };
 
       // Server-side tool hit iteration limit — re-send to continue.
@@ -1432,8 +1467,8 @@ async function executeSingleToolCall(
       };
       const raw = await tool.execute(parsed, ctx);
       const normalized = normalizeToolResult(raw);
-      resultContent = normalized.content;
-      details = normalized.details;
+      resultContent = redactValue(normalized.content);
+      details = redactValue(normalized.details);
       for (const key of options.invalidToolArgumentCounts.keys()) {
         if (key.startsWith(`${toolCall.name}:`)) options.invalidToolArgumentCounts.delete(key);
       }
@@ -1480,10 +1515,15 @@ async function executeSingleToolCall(
           );
         }
       } else {
-        resultContent = err instanceof Error ? err.message : String(err);
+        resultContent = redactValue(err instanceof Error ? err.message : String(err));
       }
     }
   }
+
+  // All tool output crosses both an event boundary and the provider-context
+  // boundary below. Sanitize every branch, including unknown/validation errors.
+  resultContent = redactValue(resultContent);
+  details = redactValue(details);
 
   const durationMs = Date.now() - startTime;
 

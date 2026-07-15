@@ -312,13 +312,19 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
       if (handleAutopilotEvent(e)) return;
       const d = e.data as Record<string, unknown>;
       switch (e.type) {
-        case "ready":
-          setState(d as unknown as AgentState);
+        case "ready": {
+          const readyState = d as unknown as AgentState;
+          setState(readyState);
+          setRunning(readyState.running);
           setTasks((d.tasks as BackgroundTask[] | undefined) ?? []);
-          setStatus("ready");
+          setStatus(readyState.runState === "cancelling" ? "cancelling..." : "ready");
           break;
+        }
         case "run_start":
           setRunning(true);
+          setState((previous) =>
+            previous ? { ...previous, running: true, runState: "running" } : previous,
+          );
           endStreamingText();
           subagentGroupIdRef.current = null;
           compactionIdRef.current = null;
@@ -668,6 +674,20 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
           );
           break;
         }
+        case "run_cancelling":
+          setRunning(true);
+          setState((previous) =>
+            previous ? { ...previous, running: true, runState: "cancelling" } : previous,
+          );
+          setStatus("cancelling...");
+          break;
+        case "cancel_failed":
+          setRunning(true);
+          setState((previous) =>
+            previous ? { ...previous, running: true, runState: "running" } : previous,
+          );
+          setStatus("cancellation failed; agent still running");
+          break;
         case "error": {
           // Structured payload from the sidecar's broadcastError (headline always
           // present; message/guidance may be omitted for terse capability errors).
@@ -688,6 +708,9 @@ export function useAgentEvents(deps: AgentEventsDeps): AgentEvents {
         }
         case "run_end": {
           setRunning(false);
+          setState((previous) =>
+            previous ? { ...previous, running: false, runState: "idle" } : previous,
+          );
           endStreamingText();
           finalizeThinking();
           // The queue drained into this run — un-dim any messages that were

@@ -1,8 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
+import path from "node:path";
+import type { Message, Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
+import { getAppPaths } from "@kenkaiiii/gg-core";
 import type { AgentDefinition } from "./agents.js";
+import { SubAgentStore, type PersistedSubAgentRecord } from "./subagent-store.js";
+import { SessionManager } from "./session-manager.js";
+import { log } from "./logger.js";
 import {
   boundSubAgentOutput,
   childSubAgentEnv,
@@ -19,7 +24,8 @@ export type SubAgentState =
   | "completed"
   | "failed"
   | "interrupted"
-  | "closed";
+  | "closed"
+  | "reaped";
 
 export interface SubAgentSnapshot {
   agent_id: string;
@@ -34,6 +40,13 @@ export interface SubAgentSnapshot {
   token_usage: { input: number; output: number };
   output?: string;
   error?: string;
+  agent_name?: string;
+  provider?: string;
+  model?: string;
+  child_session_id?: string;
+  child_session_path?: string;
+  collected?: boolean;
+  recovered?: boolean;
 }
 
 export interface SubAgentManagerOptions {
@@ -47,6 +60,8 @@ export interface SubAgentManagerOptions {
   onState?: (snapshot: SubAgentSnapshot) => void;
   workerEntry?: string;
   idleTimeoutMs?: number;
+  store?: SubAgentStore;
+  sessionRootDir?: string;
 }
 
 interface WorkerRecord extends SubAgentSnapshot {
@@ -75,13 +90,100 @@ function activity(name: string, args: Record<string, unknown>): string {
   return value ? `${name}: ${String(value).slice(0, 60)}` : name;
 }
 
+/** Shared pre-finalization hook used by both AgentSession and the Ink host. */
+export function buildSubAgentCompletionFollowUp(
+  manager: Pick<SubAgentManager, "completionGateMessage"> | undefined,
+): Message[] | null {
+  const message = manager?.completionGateMessage();
+  return message ? [{ role: "user", content: message }] : null;
+}
+
 export class SubAgentManager {
   private readonly workers = new Map<string, WorkerRecord>();
   private readonly snapshots = new Map<string, SubAgentSnapshot>();
   private readonly listeners = new Set<(snapshot: SubAgentSnapshot) => void>();
   private shuttingDown = false;
+  private shutdownPromise?: Promise<void>;
+  private readonly store: SubAgentStore;
+  private readonly sessionRootDir: string;
+  private parentSessionId?: string;
+  private persistQueue: Promise<void> = Promise.resolve();
+  private persistPending = false;
+  private persistScheduled = false;
 
-  constructor(private readonly options: SubAgentManagerOptions) {}
+  constructor(private readonly options: SubAgentManagerOptions) {
+    const paths = getAppPaths();
+    this.store = options.store ?? new SubAgentStore(paths.subagentsDir);
+    this.sessionRootDir = options.sessionRootDir ?? paths.subagentSessionsDir;
+  }
+
+  /** Restore bounded history; dead in-flight workers become honestly interrupted. */
+  async hydrate(parentSessionId: string): Promise<void> {
+    if (this.workers.size > 0) {
+      await this.shutdownAll();
+      this.workers.clear();
+      this.shuttingDown = false;
+      this.shutdownPromise = undefined;
+    }
+    await this.waitForPersistence();
+    this.parentSessionId = parentSessionId;
+    this.snapshots.clear();
+    const records = await this.store.load(this.options.cwd, parentSessionId);
+    for (const persisted of records) {
+      const snapshot: SubAgentSnapshot = {
+        ...persisted,
+        ...(persisted.state === "starting" || persisted.state === "running"
+          ? {
+              state: "interrupted" as const,
+              error: "Interrupted by process restart",
+              updated_at: Date.now(),
+              recovered: true,
+            }
+          : { recovered: true }),
+      };
+      this.snapshots.set(snapshot.agent_id, snapshot);
+      this.options.onState?.(snapshot);
+      for (const listener of this.listeners) listener(snapshot);
+    }
+    this.queuePersist();
+    await this.waitForPersistence();
+    const referencedChildSessions = await this.store.listChildSessionPaths();
+    await new SessionManager(this.sessionRootDir)
+      .pruneOldSessions({
+        maxAgeDays: 30,
+        keepPaths: referencedChildSessions,
+      })
+      .catch((error) => {
+        log("WARN", "subagent", "Failed to prune old subagent sessions", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  /** Rebind durable child history after parent compaction creates a continuation. */
+  async rebindParentSession(parentSessionId: string): Promise<void> {
+    await this.waitForPersistence();
+    this.parentSessionId = parentSessionId;
+    this.queuePersist();
+    await this.persistQueue;
+  }
+
+  /** A genuinely new parent starts with no unrelated child history. */
+  async resetParentSession(parentSessionId: string): Promise<void> {
+    await this.shutdownAll();
+    await this.waitForPersistence();
+    this.shuttingDown = false;
+    this.shutdownPromise = undefined;
+    this.workers.clear();
+    this.snapshots.clear();
+    this.parentSessionId = parentSessionId;
+    this.queuePersist();
+    await this.persistQueue;
+  }
+
+  async waitForPersistence(): Promise<void> {
+    await this.persistQueue;
+  }
 
   async spawn(taskName: string, task: string, agentName?: string): Promise<SubAgentSnapshot> {
     this.assertAvailable();
@@ -100,16 +202,7 @@ export class SubAgentManager {
 
     const now = Date.now();
     const agentId = this.createId();
-    const child = spawn(
-      process.execPath,
-      [this.options.workerEntry ?? resolveSubAgentCliEntry(), "--subagent-worker"],
-      {
-        cwd: this.options.cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: childSubAgentEnv(),
-        detached: process.platform !== "win32",
-      },
-    );
+    const child = this.spawnWorkerProcess();
     const record: WorkerRecord = {
       agent_id: agentId,
       task_name: taskName,
@@ -120,6 +213,10 @@ export class SubAgentManager {
       turn_count: 0,
       tool_use_count: 0,
       token_usage: { input: 0, output: 0 },
+      agent_name: selection.agentDef?.name,
+      provider,
+      model: selection.model,
+      collected: false,
       process: child,
       requests: new Map(),
       requestSequence: 0,
@@ -130,9 +227,10 @@ export class SubAgentManager {
     this.workers.set(agentId, record);
     this.publish(record);
     this.attach(record);
+    await this.waitForPersistence();
 
     try {
-      await this.request(record, "initialize", {
+      const initialized = await this.request(record, "initialize", {
         options: {
           provider,
           model: selection.model,
@@ -147,15 +245,27 @@ export class SubAgentManager {
             selection.model,
             selection.agentDef?.name ?? "default",
           ),
+          sessionRootDir: this.sessionRootDir,
         },
       });
+      record.child_session_id =
+        typeof initialized.child_session_id === "string" ? initialized.child_session_id : undefined;
+      if (typeof initialized.model === "string") record.model = initialized.model;
+      record.child_session_path =
+        typeof initialized.child_session_path === "string"
+          ? this.assertChildSessionPath(initialized.child_session_path)
+          : undefined;
+      this.publish(record);
+      await this.waitForPersistence();
       await this.request(record, "start", { task });
       record.state = "running";
       record.updated_at = Date.now();
       this.publish(record);
+      await this.waitForPersistence();
       return this.snapshot(record);
     } catch (error) {
       this.fail(record, error);
+      await this.waitForPersistence();
       throw error;
     }
   }
@@ -169,7 +279,12 @@ export class SubAgentManager {
 
   async followup(agentId: string, task: string): Promise<SubAgentSnapshot> {
     this.assertAvailable();
-    const worker = this.requireWorker(agentId);
+    let worker = this.workers.get(agentId);
+    if (!worker) {
+      const recovered = this.snapshots.get(agentId);
+      if (!recovered) throw new Error(`Unknown agent: ${agentId}`);
+      worker = await this.respawnRecovered(recovered);
+    }
     if (worker.state === "running" || worker.state === "starting") {
       throw new Error(`Agent ${agentId} already has an active turn`);
     }
@@ -179,19 +294,23 @@ export class SubAgentManager {
     worker.taskOutput = "";
     worker.output = undefined;
     worker.error = undefined;
+    worker.collected = false;
     await this.request(worker, "followup", { task });
     worker.state = "running";
     worker.updated_at = Date.now();
     this.publish(worker);
+    await this.waitForPersistence();
     return this.snapshot(worker);
   }
 
-  async interrupt(agentId: string): Promise<SubAgentSnapshot> {
+  async interrupt(agentId: string, collectResult = true): Promise<SubAgentSnapshot> {
     const worker = this.requireWorker(agentId);
     if (worker.state !== "running") throw new Error(`Agent ${agentId} is not running`);
     const changed = this.waitForChange(agentId);
     await this.request(worker, "interrupt");
     await changed;
+    if (collectResult) this.markCollected(agentId);
+    await this.waitForPersistence();
     return this.snapshot(worker);
   }
 
@@ -222,18 +341,26 @@ export class SubAgentManager {
     const terminal = () => ids.filter((id) => this.isTerminal(this.snapshots.get(id)?.state));
     const ready = () =>
       condition === "all" ? terminal().length === ids.length : terminal().length > 0;
+    const deadline = Date.now() + boundedTimeout;
     let timedOut = false;
-    if (!ready()) {
-      const changes = ids.map((id) => this.waitForChange(id));
-      const requestedChange =
-        condition === "all"
-          ? Promise.all(changes).then(() => true)
-          : Promise.race(changes).then(() => true);
-      timedOut = !(await Promise.race([
-        requestedChange,
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), boundedTimeout)),
-      ]));
+    while (!ready()) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        timedOut = true;
+        break;
+      }
+      const pendingIds = ids.filter((id) => !this.isTerminal(this.snapshots.get(id)?.state));
+      const changed = await Promise.race([
+        Promise.race(pendingIds.map((id) => this.waitForChange(id))).then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), remaining)),
+      ]);
+      if (!changed && !ready()) timedOut = true;
+      if (!changed) break;
     }
+    for (const id of ids) {
+      if (this.isTerminal(this.snapshots.get(id)?.state)) this.markCollected(id);
+    }
+    await this.waitForPersistence();
     let chars = 0;
     const agents = ids.map((id) => {
       const snapshot = { ...this.snapshots.get(id)! };
@@ -247,26 +374,160 @@ export class SubAgentManager {
     return { timed_out: timedOut, agents };
   }
 
+  completionGate(): {
+    active: SubAgentSnapshot[];
+    uncollected: SubAgentSnapshot[];
+    unresolved: number;
+  } {
+    const snapshots = this.list();
+    const active = snapshots.filter((snapshot) => this.isActive(snapshot));
+    const uncollected = snapshots.filter(
+      (snapshot) => this.isTerminal(snapshot.state) && snapshot.collected !== true,
+    );
+    return { active, uncollected, unresolved: active.length + uncollected.length };
+  }
+
+  completionGateMessage(): string | undefined {
+    const gate = this.completionGate();
+    if (gate.unresolved === 0) return undefined;
+    const activeIds = gate.active.map((snapshot) => snapshot.agent_id).sort();
+    const uncollectedIds = gate.uncollected.map((snapshot) => snapshot.agent_id).sort();
+    const unresolvedIds = [...new Set([...activeIds, ...uncollectedIds])];
+    return [
+      "Child-agent completion gate: the parent cannot finish with unresolved child work.",
+      `Unresolved agent IDs: ${unresolvedIds.join(", ")}.`,
+      activeIds.length > 0
+        ? `Active agent IDs: ${activeIds.join(", ")}. Wait for them with wait_agent, or interrupt them before collecting their terminal result.`
+        : "All children are terminal, but their results have not been collected.",
+      `Call wait_agent with agent_ids [${unresolvedIds.map((id) => `"${id}"`).join(", ")}] and condition "all" before finishing.`,
+    ].join("\n");
+  }
+
   async interruptAll(): Promise<void> {
     await Promise.allSettled(
       [...this.workers.values()]
         .filter((worker) => this.isActive(worker))
         .map((worker) =>
-          worker.state === "starting" ? this.close(worker) : this.interrupt(worker.agent_id),
+          worker.state === "starting" ? this.close(worker) : this.interrupt(worker.agent_id, false),
         ),
     );
   }
 
   async shutdownAll(): Promise<void> {
-    if (this.shuttingDown) return;
-    this.shuttingDown = true;
-    await Promise.allSettled([...this.workers.values()].map((worker) => this.close(worker)));
+    if (!this.shutdownPromise) {
+      this.shuttingDown = true;
+      this.shutdownPromise = Promise.allSettled(
+        [...this.workers.values()].map((worker) => this.close(worker, false, true)),
+      ).then(() => undefined);
+    }
+    await this.shutdownPromise;
   }
 
   /** Synchronous process-exit fallback: terminate detached process groups immediately. */
   shutdownAllNow(): void {
     this.shuttingDown = true;
     for (const worker of this.workers.values()) this.kill(worker);
+  }
+
+  private markCollected(agentId: string): void {
+    const worker = this.workers.get(agentId);
+    if (worker) {
+      worker.collected = true;
+      worker.updated_at = Date.now();
+      this.publish(worker);
+      return;
+    }
+    const snapshot = this.snapshots.get(agentId);
+    if (!snapshot) return;
+    const collected = { ...snapshot, collected: true, updated_at: Date.now() };
+    this.snapshots.set(agentId, collected);
+    this.options.onState?.(collected);
+    for (const listener of this.listeners) listener(collected);
+    this.queuePersist();
+  }
+
+  private spawnWorkerProcess(): ChildProcess {
+    return spawn(
+      process.execPath,
+      [this.options.workerEntry ?? resolveSubAgentCliEntry(), "--subagent-worker"],
+      {
+        cwd: this.options.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: childSubAgentEnv(),
+        detached: process.platform !== "win32",
+      },
+    );
+  }
+
+  private async respawnRecovered(snapshot: SubAgentSnapshot): Promise<WorkerRecord> {
+    if (!snapshot.child_session_path) {
+      throw new Error(`Agent ${snapshot.agent_id} was reaped and has no recoverable child session`);
+    }
+    const agentDef = snapshot.agent_name
+      ? this.options.agents.find((candidate) => candidate.name === snapshot.agent_name)
+      : undefined;
+    const provider = (snapshot.provider as Provider | undefined) ?? this.options.getProvider();
+    const model = snapshot.model ?? this.options.getModel();
+    const parentModel = this.options.getModel();
+    const childSessionPath = this.assertChildSessionPath(snapshot.child_session_path);
+    const child = this.spawnWorkerProcess();
+    const worker: WorkerRecord = {
+      ...snapshot,
+      state: "starting",
+      updated_at: Date.now(),
+      current_activity: undefined,
+      output: undefined,
+      error: undefined,
+      collected: false,
+      recovered: false,
+      process: child,
+      requests: new Map(),
+      requestSequence: 0,
+      stderr: "",
+      taskOutput: "",
+      turnResolvers: new Set(),
+    };
+    this.workers.set(worker.agent_id, worker);
+    this.publish(worker);
+    this.attach(worker);
+    await this.waitForPersistence();
+    try {
+      const initialized = await this.request(worker, "initialize", {
+        options: {
+          provider,
+          model,
+          fallbackModel: model === parentModel ? undefined : parentModel,
+          cwd: this.options.cwd,
+          baseUrl: this.options.getBaseUrl?.(),
+          systemPrompt: agentDef?.systemPrompt,
+          thinkingLevel: childThinkingLevel(this.options.getThinkingLevel()),
+          allowedTools: agentDef?.tools.length ? agentDef.tools : undefined,
+          promptCacheKey: subAgentCacheKey(
+            this.options.getCacheKey?.(),
+            model,
+            agentDef?.name ?? "default",
+          ),
+          sessionRootDir: this.sessionRootDir,
+          childSessionPath,
+        },
+      });
+      if (typeof initialized.child_session_id === "string") {
+        worker.child_session_id = initialized.child_session_id;
+      }
+      if (typeof initialized.child_session_path === "string") {
+        worker.child_session_path = this.assertChildSessionPath(initialized.child_session_path);
+      }
+      if (typeof initialized.model === "string") worker.model = initialized.model;
+      worker.state = snapshot.state;
+      worker.updated_at = Date.now();
+      this.publish(worker);
+      await this.waitForPersistence();
+      return worker;
+    } catch (error) {
+      this.fail(worker, error);
+      await this.waitForPersistence();
+      throw error;
+    }
   }
 
   private attach(worker: WorkerRecord): void {
@@ -327,7 +588,8 @@ export class SubAgentManager {
         worker.token_usage.output += usage?.outputTokens ?? 0;
       }
       worker.updated_at = Date.now();
-      this.publish(worker);
+      const durableProgress = event === "tool_call_start" || event === "turn_end";
+      this.publish(worker, durableProgress);
       return;
     }
     if (frame.type === "turn_complete") {
@@ -339,6 +601,7 @@ export class SubAgentManager {
             : "failed";
       worker.output = boundSubAgentOutput(String(frame.output ?? worker.taskOutput));
       worker.error = frame.error ? String(frame.error) : undefined;
+      if (typeof frame.model === "string") worker.model = frame.model;
       worker.current_activity = undefined;
       worker.updated_at = Date.now();
       this.publish(worker);
@@ -372,7 +635,7 @@ export class SubAgentManager {
     });
   }
 
-  private publish(worker: WorkerRecord): void {
+  private publish(worker: WorkerRecord, persist = true): void {
     const snapshot = this.snapshot(worker);
     this.snapshots.delete(worker.agent_id);
     this.snapshots.set(worker.agent_id, snapshot);
@@ -380,10 +643,64 @@ export class SubAgentManager {
       this.snapshots.delete(this.snapshots.keys().next().value!);
     this.options.onState?.(snapshot);
     for (const listener of this.listeners) listener(snapshot);
+    if (persist) this.queuePersist();
   }
 
   private snapshot(worker: SubAgentSnapshot): SubAgentSnapshot {
-    return { ...worker, elapsed_ms: this.elapsed(worker), token_usage: { ...worker.token_usage } };
+    return {
+      agent_id: worker.agent_id,
+      task_name: worker.task_name,
+      state: worker.state,
+      started_at: worker.started_at,
+      updated_at: worker.updated_at,
+      elapsed_ms: this.elapsed(worker),
+      current_activity: worker.current_activity,
+      turn_count: worker.turn_count,
+      tool_use_count: worker.tool_use_count,
+      token_usage: { ...worker.token_usage },
+      output: worker.output,
+      error: worker.error,
+      agent_name: worker.agent_name,
+      provider: worker.provider,
+      model: worker.model,
+      child_session_id: worker.child_session_id,
+      child_session_path: worker.child_session_path,
+      collected: worker.collected,
+      recovered: worker.recovered,
+    };
+  }
+
+  private queuePersist(): void {
+    if (!this.parentSessionId) return;
+    this.persistPending = true;
+    if (this.persistScheduled) return;
+    this.persistScheduled = true;
+    this.persistQueue = this.persistQueue
+      .catch(() => {})
+      .then(async () => {
+        while (this.persistPending) {
+          this.persistPending = false;
+          const parentSessionId = this.parentSessionId;
+          if (!parentSessionId) continue;
+          const records = [...this.snapshots.values()].map(
+            (snapshot): PersistedSubAgentRecord => ({
+              ...snapshot,
+              token_usage: { ...snapshot.token_usage },
+            }),
+          );
+          await this.store.save(this.options.cwd, parentSessionId, records);
+        }
+      })
+      .catch((error) => {
+        this.persistPending = false;
+        log("WARN", "subagent", "Failed to persist subagent state", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.persistScheduled = false;
+        if (this.persistPending) this.queuePersist();
+      });
   }
 
   private elapsed(snapshot: SubAgentSnapshot): number {
@@ -402,7 +719,11 @@ export class SubAgentManager {
 
   private isTerminal(state: SubAgentState | undefined): boolean {
     return (
-      state === "completed" || state === "failed" || state === "interrupted" || state === "closed"
+      state === "completed" ||
+      state === "failed" ||
+      state === "interrupted" ||
+      state === "closed" ||
+      state === "reaped"
     );
   }
 
@@ -414,6 +735,15 @@ export class SubAgentManager {
 
   private assertAvailable(): void {
     if (this.shuttingDown) throw new Error("Subagent manager is shutting down");
+  }
+
+  private assertChildSessionPath(candidate: string): string {
+    const root = path.resolve(this.sessionRootDir);
+    const resolved = path.resolve(candidate);
+    if (!resolved.startsWith(`${root}${path.sep}`) || path.extname(resolved) !== ".jsonl") {
+      throw new Error("Recovered child session path is outside the subagent session root");
+    }
+    return resolved;
   }
 
   private createId(): string {
@@ -437,7 +767,7 @@ export class SubAgentManager {
     const idle = [...this.workers.values()]
       .filter((worker) => this.isTerminal(worker.state))
       .sort((a, b) => a.updated_at - b.updated_at);
-    while (idle.length > RETAINED_WORKER_LIMIT) void this.close(idle.shift()!);
+    while (idle.length > RETAINED_WORKER_LIMIT) void this.close(idle.shift()!, true);
   }
 
   private fail(worker: WorkerRecord, error: unknown, kill = true): void {
@@ -454,7 +784,11 @@ export class SubAgentManager {
     if (kill) this.kill(worker);
   }
 
-  private async close(worker: WorkerRecord): Promise<void> {
+  private async close(
+    worker: WorkerRecord,
+    reaped = false,
+    preserveTerminal = false,
+  ): Promise<void> {
     clearTimeout(worker.idleTimer);
     if (worker.process.stdin?.writable) {
       await Promise.race([
@@ -468,7 +802,8 @@ export class SubAgentManager {
     worker.requests.clear();
     for (const resolve of worker.turnResolvers) resolve();
     worker.turnResolvers.clear();
-    worker.state = "closed";
+    if (reaped) worker.state = "reaped";
+    else if (!preserveTerminal || !this.isTerminal(worker.state)) worker.state = "closed";
     worker.updated_at = Date.now();
     this.publish(worker);
     this.workers.delete(worker.agent_id);

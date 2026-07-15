@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { streamOpenAICodex } from "./openai-codex.js";
+import { normalizePromptCacheKey } from "./prompt-cache-key.js";
 
 function createSseResponse(events: Record<string, unknown>[]): Response {
   const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
@@ -254,6 +256,180 @@ describe("streamOpenAICodex", () => {
     expect(body.max_tokens).toBeUndefined();
   });
 
+  it.each([["a".repeat(64)], ["b".repeat(65)], ["long-session-".repeat(30)], ["会".repeat(65)]])(
+    "normalizes transport identity once for both Codex headers",
+    async (transportSessionId) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          createSseResponse([
+            {
+              type: "response.completed",
+              response: { usage: { input_tokens: 1, output_tokens: 1 } },
+            },
+          ]),
+        ),
+      );
+      const fetchMock = vi.mocked(fetch);
+      const result = streamOpenAICodex({
+        provider: "openai",
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        apiKey: "token",
+        accountId: "acct",
+        transportSessionId,
+        promptCacheKey: "independent-cache-key",
+      });
+      for await (const _event of result) {
+        /* consume */
+      }
+
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const headers = init.headers as Record<string, string>;
+      const expected = normalizePromptCacheKey(transportSessionId);
+      expect(headers.session_id).toBe(expected);
+      expect(headers["x-client-request-id"]).toBe(expected);
+      expect(headers.session_id.length).toBeLessThanOrEqual(64);
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body.prompt_cache_key).toBe("independent-cache-key");
+    },
+  );
+
+  it("omits transport headers when no transport identity is supplied", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createSseResponse([
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+        ]),
+      ),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+    });
+    for await (const _event of result) {
+      /* consume */
+    }
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers.session_id).toBeUndefined();
+    expect(headers["x-client-request-id"]).toBeUndefined();
+  });
+
+  it.each(["auto", "none", "required"] as const)(
+    "forwards the %s Codex tool choice",
+    async (toolChoice) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          createSseResponse([
+            {
+              type: "response.completed",
+              response: { usage: { input_tokens: 1, output_tokens: 1 } },
+            },
+          ]),
+        ),
+      );
+      const fetchMock = vi.mocked(fetch);
+      const result = streamOpenAICodex({
+        provider: "openai",
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        apiKey: "token",
+        accountId: "acct",
+        toolChoice,
+        ...(toolChoice === "required"
+          ? {
+              tools: [
+                {
+                  name: "read",
+                  description: "read",
+                  parameters: z.object({}),
+                },
+              ],
+            }
+          : {}),
+      });
+      for await (const _event of result) {
+        /* consume */
+      }
+      const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as Record<
+        string,
+        unknown
+      >;
+      expect(body.tool_choice).toBe(toolChoice);
+      if (toolChoice !== "required") expect(body.tools).toBeUndefined();
+    },
+  );
+
+  it("defaults to auto when no tools or tool choice are configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createSseResponse([
+          {
+            type: "response.completed",
+            response: { usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+        ]),
+      ),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+    });
+    for await (const _event of result) {
+      /* consume */
+    }
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body.tool_choice).toBe("auto");
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("rejects named Codex tool selection locally", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+      toolChoice: { name: "read" },
+    });
+    await expect(result.response).rejects.toThrow("does not support selecting the named tool");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects required tool choice locally when no tools exist", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+      toolChoice: "required",
+    });
+    await expect(result.response).rejects.toThrow("when no tools are configured");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports GPT-5.6 cache reads and writes separately from uncached input", async () => {
     vi.stubGlobal(
       "fetch",
@@ -359,6 +535,35 @@ describe("streamOpenAICodex", () => {
     });
   });
 
+  it("replaces an HTML Codex HTTP error with a clean provider message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            '<html><head><meta name="viewport" content="width=device-width"></head></html>',
+            {
+              status: 500,
+              headers: { "content-type": "text/html", "x-request-id": "req_html" },
+            },
+          ),
+      ),
+    );
+
+    const result = streamOpenAICodex({
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{ role: "user", content: "hi" }],
+      apiKey: "token",
+      accountId: "acct",
+    });
+
+    await expect(result.response).rejects.toMatchObject({
+      message: "The provider returned an HTML error page (HTTP 500) instead of an API response.",
+      statusCode: 500,
+      requestId: "req_html",
+    });
+  });
   it("maps a ChatGPT usage-limit 429 to a usage-limit error with reset time", async () => {
     const resetsAt = Math.floor(Date.now() / 1000) + 7200;
     vi.stubGlobal(
