@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { Message, Provider } from "@kenkaiiii/gg-ai";
-import type { SessionManager, MessageEntry } from "./session-manager.js";
+import type { SessionManager, MessageEntry, LabelEntry } from "./session-manager.js";
 
 export async function appendMessagesToSession(
   sessionManager: SessionManager,
@@ -29,10 +29,24 @@ export async function createCompactedSessionCheckpoint(
     provider: Provider;
     model: string;
     messages: readonly Message[];
+    conversationId?: string;
+    title?: string;
   },
 ): Promise<{ path: string; id: string }> {
-  const session = await sessionManager.create(options.cwd, options.provider, options.model);
+  const session = await sessionManager.create(options.cwd, options.provider, options.model, {
+    conversationId: options.conversationId,
+  });
   await appendMessagesToSession(sessionManager, session.path, options.messages, 0);
+  if (options.title) {
+    const titleEntry: LabelEntry = {
+      type: "label",
+      id: crypto.randomUUID(),
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      label: options.title,
+    };
+    await sessionManager.appendEntry(session.path, titleEntry);
+  }
   return { path: session.path, id: session.id };
 }
 

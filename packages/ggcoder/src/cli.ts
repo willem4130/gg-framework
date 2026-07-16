@@ -716,6 +716,11 @@ async function runInkTUI(opts: {
               provider,
               model,
               messages: compacted.messages,
+              conversationId: loaded.header.conversationId ?? loaded.header.id,
+              title: [...loaded.entries]
+                .reverse()
+                .find((entry) => entry.type === "label")
+                ?.label.trim(),
             });
             sessionPath = compactedSession.path;
             sessionId = compactedSession.id;

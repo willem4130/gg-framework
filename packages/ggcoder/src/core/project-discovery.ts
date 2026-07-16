@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { getAppPaths } from "../config.js";
 import { encodeCwd } from "./encode-cwd.js";
+import { getUserSessionPrompt } from "./session-preview.js";
 
 export type ProjectSource = "ggcoder" | "claude-code" | "codex";
 
@@ -383,7 +384,7 @@ export interface RecentSession {
   id: string;
   /** Absolute path to the session .jsonl (passed back to reopen it). */
   path: string;
-  /** First user message, trimmed to a short preview (may be empty). */
+  /** Stable generated title, falling back to the first real user prompt. */
   preview: string;
   /** Relative "3h ago" string from last activity. */
   lastActiveDisplay: string;
@@ -391,16 +392,9 @@ export interface RecentSession {
 }
 
 /**
- * List the most recent ggcoder sessions for a project cwd, newest first, each
- * with a short preview built from its first user message. Used by the new-window
- * project picker to offer "resume a session" alongside "new session".
- *
- * Fast path: instead of fully reading every session file in the project (what
- * SessionManager.list does to count messages), sort files by mtime and read
- * only the newest `limit`. Each chosen file is parsed in ONE pass for its
- * header id, message count, last activity, and first user preview. For projects
- * with many/large sessions this is the difference between scanning everything
- * and scanning ~5 files.
+ * List the most recent ggcoder conversations for a project cwd. Compaction
+ * checkpoints share a conversation id, so only the newest resumable checkpoint
+ * is shown. Generated labels win; otherwise the first real user prompt is used.
  */
 export async function listRecentSessions(
   cwd: string,
@@ -413,23 +407,34 @@ export async function listRecentSessions(
   files.sort((a, b) => b.mtime - a.mtime);
 
   const out: RecentSession[] = [];
+  const seenConversationIds = new Set<string>();
   for (const f of files) {
     if (out.length >= limit) break;
     const parsed = await readSessionSummary(f.path);
-    if (parsed && parsed.messageCount > 0) out.push(parsed);
+    if (!parsed || parsed.messageCount === 0) continue;
+    if (seenConversationIds.has(parsed.conversationId)) continue;
+    seenConversationIds.add(parsed.conversationId);
+    const { conversationId: _conversationId, ...session } = parsed;
+    out.push(session);
   }
   return out;
 }
 
-/** Single-pass parse of one session file: header id + count + activity + preview. */
-async function readSessionSummary(file: string): Promise<RecentSession | null> {
+interface ParsedRecentSession extends RecentSession {
+  conversationId: string;
+}
+
+/** Single-pass parse of one session file: identity + count + activity + title. */
+async function readSessionSummary(file: string): Promise<ParsedRecentSession | null> {
   return new Promise((resolve) => {
     const stream = createReadStream(file, { encoding: "utf-8" });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let id = "";
+    let conversationId = "";
     let messageCount = 0;
     let lastActivity = "";
     let preview = "";
+    let label = "";
     let valid = false;
     let done = false;
     const finish = (): void => {
@@ -437,7 +442,14 @@ async function readSessionSummary(file: string): Promise<RecentSession | null> {
       done = true;
       resolve(
         valid
-          ? { id, path: file, preview, lastActiveDisplay: rel(lastActivity), messageCount }
+          ? {
+              id,
+              conversationId: conversationId || id,
+              path: file,
+              preview: label || preview,
+              lastActiveDisplay: rel(lastActivity),
+              messageCount,
+            }
           : null,
       );
       rl.close();
@@ -449,21 +461,26 @@ async function readSessionSummary(file: string): Promise<RecentSession | null> {
         const p = JSON.parse(line) as {
           type?: string;
           id?: string;
+          conversationId?: string;
           timestamp?: string;
+          label?: unknown;
           message?: { role?: string; content?: unknown };
         };
         if (!valid) {
           if (p.type !== "session") return finish(); // not a session file
           valid = true;
           id = p.id ?? "";
+          conversationId = p.conversationId ?? id;
           if (p.timestamp) lastActivity = p.timestamp;
           return;
         }
-        if (p.type === "message") {
+        if (p.type === "label" && typeof p.label === "string" && p.label.trim()) {
+          label = p.label.replace(/\s+/g, " ").trim().slice(0, 80);
+        } else if (p.type === "message") {
           messageCount++;
           if (p.timestamp) lastActivity = p.timestamp;
           if (!preview && p.message?.role === "user") {
-            const text = extractText(p.message.content);
+            const text = getUserSessionPrompt(p.message.content);
             if (text) preview = text.replace(/\s+/g, " ").trim().slice(0, 80);
           }
         }
@@ -479,17 +496,4 @@ async function readSessionSummary(file: string): Promise<RecentSession | null> {
 
 function rel(timestamp: string): string {
   return formatRelativeTime(Date.parse(timestamp) || 0);
-}
-
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    for (const block of content) {
-      if (block && typeof block === "object" && "text" in block) {
-        const t = (block as { text?: unknown }).text;
-        if (typeof t === "string") return t;
-      }
-    }
-  }
-  return "";
 }

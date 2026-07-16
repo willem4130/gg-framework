@@ -197,6 +197,8 @@ export interface SessionHeader {
   type: "session";
   version: 2;
   id: string;
+  /** Stable identity shared by checkpoint files created during compaction. */
+  conversationId?: string;
   timestamp: string;
   cwd: string;
   provider: Provider;
@@ -279,6 +281,7 @@ export class SessionManager {
     cwd: string,
     provider: Provider,
     model: string,
+    options?: { conversationId?: string },
   ): Promise<{
     id: string;
     path: string;
@@ -296,6 +299,7 @@ export class SessionManager {
       type: "session",
       version: 2,
       id,
+      conversationId: options?.conversationId ?? id,
       timestamp,
       cwd,
       provider,

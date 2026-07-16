@@ -40,6 +40,40 @@ async function writeSession(dir: string, cwd: string): Promise<void> {
   await fs.writeFile(path.join(dir, "session.jsonl"), `${header}\n${message}\n`, "utf-8");
 }
 
+async function writeSessionRecords(
+  cwd: string,
+  fileName: string,
+  options: {
+    id: string;
+    conversationId?: string;
+    timestamp: string;
+    records: unknown[];
+  },
+): Promise<string> {
+  const dir = path.join(state.sessionsDir, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, fileName);
+  const header = {
+    type: "session",
+    version: 2,
+    id: options.id,
+    conversationId: options.conversationId,
+    timestamp: options.timestamp,
+    cwd,
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    leafId: null,
+  };
+  await fs.writeFile(
+    file,
+    [header, ...options.records].map((record) => JSON.stringify(record)).join("\n") + "\n",
+    "utf-8",
+  );
+  const modified = new Date(options.timestamp);
+  await fs.utimes(file, modified, modified);
+  return file;
+}
+
 describe("discoverProjects (ggcoder store)", () => {
   let tmp: string;
 
@@ -107,6 +141,81 @@ describe("discoverProjects (ggcoder store)", () => {
     expect(chat).toHaveLength(1);
     expect(coder[0]?.path.startsWith(state.sessionsDir)).toBe(true);
     expect(chat[0]?.path.startsWith(chatSessionsDir)).toBe(true);
+  });
+
+  it("skips compaction summaries and autopilot injections when choosing a preview", async () => {
+    const projectPath = path.join(tmp, "projects", "clean-preview");
+    await fs.mkdir(projectPath, { recursive: true });
+    const timestamp = new Date().toISOString();
+    await writeSessionRecords(projectPath, "internal-prompts.jsonl", {
+      id: "internal-prompts",
+      timestamp,
+      records: [
+        {
+          type: "message",
+          timestamp,
+          message: { role: "user", content: "[Previous conversation summary]\n### Goal" },
+        },
+        {
+          type: "message",
+          timestamp,
+          message: {
+            role: "user",
+            content:
+              "[Autopilot] This turn was triggered by Ken, GG Coder's automated reviewer — fix it",
+          },
+        },
+        {
+          type: "message",
+          timestamp,
+          message: { role: "user", content: "Keep the original project title" },
+        },
+      ],
+    });
+
+    const sessions = await listRecentSessions(projectPath);
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.preview).toBe("Keep the original project title");
+  });
+
+  it("collapses compaction checkpoints and keeps the generated conversation title", async () => {
+    const projectPath = path.join(tmp, "projects", "checkpoint-title");
+    await fs.mkdir(projectPath, { recursive: true });
+    const older = new Date(Date.now() - 60_000).toISOString();
+    const newer = new Date().toISOString();
+    await writeSessionRecords(projectPath, "old.jsonl", {
+      id: "old-session",
+      conversationId: "conversation-root",
+      timestamp: older,
+      records: [
+        {
+          type: "message",
+          timestamp: older,
+          message: { role: "user", content: "A very long original request" },
+        },
+        { type: "label", timestamp: older, label: "Fix stable session titles" },
+      ],
+    });
+    const newestPath = await writeSessionRecords(projectPath, "new.jsonl", {
+      id: "new-checkpoint",
+      conversationId: "conversation-root",
+      timestamp: newer,
+      records: [
+        {
+          type: "message",
+          timestamp: newer,
+          message: { role: "user", content: "[Previous conversation summary]\n### Goal" },
+        },
+        { type: "label", timestamp: newer, label: "Fix stable session titles" },
+      ],
+    });
+
+    const sessions = await listRecentSessions(projectPath);
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.path).toBe(newestPath);
+    expect(sessions[0]?.preview).toBe("Fix stable session titles");
   });
 
   // The best-effort decode only round-trips for underscore-free absolute paths

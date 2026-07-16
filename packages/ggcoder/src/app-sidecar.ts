@@ -2047,7 +2047,7 @@ async function createSession(
           const planPath = pendingPlanPath;
           let planTotal: number;
           try {
-            await session.newSession();
+            await session.newSession(true);
             injectedAutopilotPrompts = [];
             titleGenerated = false;
             planTotal = await activateApprovedPlan(planPath);
@@ -3583,7 +3583,7 @@ async function createSession(
           broadcast("autopilot_ignored", {});
         }
         try {
-          await session.newSession();
+          await session.newSession(true);
           injectedAutopilotPrompts = [];
           titleGenerated = false;
           const planTotal = await activateApprovedPlan(planPath);

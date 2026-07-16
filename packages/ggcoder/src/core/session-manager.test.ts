@@ -77,6 +77,24 @@ describe("SessionManager redaction boundary", () => {
   });
 });
 
+describe("SessionManager conversation identity", () => {
+  it("defaults new conversations to the session id and preserves an explicit checkpoint id", async () => {
+    const sessionsDir = await makeTempDir();
+    const manager = new SessionManager(sessionsDir);
+
+    const original = await manager.create("/repo", "anthropic", "test-model");
+    const checkpoint = await manager.create("/repo", "anthropic", "test-model", {
+      conversationId: original.header.conversationId,
+    });
+    const loadedCheckpoint = await manager.load(checkpoint.path);
+
+    expect(original.header.conversationId).toBe(original.id);
+    expect(checkpoint.id).not.toBe(original.id);
+    expect(checkpoint.header.conversationId).toBe(original.id);
+    expect(loadedCheckpoint.header.conversationId).toBe(original.id);
+  });
+});
+
 describe("SessionManager persistence failure handling", () => {
   it("appendEntry does not throw when the write fails (e.g. disk full)", async () => {
     const manager = new SessionManager(await makeTempDir());

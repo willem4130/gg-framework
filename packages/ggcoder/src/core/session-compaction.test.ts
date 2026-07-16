@@ -43,6 +43,8 @@ describe("session compaction persistence", () => {
       provider: "openai",
       model: "gpt-5",
       messages,
+      conversationId: "original-conversation",
+      title: "Stable project title",
     });
 
     const loaded = await manager.load(checkpoint.path);
@@ -51,6 +53,10 @@ describe("session compaction persistence", () => {
     expect(loaded.header.cwd).toBe("/repo");
     expect(loaded.header.provider).toBe("openai");
     expect(loaded.header.model).toBe("gpt-5");
+    expect(loaded.header.conversationId).toBe("original-conversation");
+    expect(loaded.entries.find((entry) => entry.type === "label")?.label).toBe(
+      "Stable project title",
+    );
     expect(loadedMessages).toEqual(messages.slice(1));
 
     const file = await readFile(checkpoint.path, "utf-8");
